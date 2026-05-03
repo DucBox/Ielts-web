@@ -1,0 +1,8 @@
+# Local dev secrets — KHÔNG BAO GIỜ commit file này
+.dev.vars
+
+# Wrangler cache
+.wrangler/
+
+# Node
+node_modules/

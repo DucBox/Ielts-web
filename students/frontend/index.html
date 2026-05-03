@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>IELTS Student Portal</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <!-- Top navigation (hidden on login screen) -->
+  <header class="app-header hidden" id="app-header">
+    <div class="header-brand">
+      <button class="hamburger-btn" id="hamburger-btn" onclick="toggleMobileNav()" aria-label="Menu">
+        <span></span><span></span><span></span>
+      </button>
+      <span class="header-logo">🎓</span>
+      <span class="header-title">IELTS Student</span>
+    </div>
+    <nav class="header-nav" id="header-nav">
+      <a href="#/home" class="header-nav-link" data-nav="home">🏠 Trang chủ</a>
+      <a href="#/assignments" class="header-nav-link" data-nav="assignments">📋 Bài tập</a>
+      <a href="#/history" class="header-nav-link" data-nav="history">📊 Lịch sử</a>
+      <a href="#/calendar" class="header-nav-link" data-nav="calendar">📅 Lịch</a>
+      <a href="#/vocab-games" class="header-nav-link" data-nav="vocab">🃏 Từ vựng</a>
+      <a href="#/profile" class="header-nav-link" data-nav="profile">👤 Hồ sơ</a>
+    </nav>
+    <div class="header-user">
+      <span id="header-student-name" class="header-student-name"></span>
+      <span id="header-class-name" class="header-class-name"></span>
+      <button id="switch-class-btn" class="btn-switch-class" onclick="switchClass()" style="display:none">
+        Đổi lớp
+      </button>
+      <button id="dark-mode-toggle" class="btn-dark-toggle" onclick="toggleDarkMode()" title="Sáng/tối">🌙</button>
+      <button class="btn-logout btn-logout-desktop" onclick="logout()">Đăng xuất</button>
+    </div>
+  </header>
+
+  <!-- Mobile nav drawer -->
+  <div class="mobile-nav-backdrop" id="mobile-nav-backdrop" onclick="closeMobileNav()"></div>
+  <nav class="mobile-nav" id="mobile-nav">
+    <div class="mobile-nav-header">
+      <span>🎓 IELTS Student</span>
+      <button class="mobile-nav-close" onclick="closeMobileNav()">✕</button>
+    </div>
+    <a href="#/home" class="mobile-nav-link" data-mobile-nav="home" onclick="closeMobileNav()">🏠 Trang chủ</a>
+    <a href="#/assignments" class="mobile-nav-link" data-mobile-nav="assignments" onclick="closeMobileNav()">📋 Bài tập</a>
+    <a href="#/history" class="mobile-nav-link" data-mobile-nav="history" onclick="closeMobileNav()">📊 Lịch sử</a>
+    <a href="#/calendar" class="mobile-nav-link" data-mobile-nav="calendar" onclick="closeMobileNav()">📅 Lịch</a>
+    <a href="#/vocab-games" class="mobile-nav-link" data-mobile-nav="vocab" onclick="closeMobileNav()">🃏 Từ vựng</a>
+    <a href="#/profile" class="mobile-nav-link" data-mobile-nav="profile" onclick="closeMobileNav()">👤 Hồ sơ</a>
+    <div class="mobile-nav-footer">
+      <button class="btn-logout" onclick="logout()">Đăng xuất</button>
+    </div>
+  </nav>
+
+  <!-- Main content -->
+  <main id="app">
+    <div class="loading-screen">
+      <div class="spinner"></div>
+      <p>Đang tải...</p>
+    </div>
+  </main>
+
+  <!-- Toast container -->
+  <div id="toast-container"></div>
+
+  <!-- Modal container -->
+  <div id="modal-overlay" class="modal-overlay hidden" onclick="closeModal(event)">
+    <div class="modal-shell" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <div id="modal-title" class="modal-title"></div>
+        <button class="modal-close" onclick="closeModal()" aria-label="Đóng">×</button>
+      </div>
+      <div id="modal-body" class="modal-body"></div>
+    </div>
+  </div>
+
+  <script src="js/api.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

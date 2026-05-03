@@ -1,0 +1,23 @@
+name = "ielts-teacher-api"
+main = "src/worker.js"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+[[kv_namespaces]]
+binding = "KV"
+id = "343cb710cc7f431997d8cf1d09058821"
+
+[[r2_buckets]]
+binding = "R2"
+bucket_name = "ielts-web"
+preview_bucket_name = "ielts-web"
+
+[vars]
+R2_PUBLIC_URL = "https://pub-75b0370b5b5a4c15b26531707c369a0f.r2.dev"
+R2_BUCKET_NAME = "ielts-web"
+
+[observability]
+enabled = true
+
+[placement]
+mode = "smart"

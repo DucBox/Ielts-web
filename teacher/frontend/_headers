@@ -1,0 +1,18 @@
+/*
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src https://ielts-teacher-api.quangducngo0811.workers.dev https://6782176d9bb2f0676cfa4b3f7f207dfb.r2.cloudflarestorage.com; media-src https://pub-75b0370b5b5a4c15b26531707c369a0f.r2.dev blob:; img-src 'self' data: blob: https://pub-75b0370b5b5a4c15b26531707c369a0f.r2.dev; font-src 'self';
+  X-Frame-Options: DENY
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=()
+
+/js/vendor/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/js/api.js
+  Cache-Control: public, max-age=10
+
+/js/app.js
+  Cache-Control: public, max-age=10
+
+/css/*
+  Cache-Control: public, max-age=10

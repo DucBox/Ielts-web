@@ -1,0 +1,138 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   IELTS Web — Shared Design System (B5.1)
+   Sao chép vào teacher/frontend/css/ và students/frontend/css/
+   Hoặc include qua <link> với đường dẫn tương đối tới shared/theme.css
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+:root {
+  /* ── Brand colors ────────────────────────────────────── */
+  --primary:        #0f766e;
+  --primary-lt:     #ccfbf1;
+  --primary-dk:     #0d5f58;
+  --primary-hover:  #115e59;
+  --accent:         #f59e0b;
+
+  /* ── Status colors ───────────────────────────────────── */
+  --danger:         #ef4444;
+  --danger-lt:      #fee2e2;
+  --danger-dk:      #b91c1c;
+  --success:        #22c55e;
+  --success-lt:     #dcfce7;
+  --success-dk:     #15803d;
+  --warning:        #f59e0b;
+  --warning-lt:     #fef3c7;
+  --warning-dk:     #b45309;
+  --info:           #3b82f6;
+  --info-lt:        #dbeafe;
+
+  /* ── Neutral scale ───────────────────────────────────── */
+  --gray-50:        #f9fafb;
+  --gray-100:       #f3f4f6;
+  --gray-200:       #e5e7eb;
+  --gray-300:       #d1d5db;
+  --gray-400:       #9ca3af;
+  --gray-500:       #6b7280;
+  --gray-600:       #4b5563;
+  --gray-700:       #374151;
+  --gray-800:       #1f2937;
+  --gray-900:       #111827;
+
+  /* ── Skill colors ────────────────────────────────────── */
+  --skill-reading:    #06b6d4;
+  --skill-listening:  #8b5cf6;
+  --skill-writing:    #f59e0b;
+  --skill-speaking:   #ef4444;
+
+  /* ── Typography ──────────────────────────────────────── */
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
+  --fs-xs:    11px;
+  --fs-sm:    12px;
+  --fs-base:  14px;
+  --fs-md:    15px;
+  --fs-lg:    18px;
+  --fs-xl:    22px;
+  --fs-2xl:   28px;
+
+  /* ── Spacing ─────────────────────────────────────────── */
+  --space-1:   4px;
+  --space-2:   8px;
+  --space-3:   12px;
+  --space-4:   16px;
+  --space-5:   20px;
+  --space-6:   24px;
+  --space-8:   32px;
+  --space-10:  40px;
+  --space-12:  48px;
+
+  /* ── Layout ──────────────────────────────────────────── */
+  --header-h:   60px;
+  --sidebar-w:  220px;
+  --container-max: 1200px;
+
+  /* ── Shape ───────────────────────────────────────────── */
+  --radius-sm:  6px;
+  --radius:     10px;
+  --radius-md:  12px;
+  --radius-lg:  16px;
+  --radius-xl:  20px;
+  --radius-pill: 99px;
+
+  /* ── Elevation ───────────────────────────────────────── */
+  --shadow-xs:  0 1px 2px rgba(0,0,0,.05);
+  --shadow:     0 1px 3px rgba(0,0,0,.1), 0 1px 2px rgba(0,0,0,.06);
+  --shadow-md:  0 4px 6px rgba(0,0,0,.07), 0 2px 4px rgba(0,0,0,.06);
+  --shadow-lg:  0 10px 15px rgba(0,0,0,.08), 0 4px 6px rgba(0,0,0,.05);
+  --shadow-xl:  0 20px 25px rgba(0,0,0,.10), 0 10px 10px rgba(0,0,0,.04);
+
+  /* ── Motion ──────────────────────────────────────────── */
+  --t-fast:   120ms ease;
+  --t-base:   200ms ease;
+  --t-slow:   320ms ease;
+}
+
+/* ═══ Skeleton loader (B2.5) ═══════════════════════════════════════════════ */
+.skeleton {
+  background: linear-gradient(90deg, var(--gray-100) 25%, var(--gray-200) 50%, var(--gray-100) 75%);
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.4s infinite ease-in-out;
+  border-radius: var(--radius-sm);
+}
+.skeleton-line   { height: 12px; margin: 8px 0; }
+.skeleton-line.lg{ height: 18px; }
+.skeleton-line.sm{ height: 10px; }
+.skeleton-block  { height: 80px; margin: 8px 0; border-radius: var(--radius); }
+.skeleton-card   { padding: 16px; border: 1px solid var(--gray-200); border-radius: var(--radius); margin-bottom: 12px; background: #fff; }
+@keyframes skeleton-shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* ═══ Empty state (B2.4) ═══════════════════════════════════════════════════ */
+.empty-state-v2 {
+  text-align: center;
+  padding: 48px 24px;
+  color: var(--gray-600);
+}
+.empty-state-v2 .empty-illu {
+  font-size: 56px;
+  opacity: .7;
+  margin-bottom: 12px;
+  display: block;
+}
+.empty-state-v2 .empty-title {
+  font-weight: 700;
+  font-size: var(--fs-md);
+  color: var(--gray-800);
+  margin-bottom: 6px;
+}
+.empty-state-v2 .empty-desc {
+  font-size: var(--fs-sm);
+  color: var(--gray-500);
+  max-width: 380px;
+  margin: 0 auto 16px;
+  line-height: 1.55;
+}
+.empty-state-v2 .empty-action {
+  margin-top: 8px;
+}

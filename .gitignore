@@ -1,3 +1,6 @@
+# Markdown docs
+**/*.md
+
 # Secrets
 teacher/backend/.dev.vars
 **/.env

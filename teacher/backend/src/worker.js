@@ -62,6 +62,7 @@ function extractR2Key(url, publicBase) {
   if (!url) return null;
   if (publicBase && url.startsWith(publicBase + '/')) return url.slice(publicBase.length + 1);
   if (url.startsWith('/files/')) return url.slice('/files/'.length);
+  console.warn('[extractR2Key] URL không khớp publicBase — bỏ qua:', url);
   return null;
 }
 
@@ -191,6 +192,30 @@ function buildStudentSpeakingKey(assignmentId, studentId, fileName) {
 
 function isExpectedStudentSpeakingKey(key, assignmentId, studentId) {
   return String(key || '').startsWith(`speaking/${assignmentId}/${studentId}-`);
+}
+
+async function r2RefIncrement(sql, key) {
+  if (!key) return;
+  await sql`
+    INSERT INTO r2_asset_refs (r2_key, ref_count)
+    VALUES (${key}, 1)
+    ON CONFLICT (r2_key) DO UPDATE
+    SET ref_count = r2_asset_refs.ref_count + 1, last_touched_at = NOW()
+  `;
+}
+
+async function r2SafeDelete(env, sql, key) {
+  if (!key) return;
+  const [refRow] = await sql`
+    UPDATE r2_asset_refs
+    SET ref_count = ref_count - 1, last_touched_at = NOW()
+    WHERE r2_key = ${key}
+    RETURNING ref_count
+  `;
+  const refCount = refRow?.ref_count ?? null;
+  if (refCount === null || refCount <= 0) {
+    await env.R2.delete(key).catch(e => console.error('R2 delete failed:', key, e));
+  }
 }
 
 function normalizeContentBlocks(input) {
@@ -899,7 +924,17 @@ export default {
           return json(row);
         }
         if (method === 'DELETE') {
+          const subAudios = await sql`
+            SELECT sub.speaking_audio_url
+            FROM submissions sub
+            JOIN assignments a ON a.id = sub.assignment_id
+            WHERE a.class_id = ${p.id} AND sub.speaking_audio_url IS NOT NULL
+          `;
           await sql`DELETE FROM classes WHERE id = ${p.id}`;
+          for (const sub of subAudios) {
+            const key = extractR2Key(sub.speaking_audio_url, env.R2_PUBLIC_URL);
+            if (key) await env.R2.delete(key).catch(e => console.error('R2 speaking cleanup failed:', e));
+          }
           return json({ ok: true });
         }
       }
@@ -1003,7 +1038,15 @@ export default {
 
       if ((p = matchPath('/students/:id', path))) {
         if (method === 'DELETE') {
+          const subAudios = await sql`
+            SELECT speaking_audio_url FROM submissions
+            WHERE student_id = ${p.id} AND speaking_audio_url IS NOT NULL
+          `;
           await sql`DELETE FROM students WHERE id = ${p.id}`;
+          for (const sub of subAudios) {
+            const key = extractR2Key(sub.speaking_audio_url, env.R2_PUBLIC_URL);
+            if (key) await env.R2.delete(key).catch(e => console.error('R2 speaking cleanup failed:', e));
+          }
           return json({ ok: true });
         }
         if (method === 'PATCH') {
@@ -1245,7 +1288,7 @@ export default {
               if (!audio.type.startsWith('audio/'))
                 return err('Chỉ chấp nhận file âm thanh', 415);
 
-              uploadedR2Key = `audio/${crypto.randomUUID()}-${audio.name}`;
+              uploadedR2Key = buildTeacherAudioKey(audio.name);
               await env.R2.put(uploadedR2Key, audio.stream(), {
                 httpMetadata: { contentType: audio.type },
               });
@@ -1283,6 +1326,12 @@ export default {
               )
               RETURNING *
             `;
+            const audioKey = extractR2Key(row.content_url, env.R2_PUBLIC_URL);
+            if (audioKey) await r2RefIncrement(sql, audioKey).catch(e => console.error('R2 ref track failed:', e));
+            for (const imgUrl of extractContentBlockImageUrls(row.content_blocks || [])) {
+              const imgKey = extractR2Key(imgUrl, env.R2_PUBLIC_URL);
+              if (imgKey) await r2RefIncrement(sql, imgKey).catch(e => console.error('R2 ref track failed:', e));
+            }
             return json(row, 201);
           } catch (dbErr) {
             if (uploadedR2Key) await env.R2.delete(uploadedR2Key).catch(() => {});
@@ -1306,6 +1355,12 @@ export default {
           )
           RETURNING *
         `;
+        const audioKey = extractR2Key(row.content_url, env.R2_PUBLIC_URL);
+        if (audioKey) await r2RefIncrement(sql, audioKey).catch(e => console.error('R2 ref track failed:', e));
+        for (const imgUrl of extractContentBlockImageUrls(row.content_blocks || [])) {
+          const imgKey = extractR2Key(imgUrl, env.R2_PUBLIC_URL);
+          if (imgKey) await r2RefIncrement(sql, imgKey).catch(e => console.error('R2 ref track failed:', e));
+        }
         return json(row, 201);
       }
 
@@ -1353,9 +1408,12 @@ export default {
           `;
           if (normalizedBlocks !== null) {
             const oldKeys = extractContentBlockImageUrls(existing.content_blocks).map(url => extractR2Key(url, env.R2_PUBLIC_URL)).filter(Boolean);
-            const newKeys = new Set(extractContentBlockImageUrls(normalizedBlocks).map(url => extractR2Key(url, env.R2_PUBLIC_URL)).filter(Boolean));
+            const newKeySet = new Set(extractContentBlockImageUrls(normalizedBlocks).map(url => extractR2Key(url, env.R2_PUBLIC_URL)).filter(Boolean));
+            for (const key of newKeySet) {
+              if (!oldKeys.includes(key)) await r2RefIncrement(sql, key).catch(e => console.error('R2 ref increment failed:', key, e));
+            }
             for (const key of oldKeys) {
-              if (!newKeys.has(key)) await env.R2.delete(key).catch(e => console.error('R2 image cleanup failed:', e));
+              if (!newKeySet.has(key)) await r2SafeDelete(env, sql, key).catch(e => console.error('R2 image cleanup failed:', e));
             }
           }
           return json(row);
@@ -1375,10 +1433,10 @@ export default {
           await sql`DELETE FROM question_pool WHERE id = ${p.id}`;
 
           const r2Key = extractR2Key(question.content_url, env.R2_PUBLIC_URL);
-          if (r2Key) await env.R2.delete(r2Key).catch(e => console.error('R2 cleanup failed:', e));
+          if (r2Key) await r2SafeDelete(env, sql, r2Key).catch(e => console.error('R2 cleanup failed:', e));
           for (const url of extractContentBlockImageUrls(question.content_blocks)) {
             const key = extractR2Key(url, env.R2_PUBLIC_URL);
-            if (key) await env.R2.delete(key).catch(e => console.error('R2 image cleanup failed:', e));
+            if (key) await r2SafeDelete(env, sql, key).catch(e => console.error('R2 image cleanup failed:', e));
           }
 
           return json({ ok: true });
@@ -1636,7 +1694,15 @@ export default {
           return json(result[0]);
         }
         if (method === 'DELETE') {
+          const subAudios = await sql`
+            SELECT speaking_audio_url FROM submissions
+            WHERE assignment_id = ${p.id} AND speaking_audio_url IS NOT NULL
+          `;
           await sql`DELETE FROM assignments WHERE id = ${p.id}`;
+          for (const sub of subAudios) {
+            const key = extractR2Key(sub.speaking_audio_url, env.R2_PUBLIC_URL);
+            if (key) await env.R2.delete(key).catch(e => console.error('R2 speaking cleanup failed:', e));
+          }
           return json({ ok: true });
         }
       }

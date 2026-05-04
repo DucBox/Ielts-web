@@ -408,6 +408,25 @@ function saveNotePanel(assignmentId) {
 }
 
 // ── Listening replay (B1.6) ────────────────────────────────────────────────
+function renderListeningAudioHtml(obj) {
+  const tracks = Array.isArray(obj?.content_urls) && obj.content_urls.length > 0
+    ? obj.content_urls
+    : (obj?.content_url ? [{ url: obj.content_url, name: '' }] : []);
+  if (!tracks.length) return '';
+  const multi = tracks.length > 1;
+  return tracks.map((t, i) => `
+    <div class="audio-player-box">
+      ${multi ? `<div class="audio-track-label">🎧 ${escapeHtml(t.name || ('File ' + (i + 1)))}</div>` : '<span class="audio-player-icon">🎧</span>'}
+      <audio controls src="${escapeHtml(t.url || '')}">Trình duyệt không hỗ trợ audio.</audio>
+      <div class="audio-replay-controls">
+        <button class="btn-replay" onclick="audioSeekEl(this,-10)" title="Lùi 10s">⏪ -10s</button>
+        <button class="btn-replay" onclick="audioSeekEl(this,-5)"  title="Lùi 5s">◀ -5s</button>
+        <button class="btn-replay" onclick="audioSeekEl(this,5)"   title="Tới 5s">+5s ▶</button>
+        <button class="btn-replay" onclick="audioSeekEl(this,10)"  title="Tới 10s">+10s ⏩</button>
+      </div>
+    </div>`).join('');
+}
+
 function audioSeek(delta) {
   const audio = document.querySelector('.audio-player-box audio');
   if (!audio) return;
@@ -3050,14 +3069,14 @@ function renderWriting(a) {
         <button class="btn btn-primary btn-sm" id="submit-btn"
           onclick="submitWriting('${a.id}', this)">Nộp bài</button>
       </div>
-      <div class="assignment-content single-col">
+      <div class="assignment-content">
         <div class="content-pane">
           <div class="section-title">Đề bài</div>
-          <div class="prompt-box">${renderQuestionContentHTML(a.content_blocks, a.content_text || 'Không có đề bài.')}</div>
+          <div class="writing-prompt-body">${renderQuestionContentHTML(a.content_blocks, a.content_text || 'Không có đề bài.')}</div>
         </div>
-        <div class="answer-pane">
+        <div class="answer-pane writing-answer-pane">
           <div class="section-title">Bài làm của bạn</div>
-          <textarea id="writing-answer" class="form-textarea"
+          <textarea id="writing-answer" class="writing-textarea"
             placeholder="Viết bài của bạn vào đây..."
             oninput="updateWordCount(this);autoSaveWriting('${a.id}')"></textarea>
           <div id="word-count" class="word-count word-count-extended">
@@ -3143,7 +3162,17 @@ let _uploadedFile  = null;
 let _recordTimer   = null;
 let _recordSeconds = 0;
 
+function _newSpeakingSlot() {
+  return { displayName: '', status: 'idle', localUrl: null, url: null, key: null, name: '', size: 0, pct: 0, eta: null };
+}
+let _speakingSlots     = [_newSpeakingSlot()];
+let _speakingRecordIdx = -1;
+let _speakingAssignId  = null;
+
 function renderSpeaking(a) {
+  _speakingSlots = [_newSpeakingSlot()];
+  _speakingRecordIdx = -1;
+  _speakingAssignId = a.id;
   _mediaRecorder = null; _audioChunks = []; _recordedBlob = null; _uploadedFile = null;
 
   $('#app').innerHTML = `
@@ -3161,118 +3190,200 @@ function renderSpeaking(a) {
         </div>
         <div class="answer-pane">
           <div class="section-title">Bài nói của bạn</div>
-          <div class="recorder-area" id="recorder-area">
-            <canvas id="waveform-canvas" class="waveform-canvas" width="600" height="80" style="display:none"></canvas>
-            <div id="record-timer" class="record-timer">0:00</div>
-            <div class="record-actions">
-              <button class="record-btn idle" id="record-btn" onclick="toggleRecording()">
-                🎙️ Bắt đầu thu âm
-              </button>
-              <button class="btn btn-outline btn-sm" id="rerecord-btn" onclick="resetRecording()" style="display:none">↻ Thu lại</button>
-            </div>
-            <div class="recorder-hint">
-              Hoặc <span class="upload-link" onclick="$('#file-upload').click()">tải file audio lên</span>
-              <input type="file" id="file-upload" accept="audio/*" style="display:none"
-                onchange="onFileUploaded(this)" />
+          <div id="recording-indicator" style="display:none;padding:10px 14px;background:#fef2f2;border:1px solid #fecaca;border-radius:10px;margin-bottom:10px">
+            <canvas id="waveform-canvas" class="waveform-canvas" width="600" height="60"></canvas>
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-top:6px">
+              <div id="record-timer" class="record-timer" style="font-size:18px">0:00</div>
+              <button class="record-btn recording-active" style="padding:6px 18px;font-size:13px" onclick="stopSlotRecording()">⏹ Dừng thu âm</button>
             </div>
           </div>
-          <div id="audio-preview" class="audio-preview" style="display:none"></div>
+          <div id="speaking-slot-list"></div>
+          <button class="btn btn-outline btn-sm" style="margin-top:8px" onclick="addSpeakingSlot()">+ Thêm phần</button>
+          <div id="audio-submit-status" class="audio-submit-status hidden" style="margin-top:12px"></div>
         </div>
       </div>
     </div>`;
+
+  _renderSpeakingSlots();
 }
 
-function resetRecording() {
-  _mediaRecorder = null; _audioChunks = []; _recordedBlob = null; _uploadedFile = null;
-  const preview = $('#audio-preview'); if (preview) { preview.style.display = 'none'; preview.innerHTML = ''; }
-  const cv = $('#waveform-canvas'); if (cv) cv.style.display = 'none';
-  const btn = $('#record-btn'); if (btn) { btn.className = 'record-btn idle'; btn.innerHTML = '🎙️ Bắt đầu thu âm'; }
-  const tb = $('#record-timer'); if (tb) tb.textContent = '0:00';
-  const rr = $('#rerecord-btn'); if (rr) rr.style.display = 'none';
-  const sb = $('#submit-btn'); if (sb) sb.disabled = true;
-  $('#recorder-area')?.classList.remove('has-audio');
+function _renderSpeakingSlots() {
+  const listEl = $('#speaking-slot-list');
+  if (!listEl) return;
+  const canRemove = _speakingSlots.length > 1;
+  listEl.innerHTML = _speakingSlots.map((s, i) => {
+    const removeBtn = canRemove && s.status !== 'recording'
+      ? `<button class="remove-audio-slot" onclick="removeSpeakingSlot(${i})" title="Xoá">×</button>`
+      : (canRemove ? '<div style="width:28px"></div>' : '');
+
+    let fileBody = '';
+    if (s.status === 'idle' || s.status === 'error') {
+      const errLabel = s.status === 'error' ? `<span style="color:var(--danger);font-size:12px">✗ Lỗi upload — thử lại:</span>` : '';
+      fileBody = `${errLabel}
+        <input id="sp-slot-input-${i}" type="file" accept="audio/*" style="display:none" onchange="onSpeakingSlotFileSelected(this,${i})" />
+        <button class="audio-pick-btn" onclick="startSlotRecording(${i})">🎙️ Thu âm</button>
+        <button class="audio-pick-btn" onclick="document.getElementById('sp-slot-input-${i}').click()">🎵 Chọn file</button>`;
+    } else if (s.status === 'recording') {
+      fileBody = `<span style="font-size:13px;color:#dc2626;font-weight:600">● Đang ghi âm...</span>`;
+    } else if (s.status === 'uploading') {
+      const etaStr = s.pct < 100 && s.eta != null ? ` · ETA ${_fmtUploadEta(s.eta)}` : '';
+      fileBody = `
+        <div class="audio-slot-filename">${escapeHtml(s.name)} <span style="color:var(--gray-400)">(${(s.size/1024/1024).toFixed(1)} MB)</span></div>
+        <div class="upload-progress-row" style="width:100%">
+          <div class="upload-progress-bar-wrap"><div class="upload-progress-bar" style="width:${s.pct}%"></div></div>
+          <span class="upload-progress-label">${s.pct}%${etaStr}</span>
+        </div>`;
+    } else if (s.status === 'done') {
+      fileBody = `
+        <div class="audio-slot-done" style="width:100%">
+          <span class="audio-upload-done">✓</span>
+          <audio controls src="${escapeHtml(s.localUrl || s.url || '')}" style="height:32px;flex:1;min-width:0;border-radius:6px"></audio>
+          <button class="btn btn-outline btn-sm" style="padding:2px 8px;font-size:12px;flex-shrink:0" onclick="clearSpeakingSlot(${i})">Xoá</button>
+        </div>`;
+    }
+    return `<div class="audio-slot" id="sp-slot-${i}">
+      <div class="audio-slot-num">${i + 1}</div>
+      <div class="audio-slot-content">
+        <input type="text" class="form-input audio-slot-name" placeholder="Tên phần (VD: Part ${i + 1})"
+               value="${escapeHtml(s.displayName)}" onchange="_speakingSlots[${i}].displayName=this.value" />
+        <div class="audio-slot-file">${fileBody}</div>
+      </div>
+      ${removeBtn}
+    </div>`;
+  }).join('');
 }
 
-async function toggleRecording() {
-  if (_mediaRecorder && _mediaRecorder.state === 'recording') {
-    stopRecording();
-  } else {
-    await startRecording();
-  }
-}
-
-async function startRecording() {
+async function startSlotRecording(idx) {
+  if (_speakingRecordIdx >= 0) { toast('Đang ghi âm phần khác, hãy dừng trước', 'warning'); return; }
+  _speakingRecordIdx = idx;
+  _speakingSlots[idx].status = 'recording';
+  _renderSpeakingSlots();
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    _audioChunks = []; _recordedBlob = null;
+    _audioChunks = [];
     const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/ogg';
     _mediaRecorder = new MediaRecorder(stream, { mimeType });
     _mediaRecorder.ondataavailable = e => { if (e.data.size > 0) _audioChunks.push(e.data); };
     _mediaRecorder.onstop = () => {
       stream.getTracks().forEach(t => t.stop());
       stopWaveform();
-      const cv = $('#waveform-canvas'); if (cv) cv.style.display = 'none';
-      _recordedBlob = new Blob(_audioChunks, { type: _mediaRecorder.mimeType });
-      showAudioPreview(URL.createObjectURL(_recordedBlob), 'Bài thu âm của bạn');
-      enableSubmit();
-      const rr = $('#rerecord-btn'); if (rr) rr.style.display = '';
+      const rawMime = _mediaRecorder.mimeType || 'audio/webm';
+      const blob = new Blob(_audioChunks, { type: rawMime });
+      _onSlotRecordingDone(_speakingRecordIdx, blob, rawMime);
     };
     _mediaRecorder.start(250);
-
-    // B1.8 — show waveform during recording
-    const cv = $('#waveform-canvas'); if (cv) cv.style.display = '';
+    const ind = $('#recording-indicator'); if (ind) ind.style.display = '';
     startWaveform(stream);
-
-    $('#recorder-area')?.classList.add('recording');
-    const btn = $('#record-btn');
-    btn.className = 'record-btn recording-active';
-    btn.innerHTML = '⏹ Dừng thu âm';
-
     _recordSeconds = 0;
     clearInterval(_recordTimer);
     _recordTimer = setInterval(() => {
       _recordSeconds++;
-      const m = Math.floor(_recordSeconds / 60);
-      const s = _recordSeconds % 60;
-      const el = $('#record-timer');
-      if (el) el.textContent = `${m}:${s.toString().padStart(2, '0')}`;
+      const m = Math.floor(_recordSeconds / 60), s = _recordSeconds % 60;
+      const el = $('#record-timer'); if (el) el.textContent = `${m}:${s.toString().padStart(2, '0')}`;
     }, 1000);
   } catch (e) {
+    _speakingSlots[idx].status = 'idle';
+    _speakingRecordIdx = -1;
+    _renderSpeakingSlots();
     toast('Không thể truy cập microphone: ' + e.message, 'error');
   }
 }
 
-function stopRecording() {
+function stopSlotRecording() {
   clearInterval(_recordTimer);
   _mediaRecorder?.stop();
-  $('#recorder-area')?.classList.remove('recording');
-  const btn = $('#record-btn');
-  if (btn) { btn.className = 'record-btn idle'; btn.innerHTML = '🎙️ Thu âm lại'; }
+  const ind = $('#recording-indicator'); if (ind) ind.style.display = 'none';
+  const tb = $('#record-timer'); if (tb) tb.textContent = '0:00';
 }
 
-function onFileUploaded(input) {
-  const file = input.files[0];
-  if (!file) return;
-  _uploadedFile = file; _recordedBlob = null;
-  showAudioPreview(URL.createObjectURL(file), file.name);
-  enableSubmit();
+function _onSlotRecordingDone(idx, blob, mimeType) {
+  const slot = _speakingSlots[idx];
+  if (!slot) { _speakingRecordIdx = -1; return; }
+  // Strip codec qualifier so R2 stores a clean MIME type (e.g. "audio/webm" not "audio/webm;codecs=opus")
+  const cleanMime = String(mimeType || 'audio/webm').split(';')[0].trim();
+  const ext = cleanMime.includes('webm') ? 'webm' : cleanMime.includes('ogg') ? 'ogg' : 'webm';
+  const file = new File([blob], `speaking-part${idx + 1}.${ext}`, { type: cleanMime });
+  slot.name = file.name;
+  slot.size = blob.size;
+  slot.localUrl = URL.createObjectURL(blob);
+  slot.status = 'uploading';
+  slot.pct = 0;
+  _speakingRecordIdx = -1;
+  _renderSpeakingSlots();
+  _uploadSpeakingSlot(idx, file);
 }
 
-function showAudioPreview(url, label) {
-  const preview = $('#audio-preview');
-  if (!preview) return;
-  preview.style.display = 'block';
-  preview.innerHTML = `
-    <div style="font-size:12px;color:var(--gray-400);margin-bottom:6px">✅ ${escapeHtml(label)}</div>
-    <audio controls src="${url}" style="width:100%;border-radius:8px"></audio>
-    <div id="audio-submit-status" class="audio-submit-status hidden"></div>`;
+function onSpeakingSlotFileSelected(input, idx) {
+  const file = input.files?.[0];
+  if (!file || !_speakingSlots[idx]) return;
+  input.value = '';
+  _speakingSlots[idx].name = file.name;
+  _speakingSlots[idx].size = file.size;
+  _speakingSlots[idx].localUrl = URL.createObjectURL(file);
+  _speakingSlots[idx].status = 'uploading';
+  _speakingSlots[idx].pct = 0;
+  _renderSpeakingSlots();
+  _uploadSpeakingSlot(idx, file);
 }
 
-function enableSubmit() {
+async function _uploadSpeakingSlot(idx, file) {
+  const slot = _speakingSlots[idx];
+  if (!slot) return;
+  try {
+    const uploadTarget = await requestSpeakingUploadTarget(_speakingAssignId, file);
+    await putSpeakingAudioDirect(
+      uploadTarget.upload_url, file,
+      uploadTarget.headers?.['Content-Type'] || file.type,
+      (pct, eta) => {
+        if (_speakingSlots[idx]) { _speakingSlots[idx].pct = pct; _speakingSlots[idx].eta = eta; }
+        _renderSpeakingSlots();
+      }
+    );
+    _speakingSlots[idx].status = 'done';
+    _speakingSlots[idx].url = uploadTarget.public_url;
+    _speakingSlots[idx].key = uploadTarget.key;
+    _renderSpeakingSlots();
+    _checkSpeakingReady();
+  } catch (e) {
+    _speakingSlots[idx].status = 'error';
+    _renderSpeakingSlots();
+    toast(`Lỗi upload phần ${idx + 1}: ` + (e.message || 'Unknown error'), 'error');
+  }
+}
+
+function addSpeakingSlot() {
+  _speakingSlots.push(_newSpeakingSlot());
+  _renderSpeakingSlots();
+}
+
+function removeSpeakingSlot(idx) {
+  if (_speakingSlots.length <= 1) { clearSpeakingSlot(0); return; }
+  if (_speakingSlots[idx]?.status === 'recording') return;
+  _speakingSlots.splice(idx, 1);
+  _renderSpeakingSlots();
+  _checkSpeakingReady();
+}
+
+function clearSpeakingSlot(idx) {
+  if (!_speakingSlots[idx]) return;
+  _speakingSlots[idx] = { ..._newSpeakingSlot(), displayName: _speakingSlots[idx].displayName };
+  _renderSpeakingSlots();
+  _checkSpeakingReady();
+}
+
+function _checkSpeakingReady() {
   const btn = $('#submit-btn');
-  if (btn) btn.disabled = false;
-  $('#recorder-area')?.classList.add('has-audio');
+  if (!btn) return;
+  const hasDone = _speakingSlots.some(s => s.status === 'done');
+  const busy = _speakingSlots.some(s => s.status === 'uploading' || s.status === 'recording');
+  btn.disabled = !hasDone || busy;
 }
+
+function enableSubmit() { _checkSpeakingReady(); }
+function resetRecording() { /* legacy no-op */ }
+function toggleRecording() { /* legacy no-op */ }
+function onFileUploaded() { /* legacy no-op */ }
+function showAudioPreview() { /* legacy no-op */ }
 
 function _fmtUploadEta(sec) {
   if (sec === null || sec === undefined || sec < 0) return '';
@@ -3352,10 +3463,10 @@ function putSpeakingAudioDirect(uploadUrl, file, contentType, onProgress) {
 }
 
 async function submitSpeaking(assignmentId, btn) {
-  if (!_recordedBlob && !_uploadedFile) {
-    toast('Vui lòng thu âm hoặc upload file audio', 'error'); return;
+  const doneSlots = _speakingSlots.filter(s => s.status === 'done');
+  if (doneSlots.length === 0) {
+    toast('Vui lòng thu âm hoặc upload ít nhất 1 file audio', 'error'); return;
   }
-  // B1.9 — confirm before submit speaking
   const ok = await confirmSubmit({
     title: 'Xác nhận nộp bài Speaking',
     message: `<div>Bạn đã sẵn sàng nộp bài thu âm?</div>
@@ -3365,26 +3476,11 @@ async function submitSpeaking(assignmentId, btn) {
 
   btnLoading(btn);
   try {
-    let uploadFile = _uploadedFile;
-    if (_recordedBlob) {
-      const ext = _mediaRecorder?.mimeType?.includes('webm') ? 'webm' : 'ogg';
-      uploadFile = new File([_recordedBlob], `speaking.${ext}`, {
-        type: _recordedBlob.type || (_mediaRecorder?.mimeType || 'audio/webm'),
-      });
-    }
-
-    const uploadTarget = await requestSpeakingUploadTarget(assignmentId, uploadFile);
-    setSpeakingSubmitStatus('uploading', 0, null);
-    await putSpeakingAudioDirect(
-      uploadTarget.upload_url,
-      uploadFile,
-      uploadTarget.headers?.['Content-Type'] || uploadFile.type,
-      (pct, etaSec) => setSpeakingSubmitStatus('uploading', pct, etaSec),
-    );
+    const audioUploadKeys = doneSlots.map(s => ({ key: s.key, name: s.displayName || s.name }));
     setSpeakingSubmitStatus('processing');
     await api.post(`/assignments/${assignmentId}/submit`, {
       student_id: _student.id,
-      audio_upload_key: uploadTarget.key,
+      audio_upload_keys: audioUploadKeys,
     });
     clearAllDrafts(assignmentId);
     stopAutoSave(); stopTaskTimer();
@@ -3498,12 +3594,7 @@ function renderGradedResult(sub) {
       </div>
       <div class="assignment-content">
         <div class="content-pane" id="result-content-pane">
-          ${sub.skill === 'listening' && sub.content_url ? `
-            <div class="audio-player-box">
-              <span class="audio-player-icon">🎧</span>
-              <audio controls src="${sub.content_url}">Trình duyệt không hỗ trợ audio.</audio>
-            </div>
-          ` : ''}
+          ${sub.skill === 'listening' ? renderListeningAudioHtml(sub) : ''}
           ${sub.skill === 'listening' && sub.script ? `
             <div class="script-section" id="listening-script-section">
               <button class="script-toggle" onclick="toggleListeningScript()">
@@ -4535,6 +4626,7 @@ async function showPractice({ id: rawId }) {
       content_text:  sub.content_text || '',
       content_blocks: sub.content_blocks || [],
       content_url:   sub.content_url || '',
+      content_urls:  sub.content_urls || [],
       questions_data: sub.questions_data || [],
     };
 
@@ -4592,11 +4684,7 @@ function renderPractice() {
       </div>
       <div class="assignment-content">
         <div class="content-pane" id="practice-content-pane">
-          ${a.skill === 'listening' && a.content_url ? `
-            <div class="audio-player-box">
-              <span class="audio-player-icon">🎧</span>
-              <audio controls src="${a.content_url}">Trình duyệt không hỗ trợ audio.</audio>
-            </div>` : ''}
+          ${a.skill === 'listening' ? renderListeningAudioHtml(a) : ''}
           <div class="section-title">${a.skill === 'listening' ? 'Câu hỏi' : 'Bài đọc & Câu hỏi'}</div>
           <div class="reading-text" id="practice-reading-text">${renderQuestionContentHTML(a.content_blocks, a.content_text || '')}</div>
         </div>
@@ -4671,11 +4759,7 @@ function renderPracticeResult(result, questionsToShow, answers) {
       </div>
       <div class="assignment-content">
         <div class="content-pane" id="practice-content-pane">
-          ${_practiceData?.assignment?.skill === 'listening' && _practiceData?.assignment?.content_url ? `
-            <div class="audio-player-box">
-              <span class="audio-player-icon">🎧</span>
-              <audio controls src="${_practiceData.assignment.content_url}">Trình duyệt không hỗ trợ audio.</audio>
-            </div>` : ''}
+          ${_practiceData?.assignment?.skill === 'listening' ? renderListeningAudioHtml(_practiceData.assignment) : ''}
           <div class="reading-text" id="practice-reading-text">${renderQuestionContentHTML(_practiceData?.assignment?.content_blocks, _practiceData?.assignment?.content_text || '')}</div>
         </div>
         <div class="answer-pane">

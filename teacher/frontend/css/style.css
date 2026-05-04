@@ -1269,6 +1269,91 @@ body.resizing-image {
   color: #166534;
 }
 
+/* ═══ AUDIO SLOTS ════════════════════════════════════════════════════════════ */
+#audio-slot-list { display: flex; flex-direction: column; gap: 10px; }
+
+.audio-slot {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  background: var(--gray-50);
+  border: 1px solid var(--gray-200);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+.audio-slot-num {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  min-width: 26px;
+  background: var(--primary);
+  color: #fff;
+  border-radius: 50%;
+  font-size: 12px;
+  font-weight: 700;
+  margin-top: 6px;
+}
+.audio-slot-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.audio-slot-name {
+  font-size: 13px;
+  padding: 6px 10px;
+}
+.audio-slot-file {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-height: 32px;
+}
+.audio-pick-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--primary);
+  background: var(--primary-lt, #eff6ff);
+  border: 1.5px dashed var(--primary);
+  border-radius: 7px;
+  cursor: pointer;
+  transition: background .15s;
+}
+.audio-pick-btn:hover { background: #dbeafe; }
+.audio-slot-done {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.audio-slot-filename {
+  font-size: 13px;
+  color: var(--text);
+  word-break: break-all;
+}
+.remove-audio-slot {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--gray-400);
+  font-size: 18px;
+  line-height: 1;
+  padding: 2px 4px;
+  margin-top: 4px;
+  flex-shrink: 0;
+  border-radius: 4px;
+  transition: color .15s;
+}
+.remove-audio-slot:hover { color: var(--danger); }
+
 /* ═══ PDF IMPORT ═════════════════════════════════════════════════════════════ */
 .pdf-import-box {
   margin-bottom: 12px;

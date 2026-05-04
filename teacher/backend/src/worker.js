@@ -78,6 +78,32 @@ function isAudioContentType(value) {
   return String(value || '').toLowerCase().startsWith('audio/');
 }
 
+// Strip codec qualifiers (e.g. "audio/webm;codecs=opus" → "audio/webm") so OpenAI accepts the file.
+function normalizeAudioMime(raw) {
+  const base = String(raw || '').split(';')[0].trim().toLowerCase();
+  if (!base || !base.startsWith('audio/')) return '';
+  return base;
+}
+
+// All formats OpenAI Whisper accepts, mapped both ways.
+// ext→mime: use the canonical MIME for that extension
+// mime→ext: covers every browser/OS variant that maps to the same container
+const AUDIO_EXT_TO_MIME = {
+  mp3: 'audio/mpeg', mp4: 'audio/mp4', mpeg: 'audio/mpeg', mpga: 'audio/mpeg',
+  m4a: 'audio/mp4', ogg: 'audio/ogg', oga: 'audio/ogg',
+  wav: 'audio/wav', wave: 'audio/wav',
+  webm: 'audio/webm', flac: 'audio/flac', aac: 'audio/aac',
+  aif: 'audio/aiff', aiff: 'audio/aiff',
+};
+const AUDIO_MIME_TO_EXT = {
+  'audio/mpeg': 'mp3', 'audio/mp3': 'mp3', 'audio/mp4': 'mp4',
+  'audio/m4a': 'm4a', 'audio/x-m4a': 'm4a',
+  'audio/ogg': 'ogg', 'audio/wav': 'wav', 'audio/wave': 'wav',
+  'audio/x-wav': 'wav', 'audio/vnd.wav': 'wav',
+  'audio/webm': 'webm', 'audio/flac': 'flac', 'audio/aac': 'aac',
+  'audio/aiff': 'aiff', 'audio/x-aiff': 'aiff',
+};
+
 function bytesToHex(bytes) {
   return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
 }
@@ -325,53 +351,36 @@ async function transcribeR2Audio(env, r2Key) {
     );
   }
 
-  const boundary = 'STTBoundary' + crypto.randomUUID().replace(/-/g, '');
-  const enc = new TextEncoder();
-  const contentType = obj.httpMetadata?.contentType || 'audio/mpeg';
-  const fileName = r2Key.split('/').pop() || 'audio.mp3';
+  // Derive format from file extension first (browser sets this correctly at upload time),
+  // then fall back to R2 object metadata. This avoids MIME mismatch when R2 stores an
+  // incomplete or browser-variant type (e.g. audio/x-m4a, audio/wave).
+  const rawFileName = r2Key.split('/').pop() || 'audio';
+  const rawExt = (rawFileName.match(/\.(\w{2,5})$/) || [])[1]?.toLowerCase() || '';
+  const mimeFromExt = AUDIO_EXT_TO_MIME[rawExt] || '';
+  const mimeFromMeta = normalizeAudioMime(obj.httpMetadata?.contentType);
+  const contentType = mimeFromExt || mimeFromMeta || 'audio/mpeg';
 
-  const prefix = enc.encode(
-    `--${boundary}\r\n` +
-    `Content-Disposition: form-data; name="file"; filename="${fileName}"\r\n` +
-    `Content-Type: ${contentType}\r\n\r\n`
-  );
-  const suffix = enc.encode(
-    `\r\n--${boundary}\r\n` +
-    `Content-Disposition: form-data; name="model"\r\n\r\n` +
-    `gpt-4o-mini-transcribe` +
-    `\r\n--${boundary}\r\n` +
-    `Content-Disposition: form-data; name="response_format"\r\n\r\n` +
-    `json` +
-    `\r\n--${boundary}--\r\n`
-  );
+  // Ensure filename always carries a recognized extension for OpenAI format detection.
+  const ext = rawExt || AUDIO_MIME_TO_EXT[contentType] || 'mp3';
+  const fileName = rawExt ? rawFileName : `${rawFileName}.${ext}`;
 
-  const { readable, writable } = new TransformStream();
-  const writer = writable.getWriter();
-  (async () => {
-    try {
-      await writer.write(prefix);
-      const reader = obj.body.getReader();
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        await writer.write(value);
-      }
-      await writer.write(suffix);
-      await writer.close();
-    } catch (e) {
-      await writer.abort(e);
-    }
-  })();
+  // Materialize content into memory as raw bytes, then build a fresh Blob.
+  // Avoids nested-blob serialization issues in Cloudflare Workers (obj.blob() is lazy-stream-backed;
+  // wrapping it in new File([blob]) can produce an empty multipart part in some CF runtime versions).
+  const arrayBuffer = await obj.arrayBuffer();
+  console.log('[STT]', JSON.stringify({ key: r2Key, r2Mime: obj.httpMetadata?.contentType, usedMime: contentType, file: fileName, r2Bytes: obj.size, abBytes: arrayBuffer.byteLength }));
+
+  const sttForm = new FormData();
+  sttForm.append('file', new Blob([arrayBuffer], { type: contentType }), fileName);
+  sttForm.append('model', 'gpt-4o-mini-transcribe');
+  sttForm.append('response_format', 'json');
 
   const sttUrl = getOpenAIEndpoint(env, '/v1/audio/transcriptions', 'stt');
   const sttAuthToken = getOpenAIAuthToken(env, sttUrl, 'stt');
   const sttRes = await fetch(sttUrl, {
     method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${sttAuthToken}`,
-      'Content-Type': `multipart/form-data; boundary=${boundary}`,
-    },
-    body: readable,
+    headers: { 'Authorization': `Bearer ${sttAuthToken}` },
+    body: sttForm,
   });
 
   if (!sttRes.ok) {
@@ -925,15 +934,20 @@ export default {
         }
         if (method === 'DELETE') {
           const subAudios = await sql`
-            SELECT sub.speaking_audio_url
+            SELECT sub.speaking_audio_url, sub.speaking_audio_urls
             FROM submissions sub
             JOIN assignments a ON a.id = sub.assignment_id
-            WHERE a.class_id = ${p.id} AND sub.speaking_audio_url IS NOT NULL
+            WHERE a.class_id = ${p.id}
           `;
           await sql`DELETE FROM classes WHERE id = ${p.id}`;
           for (const sub of subAudios) {
-            const key = extractR2Key(sub.speaking_audio_url, env.R2_PUBLIC_URL);
-            if (key) await env.R2.delete(key).catch(e => console.error('R2 speaking cleanup failed:', e));
+            const entries = Array.isArray(sub.speaking_audio_urls) && sub.speaking_audio_urls.length > 0
+              ? sub.speaking_audio_urls
+              : (sub.speaking_audio_url ? [{ url: sub.speaking_audio_url }] : []);
+            for (const e of entries) {
+              const key = e.key || extractR2Key(e.url, env.R2_PUBLIC_URL);
+              if (key) await env.R2.delete(key).catch(err => console.error('R2 speaking cleanup failed:', err));
+            }
           }
           return json({ ok: true });
         }
@@ -1039,13 +1053,18 @@ export default {
       if ((p = matchPath('/students/:id', path))) {
         if (method === 'DELETE') {
           const subAudios = await sql`
-            SELECT speaking_audio_url FROM submissions
-            WHERE student_id = ${p.id} AND speaking_audio_url IS NOT NULL
+            SELECT speaking_audio_url, speaking_audio_urls FROM submissions
+            WHERE student_id = ${p.id}
           `;
           await sql`DELETE FROM students WHERE id = ${p.id}`;
           for (const sub of subAudios) {
-            const key = extractR2Key(sub.speaking_audio_url, env.R2_PUBLIC_URL);
-            if (key) await env.R2.delete(key).catch(e => console.error('R2 speaking cleanup failed:', e));
+            const entries = Array.isArray(sub.speaking_audio_urls) && sub.speaking_audio_urls.length > 0
+              ? sub.speaking_audio_urls
+              : (sub.speaking_audio_url ? [{ url: sub.speaking_audio_url }] : []);
+            for (const e of entries) {
+              const key = e.key || extractR2Key(e.url, env.R2_PUBLIC_URL);
+              if (key) await env.R2.delete(key).catch(err => console.error('R2 speaking cleanup failed:', err));
+            }
           }
           return json({ ok: true });
         }
@@ -1584,8 +1603,10 @@ export default {
 
         const ct = request.headers.get('Content-Type') || '';
         let studentAnswers = null, writingContent = null, speakingAudioUrl = null, speakingScript = null;
+        let speakingAudioUrls = [];
         let uploadedR2Key = null;
         let directUploadKey = null;
+        let audioUploadKeys = null; // [{key, name}] multi-file
 
         const studentId = String(claims.student_id);
         let audioFile = null;
@@ -1598,21 +1619,18 @@ export default {
           studentAnswers  = body.student_answers  ?? null;
           writingContent  = body.writing_content  ?? null;
           directUploadKey = body.audio_upload_key ?? null;
+          audioUploadKeys = Array.isArray(body.audio_upload_keys) && body.audio_upload_keys.length > 0
+            ? body.audio_upload_keys : null;
         }
 
-        if (!studentId) {
-          if (uploadedR2Key) await env.R2.delete(uploadedR2Key).catch(() => {});
-          return err('student_id là bắt buộc');
-        }
-        if (directUploadKey && isExpectedStudentSpeakingKey(directUploadKey, p.id, studentId)) {
-          uploadedR2Key = directUploadKey;
-        }
+        if (!studentId) return err('student_id là bắt buộc');
 
         const [existing] = await sql`
           SELECT id FROM submissions WHERE assignment_id = ${p.id} AND student_id = ${studentId}
         `;
         if (existing) {
-          if (uploadedR2Key) await env.R2.delete(uploadedR2Key).catch(() => {});
+          if (audioUploadKeys) for (const k of audioUploadKeys) await env.R2.delete(k.key).catch(() => {});
+          else if (directUploadKey) await env.R2.delete(directUploadKey).catch(() => {});
           return err('Bạn đã nộp bài này rồi', 409);
         }
 
@@ -1624,27 +1642,22 @@ export default {
           WHERE a.id = ${p.id}
         `;
         if (!assignment) {
-          if (uploadedR2Key) await env.R2.delete(uploadedR2Key).catch(() => {});
+          if (audioUploadKeys) for (const k of audioUploadKeys) await env.R2.delete(k.key).catch(() => {});
+          else if (directUploadKey) await env.R2.delete(directUploadKey).catch(() => {});
           return err('Không tìm thấy bài tập', 404);
         }
-        // Phương án X: deadline alone does NOT block submit. Only is_active matters —
-        // teacher may have manually re-opened an overdue assignment to allow late submissions.
         if (!assignment.is_active) {
-          if (uploadedR2Key) await env.R2.delete(uploadedR2Key).catch(() => {});
+          if (audioUploadKeys) for (const k of audioUploadKeys) await env.R2.delete(k.key).catch(() => {});
+          else if (directUploadKey) await env.R2.delete(directUploadKey).catch(() => {});
           return err('Bài tập đã đóng', 403);
         }
 
         if (audioFile && audioFile.size > 0) {
+          // Legacy multipart upload path (single file)
           const MAX_AUDIO_MB = 50;
-          if (audioFile.size > MAX_AUDIO_MB * 1024 * 1024) {
-            return err(`File quá lớn — tối đa ${MAX_AUDIO_MB}MB`, 413);
-          }
-          if (!isAudioContentType(audioFile.type)) {
-            return err('Chỉ chấp nhận file âm thanh', 415);
-          }
-          if (!env.OPENAI_API_KEY) {
-            return err('Chưa cấu hình OPENAI_API_KEY trên server', 500);
-          }
+          if (audioFile.size > MAX_AUDIO_MB * 1024 * 1024) return err(`File quá lớn — tối đa ${MAX_AUDIO_MB}MB`, 413);
+          if (!isAudioContentType(audioFile.type)) return err('Chỉ chấp nhận file âm thanh', 415);
+          if (!env.OPENAI_API_KEY) return err('Chưa cấu hình OPENAI_API_KEY trên server', 500);
 
           const openaiForm = new FormData();
           openaiForm.append('file', audioFile, audioFile.name || 'audio.webm');
@@ -1661,28 +1674,46 @@ export default {
 
           if (!aiRes.ok) {
             const aiText = await aiRes.text();
-            console.error('OpenAI STT error:', JSON.stringify({
-              endpoint: sttUrl,
-              colo: request.cf?.colo || null,
-              error: parseOpenAIError(aiText),
-              raw: aiText,
-            }));
-            if (isUnsupportedRegionOpenAIError(aiText)) {
-              return err('Dịch vụ nhận diện giọng nói đang bị chặn theo vùng từ hạ tầng hiện tại. Nếu app đang chạy qua Cloudflare Worker, hãy route STT qua một server/proxy khác rồi thử lại.', 502);
-            }
+            console.error('OpenAI STT error:', JSON.stringify({ endpoint: sttUrl, colo: request.cf?.colo || null, error: parseOpenAIError(aiText), raw: aiText }));
+            if (isUnsupportedRegionOpenAIError(aiText)) return err('Dịch vụ nhận diện giọng nói đang bị chặn theo vùng từ hạ tầng hiện tại. Nếu app đang chạy qua Cloudflare Worker, hãy route STT qua một server/proxy khác rồi thử lại.', 502);
             return err('Không thể nhận diện giọng nói (STT Failed). Nộp bài thất bại.', 500);
           }
-
           const transcriptData = await aiRes.json();
           speakingScript = transcriptData.text || '';
-
           uploadedR2Key = buildStudentSpeakingKey(p.id, studentId, audioFile.name || 'audio.webm');
-          await env.R2.put(uploadedR2Key, audioFile.stream(), {
-            httpMetadata: { contentType: audioFile.type },
-          });
+          await env.R2.put(uploadedR2Key, audioFile.stream(), { httpMetadata: { contentType: audioFile.type } });
           speakingAudioUrl = buildR2PublicUrl(env, uploadedR2Key);
+          speakingAudioUrls = [{ url: speakingAudioUrl, key: uploadedR2Key, name: '' }];
+
+        } else if (audioUploadKeys) {
+          // Multi-file presigned upload path
+          const validKeys = audioUploadKeys.filter(item => item.key && isExpectedStudentSpeakingKey(item.key, p.id, studentId));
+          if (validKeys.length === 0) {
+            for (const k of audioUploadKeys) await env.R2.delete(k.key).catch(() => {});
+            return err('audio_upload_keys không hợp lệ', 400);
+          }
+          const parts = [];
+          const processedKeys = [];
+          try {
+            for (const item of validKeys) {
+              const transcriptData = await transcribeR2Audio(env, item.key);
+              const label = item.name || item.key.split('/').pop();
+              parts.push(`--- Transcript: ${label} ---\n${transcriptData.text || ''}`);
+              speakingAudioUrls.push({ url: buildR2PublicUrl(env, item.key), key: item.key, name: item.name || '' });
+              processedKeys.push(item.key);
+            }
+          } catch (sttErr) {
+            for (const k of validKeys) await env.R2.delete(k.key).catch(() => {});
+            return err(sttErr.message || 'Không thể nhận diện giọng nói (STT Failed). Nộp bài thất bại.', sttErr.statusCode || 500);
+          }
+          speakingScript = parts.join('\n\n\n');
+          speakingAudioUrl = speakingAudioUrls[0]?.url || null;
+          uploadedR2Key = validKeys[0]?.key || null;
+
         } else if (directUploadKey) {
+          // Legacy single presigned key
           if (!isExpectedStudentSpeakingKey(directUploadKey, p.id, studentId)) {
+            await env.R2.delete(directUploadKey).catch(() => {});
             return err('audio_upload_key không hợp lệ', 400);
           }
           uploadedR2Key = directUploadKey;
@@ -1690,8 +1721,9 @@ export default {
             const transcriptData = await transcribeR2Audio(env, directUploadKey);
             speakingScript = transcriptData.text || '';
             speakingAudioUrl = buildR2PublicUrl(env, directUploadKey);
+            speakingAudioUrls = [{ url: speakingAudioUrl, key: directUploadKey, name: '' }];
           } catch (sttErr) {
-            if (uploadedR2Key) await env.R2.delete(uploadedR2Key).catch(() => {});
+            await env.R2.delete(directUploadKey).catch(() => {});
             return err(sttErr.message || 'Không thể nhận diện giọng nói (STT Failed). Nộp bài thất bại.', sttErr.statusCode || 500);
           }
         }
@@ -1704,17 +1736,19 @@ export default {
         try {
           const [submission] = await sql`
             INSERT INTO submissions
-              (assignment_id, student_id, student_answers, writing_content, speaking_script, speaking_audio_url, overall_score)
+              (assignment_id, student_id, student_answers, writing_content, speaking_script, speaking_audio_url, speaking_audio_urls, overall_score)
             VALUES (
               ${p.id}, ${studentId},
               ${studentAnswers ? JSON.stringify(studentAnswers) : null},
-              ${writingContent}, ${speakingScript}, ${speakingAudioUrl}, ${overallScore}
+              ${writingContent}, ${speakingScript}, ${speakingAudioUrl},
+              ${JSON.stringify(speakingAudioUrls)}::jsonb, ${overallScore}
             )
             RETURNING *
           `;
           return json(submission, 201);
         } catch (dbErr) {
-          if (uploadedR2Key) await env.R2.delete(uploadedR2Key).catch(() => {});
+          if (audioUploadKeys) for (const k of audioUploadKeys) await env.R2.delete(k.key).catch(() => {});
+          else if (uploadedR2Key) await env.R2.delete(uploadedR2Key).catch(() => {});
           throw dbErr;
         }
       }
@@ -1738,13 +1772,18 @@ export default {
         }
         if (method === 'DELETE') {
           const subAudios = await sql`
-            SELECT speaking_audio_url FROM submissions
-            WHERE assignment_id = ${p.id} AND speaking_audio_url IS NOT NULL
+            SELECT speaking_audio_url, speaking_audio_urls FROM submissions
+            WHERE assignment_id = ${p.id}
           `;
           await sql`DELETE FROM assignments WHERE id = ${p.id}`;
           for (const sub of subAudios) {
-            const key = extractR2Key(sub.speaking_audio_url, env.R2_PUBLIC_URL);
-            if (key) await env.R2.delete(key).catch(e => console.error('R2 speaking cleanup failed:', e));
+            const entries = Array.isArray(sub.speaking_audio_urls) && sub.speaking_audio_urls.length > 0
+              ? sub.speaking_audio_urls
+              : (sub.speaking_audio_url ? [{ url: sub.speaking_audio_url }] : []);
+            for (const e of entries) {
+              const key = e.key || extractR2Key(e.url, env.R2_PUBLIC_URL);
+              if (key) await env.R2.delete(key).catch(err => console.error('R2 speaking cleanup failed:', err));
+            }
           }
           return json({ ok: true });
         }
@@ -1765,7 +1804,7 @@ export default {
           if (!studentId) return err('student_id là bắt buộc', 400);
 
           const [sub] = await sql`
-            SELECT sub.*, a.title AS assignment_title, q.skill, q.questions_data, q.content_text, q.content_blocks, q.content_url, q.vocabulary, q.script
+            SELECT sub.*, a.title AS assignment_title, q.skill, q.questions_data, q.content_text, q.content_blocks, q.content_url, q.content_urls, q.vocabulary, q.script
             FROM submissions sub
             JOIN assignments a ON a.id = sub.assignment_id
             JOIN question_pool q ON q.id = a.question_id

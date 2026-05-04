@@ -104,6 +104,42 @@ const AUDIO_MIME_TO_EXT = {
   'audio/aiff': 'aiff', 'audio/x-aiff': 'aiff',
 };
 
+// Detect true audio format from file magic bytes, regardless of extension or MIME metadata.
+// Returns { mime, ext } or null if unrecognised.
+function sniffAudioFormat(buf) {
+  const b = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+  if (b.length < 4) return null;
+
+  // WAV: RIFF????WAVE
+  if (b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46) {
+    if (b.length >= 12 && b[8] === 0x57 && b[9] === 0x41 && b[10] === 0x56 && b[11] === 0x45)
+      return { mime: 'audio/wav', ext: 'wav' };
+  }
+  // MP3: ID3 tag header
+  if (b[0] === 0x49 && b[1] === 0x44 && b[2] === 0x33)
+    return { mime: 'audio/mpeg', ext: 'mp3' };
+  // MP3: MPEG sync word FF E*/F*
+  if (b[0] === 0xFF && (b[1] & 0xE0) === 0xE0 && (b[1] & 0x06) !== 0)
+    return { mime: 'audio/mpeg', ext: 'mp3' };
+  // OGG: OggS
+  if (b[0] === 0x4F && b[1] === 0x67 && b[2] === 0x67 && b[3] === 0x53)
+    return { mime: 'audio/ogg', ext: 'ogg' };
+  // FLAC: fLaC
+  if (b[0] === 0x66 && b[1] === 0x4C && b[2] === 0x61 && b[3] === 0x43)
+    return { mime: 'audio/flac', ext: 'flac' };
+  // WebM / EBML: 1A 45 DF A3
+  if (b[0] === 0x1A && b[1] === 0x45 && b[2] === 0xDF && b[3] === 0xA3)
+    return { mime: 'audio/webm', ext: 'webm' };
+  // MP4 / M4A: ftyp box at offset 4
+  if (b.length >= 8 && b[4] === 0x66 && b[5] === 0x74 && b[6] === 0x79 && b[7] === 0x70)
+    return { mime: 'audio/mp4', ext: 'm4a' };
+  // AAC ADTS: FF F1 (MPEG-4) or FF F9 (MPEG-2)
+  if (b[0] === 0xFF && (b[1] === 0xF1 || b[1] === 0xF9))
+    return { mime: 'audio/aac', ext: 'aac' };
+
+  return null;
+}
+
 function bytesToHex(bytes) {
   return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
 }
@@ -358,16 +394,23 @@ async function transcribeR2Audio(env, r2Key) {
   const rawExt = (rawFileName.match(/\.(\w{2,5})$/) || [])[1]?.toLowerCase() || '';
   const mimeFromExt = AUDIO_EXT_TO_MIME[rawExt] || '';
   const mimeFromMeta = normalizeAudioMime(obj.httpMetadata?.contentType);
-  const contentType = mimeFromExt || mimeFromMeta || 'audio/mpeg';
+  let contentType = mimeFromExt || mimeFromMeta || 'audio/mpeg';
 
   // Ensure filename always carries a recognized extension for OpenAI format detection.
   const ext = rawExt || AUDIO_MIME_TO_EXT[contentType] || 'mp3';
-  const fileName = rawExt ? rawFileName : `${rawFileName}.${ext}`;
+  let fileName = rawExt ? rawFileName : `${rawFileName}.${ext}`;
 
-  // Materialize content into memory as raw bytes, then build a fresh Blob.
-  // Avoids nested-blob serialization issues in Cloudflare Workers (obj.blob() is lazy-stream-backed;
-  // wrapping it in new File([blob]) can produce an empty multipart part in some CF runtime versions).
+  // Materialize content into memory as raw bytes, then sniff actual format from magic bytes.
+  // This corrects files whose extension/MIME lies about the true container
+  // (e.g. a WAV file renamed to .mp3 — OpenAI would reject it as "corrupted").
   const arrayBuffer = await obj.arrayBuffer();
+  const sniffed = sniffAudioFormat(new Uint8Array(arrayBuffer, 0, Math.min(12, arrayBuffer.byteLength)));
+  if (sniffed && sniffed.mime !== contentType) {
+    const baseName = rawFileName.replace(/\.\w{2,5}$/, '') || 'audio';
+    console.log('[STT sniff override]', JSON.stringify({ was: { mime: contentType, file: fileName }, now: { mime: sniffed.mime, ext: sniffed.ext } }));
+    contentType = sniffed.mime;
+    fileName = `${baseName}.${sniffed.ext}`;
+  }
   console.log('[STT]', JSON.stringify({ key: r2Key, r2Mime: obj.httpMetadata?.contentType, usedMime: contentType, file: fileName, r2Bytes: obj.size, abBytes: arrayBuffer.byteLength }));
 
   const sttForm = new FormData();

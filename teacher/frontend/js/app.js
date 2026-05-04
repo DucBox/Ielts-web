@@ -46,6 +46,56 @@ function escapeHtml(str) {
     .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+function renderMarkdownInline(text) {
+  return escapeHtml(text)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*([^*\n]+)\*/g, '<em>$1</em>');
+}
+
+function renderSafeMarkdown(markdown) {
+  const lines = String(markdown || '').replace(/\r\n/g, '\n').split('\n');
+  const html = [];
+  let listType = null;
+  const closeList = () => {
+    if (!listType) return;
+    html.push(`</${listType}>`);
+    listType = null;
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) {
+      closeList();
+      continue;
+    }
+
+    const bullet = line.match(/^[-*]\s+(.+)$/);
+    const numbered = line.match(/^\d+\.\s+(.+)$/);
+    if (bullet || numbered) {
+      const nextListType = bullet ? 'ul' : 'ol';
+      if (listType !== nextListType) {
+        closeList();
+        html.push(`<${nextListType}>`);
+        listType = nextListType;
+      }
+      html.push(`<li>${renderMarkdownInline((bullet || numbered)[1])}</li>`);
+      continue;
+    }
+
+    closeList();
+    const heading = line.match(/^(#{2,4})\s+(.+)$/);
+    if (heading) {
+      html.push(`<h5>${renderMarkdownInline(heading[2])}</h5>`);
+    } else {
+      html.push(`<p>${renderMarkdownInline(line)}</p>`);
+    }
+  }
+
+  closeList();
+  return html.join('');
+}
+
 function btnLoading(btn) {
   if (!btn) return;
   btn._origHTML = btn.innerHTML;
@@ -1662,34 +1712,117 @@ function refreshAiFeedbackDisplay() {
   const el = document.getElementById('ai-feedback-display');
   if (!el) return;
   if (!_gradingAiFeedback) {
-    el.innerHTML = `<div style="font-size:12px;color:var(--gray-400);text-align:center;padding:8px 0">
+    el.innerHTML = `<div class="ai-feedback-empty">
       Nhấn "✨ Phân tích AI" để nhận gợi ý từ AI về từ vựng và ngữ pháp.
     </div>`;
     return;
   }
   const f = _gradingAiFeedback;
-  const genTime = f.generated_at ? `<span style="font-size:10px;color:var(--gray-400)">Tạo lúc ${formatDateTime(f.generated_at)}</span>` : '';
+  const lr = getAiCriterionForDisplay(f, 'lr');
+  const gra = getAiCriterionForDisplay(f, 'gra');
+  const genTime = f.generated_at ? `<span class="ai-feedback-time">Tạo lúc ${formatDateTime(f.generated_at)}</span>` : '';
   el.innerHTML = `
-    <div style="display:flex;gap:6px;margin-bottom:10px">
-      ${aiBandChip('LR', f.lr_score)}
-      ${aiBandChip('GRA', f.gra_score)}
+    <div class="ai-feedback-head">
+      <div class="ai-feedback-chips">
+        ${aiBandChip('LR', f.lr_score)}
+        ${aiBandChip('GRA', f.gra_score)}
+      </div>
+      ${genTime}
     </div>
-    <div class="ai-feedback-block">
-      <div class="ai-feedback-criterion">📚 Từ vựng (LR) — ${f.lr_score ?? '—'}/9</div>
-      <div class="ai-feedback-text">${escapeHtml(f.lr_feedback || '')}</div>
-    </div>
-    <div class="ai-feedback-block" style="margin-top:8px">
-      <div class="ai-feedback-criterion">📐 Ngữ pháp (GRA) — ${f.gra_score ?? '—'}/9</div>
-      <div class="ai-feedback-text">${escapeHtml(f.gra_feedback || '')}</div>
-    </div>
-    <div style="text-align:right;margin-top:6px">${genTime}</div>`;
+    ${renderAiCriterionCard('📚', 'Từ vựng', 'LR', f.lr_score, lr)}
+    ${renderAiCriterionCard('📐', 'Ngữ pháp', 'GRA', f.gra_score, gra)}`;
 }
 
 function aiBandChip(label, score) {
   const s = parseFloat(score);
   const color = s >= 7 ? '#16a34a' : s >= 5 ? '#ca8a04' : '#dc2626';
-  return `<span style="background:${color}15;color:${color};border:1px solid ${color}40;
-    border-radius:20px;padding:2px 10px;font-size:12px;font-weight:700">${label} ${score ?? '—'}</span>`;
+  return `<span class="ai-band-chip" style="--chip-color:${color}">${label} ${score ?? '—'}</span>`;
+}
+
+function getAiCriterionForDisplay(feedback, key) {
+  const structured = feedback?.[key];
+  const hasStructured = structured && typeof structured === 'object'
+    && ['band_justification_md', 'strengths_md', 'errors_md', 'tips_md'].some(k => structured[k]);
+  if (hasStructured) {
+    const criterion = {
+      band_justification_md: structured.band_justification_md || '',
+      strengths_md: structured.strengths_md || '',
+      errors_md: structured.errors_md || '',
+      tips_md: structured.tips_md || '',
+    };
+    const onlyBandBlob = criterion.band_justification_md
+      && !criterion.strengths_md
+      && !criterion.errors_md
+      && !criterion.tips_md;
+    return onlyBandBlob ? parseLegacyAiFeedbackText(criterion.band_justification_md) : criterion;
+  }
+
+  return parseLegacyAiFeedbackText(feedback?.[`${key}_feedback`] || '');
+}
+
+function parseLegacyAiFeedbackText(text) {
+  const raw = String(text || '').trim();
+  const empty = {
+    band_justification_md: '',
+    strengths_md: '',
+    errors_md: '',
+    tips_md: '',
+  };
+  if (!raw) return empty;
+
+  const labels = {
+    'band justification': 'band_justification_md',
+    'lý do band': 'band_justification_md',
+    'strengths': 'strengths_md',
+    'điểm mạnh': 'strengths_md',
+    'errors & weaknesses': 'errors_md',
+    'lỗi & điểm yếu': 'errors_md',
+    'improvement tips': 'tips_md',
+    'gợi ý cải thiện': 'tips_md',
+  };
+  const pattern = /(?:\*\*)?(Band justification|Lý do band|Strengths|Điểm mạnh|Errors\s*&\s*weaknesses|Lỗi\s*&\s*điểm yếu|Improvement tips|Gợi ý cải thiện)(?:\*\*)?\s*:/gi;
+  const matches = [...raw.matchAll(pattern)];
+  if (matches.length === 0) {
+    return { ...empty, band_justification_md: raw };
+  }
+
+  const parsed = { ...empty };
+  matches.forEach((match, idx) => {
+    const key = labels[match[1].toLowerCase().replace(/\s+/g, ' ')];
+    if (!key) return;
+    const start = match.index + match[0].length;
+    const end = idx + 1 < matches.length ? matches[idx + 1].index : raw.length;
+    const value = raw.slice(start, end).trim();
+    if (value) parsed[key] = value;
+  });
+  return parsed;
+}
+
+function renderAiCriterionCard(icon, title, code, score, criterion) {
+  const sections = [
+    ['Lý do band', criterion.band_justification_md],
+    ['Điểm mạnh', criterion.strengths_md],
+    ['Lỗi & điểm yếu', criterion.errors_md],
+    ['Gợi ý cải thiện', criterion.tips_md],
+  ].filter(([, body]) => String(body || '').trim());
+
+  return `
+    <div class="ai-feedback-card">
+      <div class="ai-feedback-card-head">
+        <div>
+          <div class="ai-feedback-criterion">${icon} ${title} (${code})</div>
+          <div class="ai-feedback-score">${score ?? '—'}/9</div>
+        </div>
+      </div>
+      <div class="ai-feedback-sections">
+        ${sections.map(([label, body]) => `
+          <section class="ai-feedback-md-section">
+            <div class="ai-feedback-section-label">${escapeHtml(label)}</div>
+            <div class="ai-feedback-markdown">${renderSafeMarkdown(body)}</div>
+          </section>
+        `).join('')}
+      </div>
+    </div>`;
 }
 
 async function requestAiFeedback(btn) {

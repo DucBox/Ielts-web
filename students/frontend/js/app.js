@@ -2232,7 +2232,7 @@ renderProfile = function(assignments, profileData) {
 
       <section id="profile-info" class="profile-anchor-section">
       <div class="profile-section-title">📋 Thông tin cá nhân</div>
-      <div class="pi-card">
+      <div class="pi-card${profileData.fields.length === 0 ? ' pi-card--compact' : ''}">
         <div class="pi-account-box">
           <div>
             <div class="pi-label">Username đăng nhập</div>
@@ -2241,31 +2241,42 @@ renderProfile = function(assignments, profileData) {
           <button type="button" class="btn btn-outline pi-account-btn" onclick="openChangePasswordModal()">🔐 Đổi mật khẩu</button>
         </div>
         ${profileData.fields.length === 0
-          ? `<div class="pi-empty">Giáo viên chưa thêm câu hỏi hồ sơ nào.</div>`
-          : `<div class="pi-fields" id="pi-fields">
-              ${profileData.fields.map(f => {
-                const val = profileData.answers[f.id] || '';
-                const inputId = `pi-field-${f.id}`;
-                let inputEl;
-                if (f.field_type === 'textarea') {
-                  inputEl = `<textarea id="${inputId}" class="form-input pi-input" data-field-id="${f.id}" rows="3" placeholder="Chưa có dữ liệu">${escapeHtml(val)}</textarea>`;
-                } else if (f.field_type === 'select' && Array.isArray(f.options)) {
-                  const opts = f.options.map(o => `<option value="${escapeHtml(String(o))}" ${val === String(o) ? 'selected' : ''}>${escapeHtml(String(o))}</option>`).join('');
-                  inputEl = `<select id="${inputId}" class="form-input pi-input" data-field-id="${f.id}"><option value="">-- Chưa chọn --</option>${opts}</select>`;
-                } else if (f.field_type === 'date') {
-                  inputEl = `<input id="${inputId}" class="form-input pi-input" type="date" data-field-id="${f.id}" value="${escapeHtml(val)}" />`;
-                } else {
-                  inputEl = `<input id="${inputId}" class="form-input pi-input" type="text" data-field-id="${f.id}" value="${escapeHtml(val)}" placeholder="Chưa có dữ liệu" />`;
-                }
-                return `<div class="pi-field">
-                  <label class="pi-label" for="${inputId}">${escapeHtml(f.label)}</label>
-                  ${inputEl}
-                </div>`;
-              }).join('')}
-            </div>
-            <div class="pi-actions">
-              <button class="btn btn-primary" id="pi-save-btn" onclick="saveProfileAnswers(this)">Lưu thông tin</button>
-            </div>`
+          ? ''
+          : `<details class="pi-details">
+              <summary class="pi-details-summary">
+                <span>
+                  <span class="pi-details-title">Thông tin chi tiết</span>
+                  <span class="pi-details-sub">${profileData.fields.length} mục hồ sơ</span>
+                </span>
+                <span class="pi-details-arrow">⌄</span>
+              </summary>
+              <div class="pi-details-body">
+                <div class="pi-fields" id="pi-fields">
+                  ${profileData.fields.map(f => {
+                    const val = profileData.answers[f.id] || '';
+                    const inputId = `pi-field-${f.id}`;
+                    let inputEl;
+                    if (f.field_type === 'textarea') {
+                      inputEl = `<textarea id="${inputId}" class="form-input pi-input" data-field-id="${f.id}" rows="3" placeholder="Chưa có dữ liệu">${escapeHtml(val)}</textarea>`;
+                    } else if (f.field_type === 'select' && Array.isArray(f.options)) {
+                      const opts = f.options.map(o => `<option value="${escapeHtml(String(o))}" ${val === String(o) ? 'selected' : ''}>${escapeHtml(String(o))}</option>`).join('');
+                      inputEl = `<select id="${inputId}" class="form-input pi-input" data-field-id="${f.id}"><option value="">-- Chưa chọn --</option>${opts}</select>`;
+                    } else if (f.field_type === 'date') {
+                      inputEl = `<input id="${inputId}" class="form-input pi-input" type="date" data-field-id="${f.id}" value="${escapeHtml(val)}" />`;
+                    } else {
+                      inputEl = `<input id="${inputId}" class="form-input pi-input" type="text" data-field-id="${f.id}" value="${escapeHtml(val)}" placeholder="Chưa có dữ liệu" />`;
+                    }
+                    return `<div class="pi-field">
+                      <label class="pi-label" for="${inputId}">${escapeHtml(f.label)}</label>
+                      ${inputEl}
+                    </div>`;
+                  }).join('')}
+                </div>
+                <div class="pi-actions">
+                  <button class="btn btn-primary" id="pi-save-btn" onclick="saveProfileAnswers(this)">Lưu thông tin</button>
+                </div>
+              </div>
+            </details>`
         }
       </div>
       </section>

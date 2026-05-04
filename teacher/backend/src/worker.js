@@ -705,20 +705,63 @@ For each criterion, your feedback MUST include:
 ## Output format (strict JSON only, no markdown outside JSON):
 {
   "lr_score": <number 0–9 in 0.5 steps>,
-  "lr_feedback": "<detailed Vietnamese analysis covering: band justification, strengths with quotes, specific errors with corrections, improvement tips>",
+  "lr": {
+    "band_justification_md": "<Vietnamese markdown, 1 short paragraph>",
+    "strengths_md": "<Vietnamese markdown bullet list with 1-2 bullets>",
+    "errors_md": "<Vietnamese markdown bullet list with specific wrong phrase → correction pairs, or '- Không thấy lỗi nổi bật.'>",
+    "tips_md": "<Vietnamese markdown bullet list with 1-2 coaching tips>"
+  },
   "gra_score": <number 0–9 in 0.5 steps>,
-  "gra_feedback": "<detailed Vietnamese analysis covering: band justification, strengths with quotes, specific errors with corrections, improvement tips>"
+  "gra": {
+    "band_justification_md": "<Vietnamese markdown, 1 short paragraph>",
+    "strengths_md": "<Vietnamese markdown bullet list with 1-2 bullets>",
+    "errors_md": "<Vietnamese markdown bullet list with specific wrong phrase → correction pairs, or '- Không thấy lỗi nổi bật.'>",
+    "tips_md": "<Vietnamese markdown bullet list with 1-2 coaching tips>"
+  }
 }
 
 Critical rules:
 - Scores MUST be multiples of 0.5 between 0 and 9. Be calibrated and honest — do not inflate.
 - ALL feedback text MUST be in Vietnamese.
 - Quote exact phrases from the student's text when that evidence is useful and clear (use double quotes around quotes).
-- Keep feedback concise and practical — usually around 80-120 Vietnamese words per criterion is enough.
+- Markdown is allowed ONLY inside the *_md string fields. Use **bold**, *italic*, bullet lists, and inline code sparingly. Do not output HTML.
+- Keep feedback concise and practical — usually around 80-140 Vietnamese words per criterion is enough.
 - You MUST first check whether the student actually answered the task/topic. If the response is completely off-topic or answers the wrong prompt (for example, describing a person when the task asks for a place), clearly state "Sai đề" or "Lạc đề" in the feedback.
 - If the response is completely off-topic / wrong-task, assign 0.0 for both LR and GRA, briefly explain why it is wrong-task, and do not give normal band justification as if the task had been answered correctly.
 - This analysis is for the teacher's reference only, not shown directly to students.
 - Output ONLY valid JSON. Absolutely no text before or after the JSON object.`;
+
+const AI_FEEDBACK_RESPONSE_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['lr_score', 'lr', 'gra_score', 'gra'],
+  properties: {
+    lr_score: { type: 'number' },
+    lr: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['band_justification_md', 'strengths_md', 'errors_md', 'tips_md'],
+      properties: {
+        band_justification_md: { type: 'string' },
+        strengths_md: { type: 'string' },
+        errors_md: { type: 'string' },
+        tips_md: { type: 'string' },
+      },
+    },
+    gra_score: { type: 'number' },
+    gra: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['band_justification_md', 'strengths_md', 'errors_md', 'tips_md'],
+      properties: {
+        band_justification_md: { type: 'string' },
+        strengths_md: { type: 'string' },
+        errors_md: { type: 'string' },
+        tips_md: { type: 'string' },
+      },
+    },
+  },
+};
 
 function buildWritingPrompt(questionText, writingContent) {
   return [
@@ -747,16 +790,62 @@ function buildSpeakingPrompt(questionText, speakingScript) {
 
 function extractOutputText(aiData) {
   if (typeof aiData.output_text === 'string') return aiData.output_text;
+  const chunks = [];
   if (Array.isArray(aiData.output)) {
     for (const item of aiData.output) {
       if (item.type === 'message' && Array.isArray(item.content)) {
         for (const c of item.content) {
-          if (c.type === 'output_text') return c.text;
+          if (c.type === 'output_text' && typeof c.text === 'string') chunks.push(c.text);
         }
       }
     }
   }
-  return '';
+  return chunks.join('\n').trim();
+}
+
+function normalizeMarkdownSection(value) {
+  return String(value || '').trim();
+}
+
+function buildCriterionFallbackMarkdown(criterion) {
+  const parts = [
+    criterion.band_justification_md ? `**Lý do band:**\n${criterion.band_justification_md}` : '',
+    criterion.strengths_md ? `**Điểm mạnh:**\n${criterion.strengths_md}` : '',
+    criterion.errors_md ? `**Lỗi & điểm yếu:**\n${criterion.errors_md}` : '',
+    criterion.tips_md ? `**Gợi ý cải thiện:**\n${criterion.tips_md}` : '',
+  ].filter(Boolean);
+  return parts.join('\n\n');
+}
+
+function normalizeAiCriterion(value, legacyText = '') {
+  const obj = value && typeof value === 'object' ? value : {};
+  const criterion = {
+    band_justification_md: normalizeMarkdownSection(obj.band_justification_md),
+    strengths_md: normalizeMarkdownSection(obj.strengths_md),
+    errors_md: normalizeMarkdownSection(obj.errors_md),
+    tips_md: normalizeMarkdownSection(obj.tips_md),
+  };
+
+  if (!Object.values(criterion).some(Boolean) && legacyText) {
+    criterion.band_justification_md = normalizeMarkdownSection(legacyText);
+  }
+
+  return criterion;
+}
+
+function normalizeAiFeedbackPayload(feedback) {
+  const lr = normalizeAiCriterion(feedback.lr, feedback.lr_feedback);
+  const gra = normalizeAiCriterion(feedback.gra, feedback.gra_feedback);
+  return {
+    schema_version: 2,
+    lr_score: feedback.lr_score,
+    lr,
+    lr_feedback: buildCriterionFallbackMarkdown(lr),
+    gra_score: feedback.gra_score,
+    gra,
+    gra_feedback: buildCriterionFallbackMarkdown(gra),
+    generated_at: new Date().toISOString(),
+  };
 }
 
 // ─── Assignment auto-close ────────────────────────────────────────────────────
@@ -1891,6 +1980,14 @@ export default {
           },
           body: JSON.stringify({
             model: 'gpt-5-mini',
+            text: {
+              format: {
+                type: 'json_schema',
+                name: 'ielts_ai_feedback',
+                strict: true,
+                schema: AI_FEEDBACK_RESPONSE_SCHEMA,
+              },
+            },
             input: [
               { role: 'developer', content: IELTS_SYSTEM_PROMPT },
               { role: 'user',      content: prompt },
@@ -1923,13 +2020,7 @@ export default {
           return err('AI trả về định dạng không hợp lệ', 502);
         }
 
-        const aiFeedback = {
-          lr_score:     feedback.lr_score,
-          lr_feedback:  feedback.lr_feedback,
-          gra_score:    feedback.gra_score,
-          gra_feedback: feedback.gra_feedback,
-          generated_at: new Date().toISOString(),
-        };
+        const aiFeedback = normalizeAiFeedbackPayload(feedback);
 
         const [updated] = await sql`
           UPDATE submissions

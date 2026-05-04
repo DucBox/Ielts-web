@@ -3468,13 +3468,12 @@ async function submitQuestionEdit(id, btn) {
 // PAGE: QUESTION FORM (Tạo đề mới)
 // ═══════════════════════════════════════════════════════════════════════════
 
-let _audioFile  = null;
-let _audioUploadUrl = null;
-let _audioUploadKey = null;
-let _audioUploadName = '';
-let _audioUploadSize = 0;
-let _audioUploading = false;
+// Multi-audio state: each item = {file, url, key, name, size, status:'uploading'|'done'|'error', pct, eta}
+let _audioFiles = [];
+let _audioUploading = false; // true if any slot still in progress
 let _scriptTranscribing = false;
+// Legacy aliases kept for compat with showQuestionForm reset
+let _audioFile = null, _audioUploadUrl = null, _audioUploadKey = null, _audioUploadName = '', _audioUploadSize = 0;
 let _vocabItems = [];
 let _pendingLocationRow = null;
 
@@ -3526,11 +3525,8 @@ function renderVocabList() {
 }
 
 function showQuestionForm() {
-  _audioFile = null;
-  _audioUploadUrl = null;
-  _audioUploadKey = null;
-  _audioUploadName = '';
-  _audioUploadSize = 0;
+  _audioFiles = [];
+  _audioFile = null; _audioUploadUrl = null; _audioUploadKey = null; _audioUploadName = ''; _audioUploadSize = 0;
   _audioUploading = false;
   $('#app').innerHTML = `
     <a class="back-link" onclick="navigate('/questions')">← Kho đề</a>
@@ -3584,11 +3580,8 @@ function showQuestionForm() {
 function onSkillChange(skill) {
   _vocabItems = [];
   _contentBlocks = [];
-  _audioFile = null;
-  _audioUploadUrl = null;
-  _audioUploadKey = null;
-  _audioUploadName = '';
-  _audioUploadSize = 0;
+  _audioFiles = [];
+  _audioFile = null; _audioUploadUrl = null; _audioUploadKey = null; _audioUploadName = ''; _audioUploadSize = 0;
   _audioUploading = false;
   _scriptTranscribing = false;
   const section = $('#skill-section');
@@ -3889,35 +3882,77 @@ function attachPdfImport() {
 
 function audioUploadHtml() {
   return `
-    <div id="audio-upload-area" class="audio-upload-area" onclick="$('#audio-file-input').click()">
-      <input id="audio-file-input" type="file" accept="audio/*" onchange="onAudioSelected(this)" />
-      <div id="audio-placeholder">
-        <div style="font-size:32px;margin-bottom:8px">🎵</div>
-        <div style="font-weight:600;margin-bottom:4px">Chọn hoặc kéo file audio</div>
-        <div style="font-size:12px;color:var(--gray-400)">MP3, WAV, M4A... tối đa 200MB. File sẽ được upload ngay sau khi chọn.</div>
+    <div id="audio-upload-area">
+      <div id="audio-file-list"></div>
+      <div class="audio-add-row">
+        <input id="audio-file-input" type="file" accept="audio/*" multiple style="display:none" onchange="onAudioFilesSelected(this)" />
+        <div class="audio-drop-zone" onclick="$('#audio-file-input').click()">
+          <span style="font-size:24px">🎵</span>
+          <span style="font-weight:600">Chọn hoặc kéo file audio</span>
+          <span style="font-size:12px;color:var(--gray-400)">MP3, WAV, M4A... tối đa 200MB/file · Có thể chọn nhiều file</span>
+        </div>
       </div>
     </div>`;
+}
+
+function _renderAudioFileList() {
+  const listEl = $('#audio-file-list');
+  if (!listEl) return;
+  if (_audioFiles.length === 0) { listEl.innerHTML = ''; return; }
+  listEl.innerHTML = _audioFiles.map((f, i) => {
+    const sizeMb = (f.size / 1024 / 1024).toFixed(1);
+    if (f.status === 'uploading') {
+      const etaStr = f.pct < 100 && f.eta != null ? ` · ETA ${_fmtEta(f.eta)}` : '';
+      return `<div class="audio-file-row audio-uploading">
+        <span class="audio-order">${i + 1}</span>
+        <div class="audio-file-info">
+          <strong>${escapeHtml(f.name)}</strong>
+          <span style="color:var(--gray-400)">(${sizeMb} MB)</span>
+          <div class="upload-progress-row">
+            <div class="upload-progress-bar-wrap"><div class="upload-progress-bar" style="width:${f.pct}%"></div></div>
+            <span class="upload-progress-label">${f.pct}%${etaStr}</span>
+          </div>
+        </div>
+      </div>`;
+    }
+    if (f.status === 'error') {
+      return `<div class="audio-file-row audio-error">
+        <span class="audio-order">${i + 1}</span>
+        <div class="audio-file-info">
+          <strong>${escapeHtml(f.name)}</strong>
+          <span style="color:var(--danger)">Lỗi upload</span>
+        </div>
+        <button class="remove-audio" onclick="removeAudioFile(${i})" title="Xoá">×</button>
+      </div>`;
+    }
+    return `<div class="audio-file-row">
+      <span class="audio-order">${i + 1}</span>
+      <div class="audio-file-info">
+        <strong>${escapeHtml(f.name)}</strong>
+        <span style="color:var(--gray-400)">(${sizeMb} MB)</span>
+        <span class="audio-upload-done">✓ Đã upload</span>
+      </div>
+      <button class="remove-audio" onclick="removeAudioFile(${i})" title="Xoá">×</button>
+    </div>`;
+  }).join('');
 }
 
 function attachAudioUpload() {
   const area = $('#audio-upload-area');
   if (!area) return;
-
-  area.addEventListener('dragover', e => {
-    e.preventDefault();
-    area.classList.add('dragover');
-  });
+  area.addEventListener('dragover', e => { e.preventDefault(); area.classList.add('dragover'); });
   area.addEventListener('dragleave', () => area.classList.remove('dragover'));
   area.addEventListener('drop', e => {
     e.preventDefault();
     area.classList.remove('dragover');
-    const file = e.dataTransfer.files[0];
-    if (file) setAudioFile(file);
+    const files = Array.from(e.dataTransfer.files || []).filter(f => f.type.startsWith('audio/'));
+    files.forEach(f => _enqueueAudioFile(f));
   });
 }
 
-function onAudioSelected(input) {
-  if (input.files[0]) setAudioFile(input.files[0]);
+function onAudioFilesSelected(input) {
+  Array.from(input.files || []).forEach(f => _enqueueAudioFile(f));
+  input.value = '';
 }
 
 async function requestDirectAudioUpload(file, scope, extra = {}) {
@@ -3934,24 +3969,17 @@ function putDirectAudioXHR(uploadUrl, file, contentType, onProgress) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     const startTime = Date.now();
-
     xhr.upload.addEventListener('progress', e => {
       if (!e.lengthComputable) return;
       const pct = Math.round((e.loaded / e.total) * 100);
       const elapsed = (Date.now() - startTime) / 1000;
-      const rate = e.loaded / elapsed; // bytes/s
-      const remaining = e.total - e.loaded;
-      const etaSec = rate > 0 ? Math.ceil(remaining / rate) : null;
+      const rate = e.loaded / elapsed;
+      const etaSec = rate > 0 ? Math.ceil((e.total - e.loaded) / rate) : null;
       onProgress(pct, etaSec);
     });
-
-    xhr.addEventListener('load', () => {
-      if (xhr.status >= 200 && xhr.status < 300) resolve();
-      else reject(new Error(`HTTP ${xhr.status}`));
-    });
+    xhr.addEventListener('load', () => xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error(`HTTP ${xhr.status}`)));
     xhr.addEventListener('error', () => reject(new Error('Network error')));
     xhr.addEventListener('abort', () => reject(new Error('Upload cancelled')));
-
     xhr.open('PUT', uploadUrl);
     xhr.setRequestHeader('Content-Type', contentType || 'application/octet-stream');
     xhr.send(file);
@@ -3964,84 +3992,61 @@ function _fmtEta(sec) {
   return `~${Math.ceil(sec / 60)}m`;
 }
 
-async function setAudioFile(file) {
-  _audioFile = file;
-  const area = $('#audio-upload-area');
-  if (!area) return;
+function _enqueueAudioFile(file) {
+  const idx = _audioFiles.length;
+  _audioFiles.push({ file, name: file.name, size: file.size, status: 'uploading', url: null, key: null, pct: 0, eta: null });
+  _renderAudioFileList();
+  _uploadAudioSlot(idx);
+}
 
-  const renderProgress = (pct, etaSec) => {
-    if (!area) return;
-    const etaStr = pct < 100 && etaSec !== null ? ` · ETA ${_fmtEta(etaSec)}` : '';
-    area.innerHTML = `
-      <div class="audio-preview audio-uploading">
-        <div class="audio-upload-info">
-          <strong>${escapeHtml(file.name)}</strong>
-          <span style="color:var(--gray-400);">(${(file.size/1024/1024).toFixed(1)} MB)</span>
-        </div>
-        <div class="upload-progress-row">
-          <div class="upload-progress-bar-wrap">
-            <div class="upload-progress-bar" style="width:${pct}%"></div>
-          </div>
-          <span class="upload-progress-label">${pct}%${etaStr}</span>
-        </div>
-        <button class="remove-audio" onclick="removeAudio(event)" title="Xoá file">×</button>
-      </div>`;
-  };
-
-  renderProgress(0, null);
+async function _uploadAudioSlot(idx) {
+  const slot = _audioFiles[idx];
+  if (!slot) return;
   _audioUploading = true;
   try {
-    const uploadTarget = await requestDirectAudioUpload(file, 'teacher-listening');
-    await putDirectAudioXHR(uploadTarget.upload_url, file, uploadTarget.headers?.['Content-Type'] || file.type, renderProgress);
-    _audioUploadUrl = uploadTarget.public_url;
-    _audioUploadKey = uploadTarget.key;
-    _audioUploadName = file.name;
-    _audioUploadSize = file.size;
-    area.innerHTML = `
-      <div class="audio-preview">
-        🎵 <strong>${escapeHtml(_audioUploadName)}</strong>
-        <span style="color:var(--gray-400);">(${(_audioUploadSize / 1024 / 1024).toFixed(1)} MB)</span>
-        <span class="audio-upload-done">Đã upload</span>
-        <button class="remove-audio" onclick="removeAudio(event)" title="Xoá file">×</button>
-      </div>`;
-    // Transcribe by R2 key — no second file upload from browser
-    if (_audioUploadKey) transcribeListeningScript(_audioUploadKey);
+    const uploadTarget = await requestDirectAudioUpload(slot.file, 'teacher-listening');
+    await putDirectAudioXHR(uploadTarget.upload_url, slot.file, uploadTarget.headers?.['Content-Type'] || slot.file.type, (pct, eta) => {
+      if (_audioFiles[idx]) { _audioFiles[idx].pct = pct; _audioFiles[idx].eta = eta; }
+      _renderAudioFileList();
+    });
+    _audioFiles[idx].status = 'done';
+    _audioFiles[idx].url    = uploadTarget.public_url;
+    _audioFiles[idx].key    = uploadTarget.key;
+    _renderAudioFileList();
+    _maybeTranscribeAll();
   } catch (e) {
-    _audioFile = null;
-    _audioUploadUrl = null;
-    _audioUploadKey = null;
-    _audioUploadName = '';
-    _audioUploadSize = 0;
-    area.onclick = () => $('#audio-file-input')?.click();
-    area.innerHTML = audioUploadHtml().replace(/<div[^>]*>/, '<div>');
-    attachAudioUpload();
-    toast('Lỗi upload audio: ' + (e.error || e.message), 'error');
+    _audioFiles[idx].status = 'error';
+    _renderAudioFileList();
+    toast(`Lỗi upload "${slot.name}": ` + (e.message || 'Unknown error'), 'error');
   } finally {
-    _audioUploading = false;
+    _audioUploading = _audioFiles.some(f => f.status === 'uploading');
   }
 }
 
-function removeAudio(e) {
-  e.stopPropagation();
-  _audioFile = null;
-  _audioUploadUrl = null;
-  _audioUploadKey = null;
-  _audioUploadName = '';
-  _audioUploadSize = 0;
-  _audioUploading = false;
-  _scriptTranscribing = false;
-  const area = $('#audio-upload-area');
-  area.onclick = () => $('#audio-file-input')?.click();
-  area.innerHTML = audioUploadHtml().replace(/<div[^>]*>/, '<div>');
-  attachAudioUpload();
-  // Clear script when audio is removed
-  const scriptEl = $('#listening-script');
-  if (scriptEl) scriptEl.value = '';
-  const loadingEl = $('#script-loading');
-  if (loadingEl) loadingEl.classList.add('hidden');
+function _maybeTranscribeAll() {
+  // Transcribe once all slots are done (none still uploading)
+  if (_audioFiles.some(f => f.status === 'uploading')) return;
+  if (_audioFiles.every(f => f.status === 'done')) {
+    transcribeListeningScript(_audioFiles.map(f => ({ key: f.key, name: f.name })));
+  }
 }
 
-async function transcribeListeningScript(r2Key) {
+function removeAudioFile(idx) {
+  _audioFiles.splice(idx, 1);
+  _audioUploading = _audioFiles.some(f => f.status === 'uploading');
+  _renderAudioFileList();
+  if (_audioFiles.length === 0) {
+    const scriptEl = $('#listening-script');
+    if (scriptEl) scriptEl.value = '';
+    const loadingEl = $('#script-loading');
+    if (loadingEl) loadingEl.classList.add('hidden');
+  }
+}
+
+// kept for legacy callers inside editQuestion reset paths
+function removeAudio(e) { if (e) e.stopPropagation(); removeAudioFile(0); }
+
+async function transcribeListeningScript(keysOrKey) {
   const scriptEl = $('#listening-script');
   const loadingEl = $('#script-loading');
   if (!scriptEl || _scriptTranscribing) return;
@@ -4049,8 +4054,12 @@ async function transcribeListeningScript(r2Key) {
   if (loadingEl) loadingEl.classList.remove('hidden');
   scriptEl.disabled = true;
   try {
-    // Pass R2 key — worker fetches from storage, no second browser upload
-    const data = await api.post('/questions/transcribe-audio', { key: r2Key });
+    let data;
+    if (Array.isArray(keysOrKey)) {
+      data = await api.post('/questions/transcribe-audio', { keys: keysOrKey });
+    } else {
+      data = await api.post('/questions/transcribe-audio', { key: keysOrKey });
+    }
     if (data?.text) {
       scriptEl.value = data.text;
       toast('Đã trích xuất script tự động ✓');
@@ -4085,13 +4094,16 @@ async function submitQuestion(btn) {
   if (!title) { toast('Vui lòng nhập tiêu đề', 'error'); return; }
   if (!skill)  { toast('Vui lòng chọn kỹ năng', 'error'); return; }
   if (_contentImageUploadCount > 0) { toast('Ảnh đang upload, vui lòng đợi xong rồi lưu', 'warning'); return; }
-  if ((skill === 'listening') && !_audioUploadUrl) {
-    toast('Vui lòng chọn và upload file audio cho Listening', 'error');
-    return;
-  }
-  if (skill === 'listening' && _audioUploading) {
-    toast('Audio vẫn đang upload, vui lòng đợi xong rồi lưu', 'warning');
-    return;
+  if (skill === 'listening') {
+    const doneFiles = _audioFiles.filter(f => f.status === 'done');
+    if (doneFiles.length === 0) {
+      toast('Vui lòng chọn và upload ít nhất 1 file audio cho Listening', 'error');
+      return;
+    }
+    if (_audioUploading) {
+      toast('Audio vẫn đang upload, vui lòng đợi xong rồi lưu', 'warning');
+      return;
+    }
   }
 
   // Collect answers + vocabulary for reading/listening
@@ -4104,6 +4116,17 @@ async function submitQuestion(btn) {
 
   btnLoading(btn);
   try {
+    let listeningExtra = {};
+    if (skill === 'listening') {
+      const doneFiles = _audioFiles.filter(f => f.status === 'done');
+      const contentUrls = doneFiles.map(f => ({ url: f.url, key: f.key, name: f.name }));
+      listeningExtra = {
+        content_url: doneFiles[0]?.url || null,
+        content_upload_key: doneFiles[0]?.key || null,
+        content_urls: contentUrls,
+        script: ($('#listening-script')?.value || '').trim() || null,
+      };
+    }
     await api.post('/questions', {
       title,
       skill,
@@ -4112,19 +4135,12 @@ async function submitQuestion(btn) {
       questions_data,
       vocabulary: _vocabItems,
       tags,
-      ...(skill === 'listening' ? {
-        content_url: _audioUploadUrl,
-        content_upload_key: _audioUploadKey,
-        script: ($('#listening-script')?.value || '').trim() || null,
-      } : {}),
+      ...listeningExtra,
     });
 
     toast('Đã lưu đề vào kho! 🎉');
-    _audioFile = null;
-    _audioUploadUrl = null;
-    _audioUploadKey = null;
-    _audioUploadName = '';
-    _audioUploadSize = 0;
+    _audioFiles = [];
+    _audioFile = null; _audioUploadUrl = null; _audioUploadKey = null; _audioUploadName = ''; _audioUploadSize = 0;
     _audioUploading = false;
     navigate('/questions');
   } catch (e) {

@@ -415,6 +415,13 @@ function audioSeek(delta) {
   if (audio.paused) audio.play().catch(() => {});
 }
 
+function audioSeekEl(btn, delta) {
+  const audio = btn?.closest('.audio-player-box')?.querySelector('audio');
+  if (!audio) return;
+  audio.currentTime = Math.max(0, Math.min((audio.duration || 0), audio.currentTime + delta));
+  if (audio.paused) audio.play().catch(() => {});
+}
+
 // ── Speaking waveform (B1.8) ───────────────────────────────────────────────
 function startWaveform(stream) {
   const canvas = document.getElementById('waveform-canvas');
@@ -2854,17 +2861,24 @@ function renderListening(a) {
       </div>
       <div class="assignment-content">
         <div class="content-pane">
-          ${a.content_url ? `
-            <div class="audio-player-box">
-              <span class="audio-player-icon">🎧</span>
-              <audio controls src="${a.content_url}">Trình duyệt không hỗ trợ audio.</audio>
-              <div class="audio-replay-controls">
-                <button class="btn-replay" onclick="audioSeek(-10)" title="Lùi 10s">⏪ -10s</button>
-                <button class="btn-replay" onclick="audioSeek(-5)"  title="Lùi 5s">◀ -5s</button>
-                <button class="btn-replay" onclick="audioSeek(5)"   title="Tới 5s">+5s ▶</button>
-                <button class="btn-replay" onclick="audioSeek(10)"  title="Tới 10s">+10s ⏩</button>
-              </div>
-            </div>` : ''}
+          ${(() => {
+            const tracks = Array.isArray(a.content_urls) && a.content_urls.length > 0
+              ? a.content_urls
+              : (a.content_url ? [{ url: a.content_url, name: '' }] : []);
+            if (!tracks.length) return '';
+            const multi = tracks.length > 1;
+            return tracks.map((t, i) => `
+              <div class="audio-player-box">
+                ${multi ? `<div class="audio-track-label">🎧 ${escapeHtml(t.name || ('File ' + (i + 1)))}</div>` : '<span class="audio-player-icon">🎧</span>'}
+                <audio controls src="${escapeHtml(t.url || '')}">Trình duyệt không hỗ trợ audio.</audio>
+                <div class="audio-replay-controls">
+                  <button class="btn-replay" onclick="audioSeekEl(this,-10)" title="Lùi 10s">⏪ -10s</button>
+                  <button class="btn-replay" onclick="audioSeekEl(this,-5)"  title="Lùi 5s">◀ -5s</button>
+                  <button class="btn-replay" onclick="audioSeekEl(this,5)"   title="Tới 5s">+5s ▶</button>
+                  <button class="btn-replay" onclick="audioSeekEl(this,10)"  title="Tới 10s">+10s ⏩</button>
+                </div>
+              </div>`).join('');
+          })()}
           <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:16px">
             <div class="section-title" style="margin-bottom:0">Câu hỏi</div>
             ${buildHighlightToolbar()}

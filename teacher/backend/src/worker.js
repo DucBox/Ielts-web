@@ -1228,6 +1228,25 @@ export default {
 
       if (path === '/questions/transcribe-audio' && method === 'POST') {
         const body = await request.json().catch(() => null);
+
+        // Multi-key mode: keys = [{key, name}, ...]
+        if (Array.isArray(body?.keys) && body.keys.length > 0) {
+          const parts = [];
+          for (const item of body.keys) {
+            const r2Key = item?.key;
+            const label = String(item?.name || r2Key || '').trim();
+            if (!r2Key) continue;
+            try {
+              const data = await transcribeR2Audio(env, r2Key);
+              parts.push(`--- Transcript: ${label} ---\n${data.text || ''}`);
+            } catch (sttErr) {
+              return err(`Không thể transcribe "${label}": ${sttErr.message}`, sttErr.statusCode || 502);
+            }
+          }
+          return json({ text: parts.join('\n\n\n') });
+        }
+
+        // Single-key mode (backward compat)
         const r2Key = body?.key;
         if (!r2Key) return err('Missing R2 key', 400);
         try {
@@ -1306,10 +1325,12 @@ export default {
             vocabulary     = body.vocabulary    || [];
             script         = body.script        ?? null;
             var tagsArr    = body.tags          || [];
+            var contentUrls = Array.isArray(body.content_urls) ? body.content_urls : [];
           }
           content_blocks = normalizeContentBlocks(content_blocks);
           if (content_blocks.length) content_text = blocksToPlainText(content_blocks);
           const tags = Array.isArray(tagsArr) ? tagsArr.map(String).filter(Boolean) : [];
+          if (typeof contentUrls === 'undefined') contentUrls = [];
 
           if (!title || !skill) {
             if (uploadedR2Key) await env.R2.delete(uploadedR2Key).catch(() => {});
@@ -1318,16 +1339,24 @@ export default {
 
           try {
             const [row] = await sql`
-              INSERT INTO question_pool (teacher_id, skill, title, content_text, content_blocks, content_url, questions_data, vocabulary, tags, script)
+              INSERT INTO question_pool (teacher_id, skill, title, content_text, content_blocks, content_url, content_urls, questions_data, vocabulary, tags, script)
               VALUES (
                 ${teacherId}, ${skill}::skill_type, ${title},
-                ${content_text}, ${JSON.stringify(content_blocks)}::jsonb, ${content_url}, ${JSON.stringify(questions_data)}, ${JSON.stringify(vocabulary)},
+                ${content_text}, ${JSON.stringify(content_blocks)}::jsonb, ${content_url},
+                ${JSON.stringify(contentUrls)}::jsonb,
+                ${JSON.stringify(questions_data)}, ${JSON.stringify(vocabulary)},
                 ${tags}, ${script}
               )
               RETURNING *
             `;
-            const audioKey = extractR2Key(row.content_url, env.R2_PUBLIC_URL);
-            if (audioKey) await r2RefIncrement(sql, audioKey).catch(e => console.error('R2 ref track failed:', e));
+            for (const item of (row.content_urls || [])) {
+              const k = item?.key || extractR2Key(item?.url, env.R2_PUBLIC_URL);
+              if (k) await r2RefIncrement(sql, k).catch(e => console.error('R2 ref track failed:', e));
+            }
+            if (!(row.content_urls?.length) ) {
+              const audioKey = extractR2Key(row.content_url, env.R2_PUBLIC_URL);
+              if (audioKey) await r2RefIncrement(sql, audioKey).catch(e => console.error('R2 ref track failed:', e));
+            }
             for (const imgUrl of extractContentBlockImageUrls(row.content_blocks || [])) {
               const imgKey = extractR2Key(imgUrl, env.R2_PUBLIC_URL);
               if (imgKey) await r2RefIncrement(sql, imgKey).catch(e => console.error('R2 ref track failed:', e));
@@ -1346,17 +1375,24 @@ export default {
         if (!src) return err('Không tìm thấy đề', 404);
         const teacherId = await getTeacherId(sql);
         const [row] = await sql`
-          INSERT INTO question_pool (teacher_id, skill, title, content_text, content_blocks, content_url, questions_data, vocabulary)
+          INSERT INTO question_pool (teacher_id, skill, title, content_text, content_blocks, content_url, content_urls, questions_data, vocabulary)
           VALUES (
             ${teacherId}, ${src.skill}::skill_type, ${(src.title || '') + ' (Bản sao)'},
             ${src.content_text}, ${JSON.stringify(src.content_blocks || [])}::jsonb, ${src.content_url},
+            ${JSON.stringify(src.content_urls || [])}::jsonb,
             ${JSON.stringify(src.questions_data || [])},
             ${JSON.stringify(src.vocabulary || [])}
           )
           RETURNING *
         `;
-        const audioKey = extractR2Key(row.content_url, env.R2_PUBLIC_URL);
-        if (audioKey) await r2RefIncrement(sql, audioKey).catch(e => console.error('R2 ref track failed:', e));
+        for (const item of (row.content_urls || [])) {
+          const k = item?.key || extractR2Key(item?.url, env.R2_PUBLIC_URL);
+          if (k) await r2RefIncrement(sql, k).catch(e => console.error('R2 ref track failed:', e));
+        }
+        if (!(row.content_urls?.length)) {
+          const audioKey = extractR2Key(row.content_url, env.R2_PUBLIC_URL);
+          if (audioKey) await r2RefIncrement(sql, audioKey).catch(e => console.error('R2 ref track failed:', e));
+        }
         for (const imgUrl of extractContentBlockImageUrls(row.content_blocks || [])) {
           const imgKey = extractR2Key(imgUrl, env.R2_PUBLIC_URL);
           if (imgKey) await r2RefIncrement(sql, imgKey).catch(e => console.error('R2 ref track failed:', e));
@@ -1420,7 +1456,7 @@ export default {
         }
         if (method === 'DELETE') {
           const [question] = await sql`
-            SELECT id, content_url, content_blocks FROM question_pool WHERE id = ${p.id}
+            SELECT id, content_url, content_urls, content_blocks FROM question_pool WHERE id = ${p.id}
           `;
           if (!question) return err('Không tìm thấy đề', 404);
 
@@ -1432,8 +1468,15 @@ export default {
 
           await sql`DELETE FROM question_pool WHERE id = ${p.id}`;
 
-          const r2Key = extractR2Key(question.content_url, env.R2_PUBLIC_URL);
-          if (r2Key) await r2SafeDelete(env, sql, r2Key).catch(e => console.error('R2 cleanup failed:', e));
+          if ((question.content_urls || []).length > 0) {
+            for (const item of question.content_urls) {
+              const k = item?.key || extractR2Key(item?.url, env.R2_PUBLIC_URL);
+              if (k) await r2SafeDelete(env, sql, k).catch(e => console.error('R2 audio cleanup failed:', e));
+            }
+          } else {
+            const r2Key = extractR2Key(question.content_url, env.R2_PUBLIC_URL);
+            if (r2Key) await r2SafeDelete(env, sql, r2Key).catch(e => console.error('R2 cleanup failed:', e));
+          }
           for (const url of extractContentBlockImageUrls(question.content_blocks)) {
             const key = extractR2Key(url, env.R2_PUBLIC_URL);
             if (key) await r2SafeDelete(env, sql, key).catch(e => console.error('R2 image cleanup failed:', e));
@@ -1509,7 +1552,7 @@ export default {
         await autoCloseExpired(sql, { assignmentId: p.id });
         const [assignment] = await sql`
           SELECT a.id, a.title, a.deadline, a.is_active,
-            q.skill, q.title AS question_title, q.content_text, q.content_blocks, q.content_url,
+            q.skill, q.title AS question_title, q.content_text, q.content_blocks, q.content_url, q.content_urls,
             jsonb_array_length(q.questions_data) AS question_count
           FROM assignments a
           JOIN question_pool q ON q.id = a.question_id

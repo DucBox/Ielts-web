@@ -3879,9 +3879,7 @@ function renderWritingFeedback(sub) {
           <div class="section-label"${overall ? ' style="margin-top:20px"' : ''}>Bài làm của bạn
             ${annotations.length > 0 ? '<span class="feedback-hint">Bôi vàng = nhận xét · Bấm số để xem</span>' : ''}
           </div>
-          <div class="submitted-content feedback-essay">
-            ${buildAnnotatedHtml(sub.writing_content || '', annotations)}
-          </div>
+          <div class="submitted-content feedback-essay">${buildAnnotatedHtml(sub.writing_content || '', annotations)}</div>
           <div style="font-size:12px;color:var(--gray-400);margin-top:8px;text-align:right">${wordCount} từ</div>
         </div>
         <div class="answer-pane">
@@ -4013,9 +4011,7 @@ function renderSpeakingFeedback(sub) {
           <div class="section-label">Transcript (AI Generated)
             ${annotations.length > 0 ? '<span class="feedback-hint">Bôi vàng = nhận xét · Bấm số để xem</span>' : ''}
           </div>
-          <div class="submitted-content feedback-essay">
-            ${buildAnnotatedHtml(sub.speaking_script || '', annotations)}
-          </div>
+          <div class="submitted-content feedback-essay">${buildAnnotatedHtml(sub.speaking_script || '', annotations)}</div>
         </div>
         <div class="answer-pane">
           ${annSidebar}

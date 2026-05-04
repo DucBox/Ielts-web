@@ -128,6 +128,21 @@ function setLoading(msg = 'Đang tải...') {
     </div>`;
 }
 
+function renderRouteError(title, error, retryHash = window.location.hash.slice(1) || '/classes') {
+  const message = error?.error || error?.message || 'Không thể tải dữ liệu. Vui lòng thử lại.';
+  $('#app').innerHTML = `
+    <div class="empty-state-v2 route-error-state">
+      <span class="empty-illu">⚠️</span>
+      <div class="empty-title">${escapeHtml(title)}</div>
+      <div class="empty-desc">${escapeHtml(message)}</div>
+      <div class="route-error-actions">
+        <button class="btn btn-primary" onclick="router()">Thử lại</button>
+        <button class="btn btn-outline" onclick="navigate('/classes')">Về lớp học</button>
+      </div>
+    </div>`;
+  if (retryHash) window._lastFailedRoute = retryHash;
+}
+
 function formatDate(iso) {
   if (!iso) return '—';
   return new Date(iso).toLocaleDateString('vi-VN', {
@@ -350,37 +365,62 @@ const routes = {
   '/profile-fields':   showProfileFields,
 };
 
+const routeLoadingMessages = {
+  '/classes':          'Đang tải danh sách lớp...',
+  '/class/:id':        'Đang tải thông tin lớp...',
+  '/assignment/:id':   'Đang tải danh sách bài nộp...',
+  '/grading/:id':      'Đang tải bài làm...',
+  '/questions':        'Đang tải kho đề...',
+  '/questions/new':    'Đang mở form tạo đề...',
+  '/questions/:id':    'Đang tải đề...',
+  '/inbox':            'Đang tải hộp thư...',
+  '/profile-fields':   'Đang tải hồ sơ học sinh...',
+};
+
 function navigate(hash) {
   closeMobileSidebar();
   window.location.hash = hash;
 }
 
 function router() {
-  hideTableFloatToolbar();
-  _activeTableCell = null;
-
   const hash = window.location.hash.slice(1) || '/classes';
+  try {
+    hideTableFloatToolbar();
+    _activeTableCell = null;
 
-  // Update active nav link
-  document.querySelectorAll('.nav-link').forEach(link => {
-    const route = link.dataset.route;
-    link.classList.toggle('active',
-      (route === 'classes' && hash.startsWith('/class')) ||
-      (route === 'questions' && hash.startsWith('/question'))
-    );
-  });
+    // Update active nav link
+    document.querySelectorAll('.nav-link').forEach(link => {
+      const route = link.dataset.route;
+      link.classList.toggle('active',
+        (route === 'classes' && hash.startsWith('/class')) ||
+        (route === 'questions' && hash.startsWith('/question'))
+      );
+    });
 
-  // Match routes
-  for (const [pattern, handler] of Object.entries(routes)) {
-    const params = matchRoute(pattern, hash);
-    if (params !== null) {
-      handler(params);
-      return;
+    // Match routes
+    for (const [pattern, handler] of Object.entries(routes)) {
+      const params = matchRoute(pattern, hash);
+      if (params !== null) {
+        const loadingMsg = routeLoadingMessages[pattern];
+        if (loadingMsg) setLoading(loadingMsg);
+        const result = handler(params);
+        if (result && typeof result.catch === 'function') {
+          result.catch(e => {
+            console.error('Route error:', e);
+            renderRouteError('Không tải được trang', e, hash);
+          });
+        }
+        return;
+      }
     }
-  }
 
-  // Fallback
-  showClasses({});
+    // Fallback
+    setLoading(routeLoadingMessages['/classes']);
+    showClasses({});
+  } catch (e) {
+    console.error('Router boot error:', e);
+    renderRouteError('Không mở được trang', e, hash);
+  }
 }
 
 function matchRoute(pattern, path) {
@@ -415,6 +455,7 @@ async function showInbox() {
     updateInboxBadge(items.length);
   } catch (e) {
     toast('Lỗi tải inbox: ' + (e.error || e.message), 'error');
+    renderRouteError('Không tải được hộp thư', e, '/inbox');
   }
 }
 
@@ -475,6 +516,7 @@ async function showClasses() {
     renderClasses(classes);
   } catch (e) {
     toast('Lỗi tải danh sách lớp: ' + (e.error || e.message), 'error');
+    renderRouteError('Không tải được danh sách lớp', e, '/classes');
   }
 }
 
@@ -633,6 +675,7 @@ async function showClassDetail({ id }) {
     renderClassDetail(cls, students);
   } catch (e) {
     toast('Lỗi tải lớp: ' + (e.error || e.message), 'error');
+    renderRouteError('Không tải được thông tin lớp', e, `/class/${id}`);
   }
 }
 
@@ -1009,6 +1052,7 @@ async function showAssignmentSubmissions({ id }) {
     renderAssignmentSubmissions(assignment, students);
   } catch (e) {
     toast('Lỗi tải dữ liệu: ' + (e.error || e.message), 'error');
+    renderRouteError('Không tải được danh sách bài nộp', e, `/assignment/${id}`);
   }
 }
 
@@ -1396,6 +1440,7 @@ async function showGradingPage({ id }) {
     bindGradingShortcuts();
   } catch (e) {
     toast('Lỗi: ' + (e.error || e.message), 'error');
+    renderRouteError('Không tải được bài làm', e, `/grading/${id}`);
   }
 }
 
@@ -2041,6 +2086,7 @@ async function showQuestions() {
     renderQuestions();
   } catch (e) {
     toast('Lỗi tải kho đề: ' + (e.error || e.message), 'error');
+    renderRouteError('Không tải được kho đề', e, '/questions');
   }
 }
 
@@ -3361,6 +3407,7 @@ async function showQuestionDetail({ id }) {
     renderQuestionDetail(q);
   } catch (e) {
     toast('Lỗi tải đề: ' + (e.error || e.message), 'error');
+    renderRouteError('Không tải được đề', e, `/questions/${id}`);
   }
 }
 
@@ -4483,6 +4530,7 @@ async function showProfileFields() {
     renderProfileFieldsPage(fields);
   } catch (e) {
     toast('Lỗi: ' + (e.error || e.message), 'error');
+    renderRouteError('Không tải được hồ sơ học sinh', e, '/profile-fields');
   }
 }
 
@@ -4974,6 +5022,7 @@ document.addEventListener('DOMContentLoaded', () => {
 initDarkMode();
 
 window.navigate          = navigateWithTransition;
+window.router            = router;
 window.closeModal        = closeModal;
 window.openCreateClassModal = openCreateClassModal;
 window.submitCreateClass = submitCreateClass;
@@ -4990,7 +5039,7 @@ window.setSkillFilter    = setSkillFilter;
 window.onSkillChange     = onSkillChange;
 window.openImagePicker   = openImagePicker;
 window.toggleComposerEditor = toggleComposerEditor;
-window.onAudioSelected   = onAudioSelected;
+window.onAudioSelected   = onAudioFilesSelected;
 window.removeAudio       = removeAudio;
 window.submitQuestion    = submitQuestion;
 window.submitQuestionEdit      = submitQuestionEdit;
@@ -5019,4 +5068,8 @@ window.clearLocationValue       = clearLocationValue;
 window.cancelLocationPick       = cancelLocationPick;
 
 // Boot
-router();
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', router, { once: true });
+} else {
+  router();
+}

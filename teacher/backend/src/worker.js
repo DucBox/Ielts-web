@@ -41,6 +41,19 @@ const ALLOWED_ORIGINS = [
   'https://ielts-student.pages.dev',
 ];
 
+const NOTIFICATION_EMAIL_FIELD_KEY = 'notification_email';
+const EMAIL_EVENT_TYPES = {
+  NEW_ASSIGNMENT: 'new_assignment',
+  SCORE_RELEASED: 'score_released',
+  DEADLINE_1DAY: 'deadline_1day',
+};
+const SKILL_LABELS = {
+  reading: 'Reading',
+  listening: 'Listening',
+  writing: 'Writing',
+  speaking: 'Speaking',
+};
+
 // ─── Pure utilities (no request context) ──────────────────────────────────────
 
 function matchPath(pattern, pathname) {
@@ -641,6 +654,342 @@ async function requireStudentAuth(request, env) {
   return verifyJWT(auth, env.JWT_SECRET);
 }
 
+function getAppTimezone(env) {
+  return String(env.APP_TIMEZONE || 'Asia/Ho_Chi_Minh');
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function normalizeStudentEmail(value) {
+  const email = String(value ?? '').trim().toLowerCase();
+  if (!email) return null;
+  return /^[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}$/i.test(email) ? email : false;
+}
+
+function formatDateTimeInTimezone(value, timeZone) {
+  if (!value) return '';
+  try {
+    return new Intl.DateTimeFormat('vi-VN', {
+      timeZone,
+      hour12: false,
+      hour: '2-digit',
+      minute: '2-digit',
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+    }).format(new Date(value));
+  } catch {
+    return new Date(value).toISOString();
+  }
+}
+
+function skillLabel(skill) {
+  return SKILL_LABELS[String(skill || '').toLowerCase()] || 'Bài tập';
+}
+
+function buildEmailHtml({ headline, intro, rows = [], outro = '' }) {
+  const rowHtml = rows.map(({ label, value }) => `
+    <tr>
+      <td style="padding:8px 0;color:#4b5563;font-weight:600;vertical-align:top">${escapeHtml(label)}</td>
+      <td style="padding:8px 0;color:#111827">${escapeHtml(value)}</td>
+    </tr>`).join('');
+  return `
+    <div style="font-family:Arial,sans-serif;line-height:1.6;color:#111827">
+      <div style="max-width:600px;margin:0 auto;padding:24px;border:1px solid #e5e7eb;border-radius:16px;background:#ffffff">
+        <div style="font-size:22px;font-weight:800;color:#0f766e;margin-bottom:12px">${escapeHtml(headline)}</div>
+        <p style="margin:0 0 16px">${escapeHtml(intro)}</p>
+        <table style="width:100%;border-collapse:collapse">${rowHtml}</table>
+        ${outro ? `<p style="margin:20px 0 0;color:#4b5563">${escapeHtml(outro)}</p>` : ''}
+      </div>
+    </div>`;
+}
+
+function buildEmailText({ headline, intro, rows = [], outro = '' }) {
+  const lines = rows.map(({ label, value }) => `${label}: ${value}`);
+  return [headline, '', intro, '', ...lines, ...(outro ? ['', outro] : [])].join('\n');
+}
+
+async function sendResendEmail(env, { to, subject, html, text, idempotencyKey }) {
+  const apiKey = String(env.RESEND_API_KEY || '').trim();
+  const fromEmail = String(env.EMAIL_FROM || '').trim();
+  const fromName = String(env.EMAIL_FROM_NAME || 'IELTS Student').trim();
+  if (!apiKey) throw new Error('RESEND_API_KEY is not configured');
+  if (!fromEmail) throw new Error('EMAIL_FROM is not configured');
+
+  const res = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+      ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
+    },
+    body: JSON.stringify({
+      from: fromName ? `${fromName} <${fromEmail}>` : fromEmail,
+      to: [to],
+      subject,
+      html,
+      text,
+    }),
+  });
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const msg = data?.message || data?.error || `Resend send failed (${res.status})`;
+    throw new Error(msg);
+  }
+  return data;
+}
+
+async function queueStudentEmailEvent(sql, { studentId, assignmentId, eventType }) {
+  await sql`
+    INSERT INTO student_email_events (student_id, assignment_id, event_type, status, updated_at)
+    VALUES (${studentId}::uuid, ${assignmentId}::uuid, ${eventType}, 'pending', NOW())
+    ON CONFLICT (student_id, assignment_id, event_type)
+    DO NOTHING
+  `;
+}
+
+async function claimStudentEmailEvent(sql, { studentId, assignmentId, eventType }) {
+  const [row] = await sql`
+    UPDATE student_email_events
+    SET status = 'sending', updated_at = NOW(), last_error = NULL
+    WHERE student_id = ${studentId}::uuid
+      AND assignment_id = ${assignmentId}::uuid
+      AND event_type = ${eventType}
+      AND (
+        status = 'pending'
+        OR status = 'failed'
+        OR (status = 'sending' AND updated_at < NOW() - INTERVAL '15 minutes')
+      )
+    RETURNING student_id, assignment_id, event_type
+  `;
+  return row || null;
+}
+
+async function updateStudentEmailEvent(sql, { studentId, assignmentId, eventType, status, providerMessageId = null, lastError = null }) {
+  await sql`
+    UPDATE student_email_events
+    SET status = ${status},
+        provider_message_id = ${providerMessageId},
+        last_error = ${lastError},
+        sent_at = CASE WHEN ${status} = 'sent' THEN NOW() ELSE sent_at END,
+        updated_at = NOW()
+    WHERE student_id = ${studentId}::uuid
+      AND assignment_id = ${assignmentId}::uuid
+      AND event_type = ${eventType}
+  `;
+}
+
+async function loadStudentEmailContext(sql, { studentId, assignmentId }) {
+  const [row] = await sql`
+    SELECT
+      s.id AS student_id,
+      s.full_name AS student_name,
+      s.email AS student_email,
+      a.id AS assignment_id,
+      a.title AS assignment_title,
+      a.deadline,
+      c.class_name,
+      q.skill,
+      (
+        SELECT sub.overall_score
+        FROM submissions sub
+        WHERE sub.assignment_id = a.id AND sub.student_id = s.id
+        ORDER BY sub.submitted_at DESC
+        LIMIT 1
+      ) AS overall_score
+    FROM students s
+    JOIN assignments a ON a.id = ${assignmentId}::uuid
+    JOIN classes c ON c.id = a.class_id
+    JOIN question_pool q ON q.id = a.question_id
+    WHERE s.id = ${studentId}::uuid
+  `;
+  return row || null;
+}
+
+function buildStudentEmailPayload(env, eventType, ctx) {
+  const deadlineText = ctx.deadline
+    ? formatDateTimeInTimezone(ctx.deadline, getAppTimezone(env))
+    : 'Chưa đặt hạn';
+  const skillText = skillLabel(ctx.skill);
+  const commonRows = [
+    { label: 'Lớp', value: ctx.class_name || '—' },
+    { label: 'Kỹ năng', value: skillText },
+    { label: 'Bài tập', value: ctx.assignment_title || '—' },
+  ];
+
+  if (eventType === EMAIL_EVENT_TYPES.NEW_ASSIGNMENT) {
+    return {
+      subject: `[IELTS Student] Bài mới: ${ctx.assignment_title}`,
+      html: buildEmailHtml({
+        headline: 'Bạn có bài tập mới',
+        intro: `${ctx.student_name || 'Học sinh'} ơi, giáo viên vừa giao một bài tập mới cho lớp của bạn.`,
+        rows: [...commonRows, { label: 'Deadline', value: deadlineText }],
+        outro: 'Hãy vào hệ thống để làm bài đúng hạn.',
+      }),
+      text: buildEmailText({
+        headline: 'Bạn có bài tập mới',
+        intro: `${ctx.student_name || 'Học sinh'} ơi, giáo viên vừa giao một bài tập mới cho lớp của bạn.`,
+        rows: [...commonRows, { label: 'Deadline', value: deadlineText }],
+        outro: 'Hãy vào hệ thống để làm bài đúng hạn.',
+      }),
+    };
+  }
+
+  if (eventType === EMAIL_EVENT_TYPES.SCORE_RELEASED) {
+    return {
+      subject: `[IELTS Student] Đã có điểm ${skillText}: ${ctx.assignment_title}`,
+      html: buildEmailHtml({
+        headline: 'Bài làm của bạn đã có điểm',
+        intro: `${ctx.student_name || 'Học sinh'} ơi, giáo viên đã cập nhật điểm cho bài ${skillText} của bạn.`,
+        rows: [...commonRows, { label: 'Diem', value: String(ctx.overall_score ?? '—') }],
+        outro: 'Hãy vào hệ thống để xem chi tiết nhận xét.',
+      }),
+      text: buildEmailText({
+        headline: 'Bài làm của bạn đã có điểm',
+        intro: `${ctx.student_name || 'Học sinh'} ơi, giáo viên đã cập nhật điểm cho bài ${skillText} của bạn.`,
+        rows: [...commonRows, { label: 'Diem', value: String(ctx.overall_score ?? '—') }],
+        outro: 'Hãy vào hệ thống để xem chi tiết nhận xét.',
+      }),
+    };
+  }
+
+  return {
+    subject: `[IELTS Student] Nhắc hạn 1 ngày: ${ctx.assignment_title}`,
+    html: buildEmailHtml({
+      headline: 'Sắp tới hạn nộp bài',
+      intro: `${ctx.student_name || 'Học sinh'} ơi, bài tập dưới đây còn dưới 24 giờ là tới hạn.`,
+      rows: [...commonRows, { label: 'Deadline', value: deadlineText }],
+      outro: 'Hãy sắp xếp thời gian hoàn thành bài sớm để tránh quá hạn.',
+    }),
+    text: buildEmailText({
+      headline: 'Sắp tới hạn nộp bài',
+      intro: `${ctx.student_name || 'Học sinh'} ơi, bài tập dưới đây còn dưới 24 giờ là tới hạn.`,
+      rows: [...commonRows, { label: 'Deadline', value: deadlineText }],
+      outro: 'Hãy sắp xếp thời gian hoàn thành bài sớm để tránh quá hạn.',
+    }),
+  };
+}
+
+async function deliverQueuedStudentEmail(sql, env, { studentId, assignmentId, eventType }) {
+  const claimed = await claimStudentEmailEvent(sql, { studentId, assignmentId, eventType });
+  if (!claimed) return false;
+
+  try {
+    const ctx = await loadStudentEmailContext(sql, { studentId, assignmentId });
+    if (!ctx) {
+      await updateStudentEmailEvent(sql, {
+        studentId, assignmentId, eventType,
+        status: 'skipped',
+        lastError: 'missing_assignment_or_student_context',
+      });
+      return false;
+    }
+
+    const email = normalizeStudentEmail(ctx.student_email);
+    if (!email) {
+      await updateStudentEmailEvent(sql, {
+        studentId, assignmentId, eventType,
+        status: 'failed',
+        lastError: 'missing_or_invalid_student_email',
+      });
+      return false;
+    }
+
+    if (eventType === EMAIL_EVENT_TYPES.SCORE_RELEASED && ctx.overall_score == null) {
+      await updateStudentEmailEvent(sql, {
+        studentId, assignmentId, eventType,
+        status: 'failed',
+        lastError: 'missing_score_context',
+      });
+      return false;
+    }
+
+    const payload = buildStudentEmailPayload(env, eventType, ctx);
+    const response = await sendResendEmail(env, {
+      to: email,
+      subject: payload.subject,
+      html: payload.html,
+      text: payload.text,
+      idempotencyKey: `${eventType}:${studentId}:${assignmentId}`,
+    });
+
+    await updateStudentEmailEvent(sql, {
+      studentId, assignmentId, eventType,
+      status: 'sent',
+      providerMessageId: response?.id ? String(response.id) : null,
+    });
+    return true;
+  } catch (e) {
+    await updateStudentEmailEvent(sql, {
+      studentId, assignmentId, eventType,
+      status: 'failed',
+      lastError: String(e?.message || e || 'unknown_email_error').slice(0, 500),
+    });
+    return false;
+  }
+}
+
+async function processQueuedStudentEmails(sql, env, opts = {}) {
+  const limit = Math.max(1, Math.min(Number(opts.limit) || 50, 200));
+  let rows;
+  if (opts.studentId && opts.assignmentId && Array.isArray(opts.eventTypes) && opts.eventTypes.length > 0) {
+    rows = opts.eventTypes.map(eventType => ({
+      student_id: opts.studentId,
+      assignment_id: opts.assignmentId,
+      event_type: eventType,
+    }));
+  } else {
+    rows = await sql`
+      SELECT student_id, assignment_id, event_type
+      FROM student_email_events
+      WHERE status IN ('pending', 'failed')
+      ORDER BY
+        CASE WHEN status = 'pending' THEN 0 ELSE 1 END,
+        updated_at ASC,
+        created_at ASC
+      LIMIT ${limit}
+    `;
+  }
+
+  await Promise.allSettled(rows.map(row => (
+    deliverQueuedStudentEmail(sql, env, {
+      studentId: row.student_id,
+      assignmentId: row.assignment_id,
+      eventType: row.event_type,
+    })
+  )));
+}
+
+async function enqueueDeadline1DayEmails(sql) {
+  const rows = await sql`
+    SELECT sc.student_id, a.id AS assignment_id
+    FROM assignments a
+    JOIN student_classes sc ON sc.class_id = a.class_id
+    LEFT JOIN submissions sub ON sub.assignment_id = a.id AND sub.student_id = sc.student_id
+    WHERE a.is_active = true
+      AND a.deadline IS NOT NULL
+      AND a.deadline > NOW()
+      AND a.deadline <= NOW() + INTERVAL '24 hours'
+      AND sub.id IS NULL
+  `;
+
+  await Promise.allSettled(rows.map(row => (
+    queueStudentEmailEvent(sql, {
+      studentId: row.student_id,
+      assignmentId: row.assignment_id,
+      eventType: EMAIL_EVENT_TYPES.DEADLINE_1DAY,
+    })
+  )));
+}
+
 // ─── Auto-grade ───────────────────────────────────────────────────────────────
 
 function autoGrade(studentAnswers, questionsData) {
@@ -760,6 +1109,15 @@ const AI_FEEDBACK_RESPONSE_SCHEMA = {
         tips_md: { type: 'string' },
       },
     },
+  },
+
+  async scheduled(controller, env, ctx) {
+    const sql = neon(env.DATABASE_URL);
+    ctx.waitUntil((async () => {
+      await autoCloseExpired(sql);
+      await enqueueDeadline1DayEmails(sql);
+      await processQueuedStudentEmails(sql, env, { limit: 200 });
+    })());
   },
 };
 
@@ -889,7 +1247,7 @@ async function autoCloseExpired(sql, opts = {}) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url    = new URL(request.url);
     const path   = url.pathname;
     const method = request.method;
@@ -1658,11 +2016,28 @@ export default {
           const body = await request.json();
           if (!body.class_id || !body.question_id || !body.title)
             return err('class_id, question_id, title là bắt buộc');
+          const [question] = await sql`SELECT skill FROM question_pool WHERE id = ${body.question_id}`;
           const [row] = await sql`
             INSERT INTO assignments (class_id, question_id, title, deadline, is_active)
             VALUES (${body.class_id}, ${body.question_id}, ${body.title}, ${body.deadline ?? null}, true)
             RETURNING *
           `;
+          // Notify all students in the class about the new assignment
+          const classStudents = await sql`SELECT student_id FROM student_classes WHERE class_id = ${body.class_id}`;
+          const notifMeta = JSON.stringify({ title: body.title, skill: question?.skill ?? null, deadline: body.deadline ?? null });
+          for (const { student_id } of classStudents) {
+            await sql`
+              INSERT INTO notifications (student_id, type, ref_id, metadata)
+              VALUES (${student_id}, 'new_assignment', ${row.id}, ${notifMeta}::jsonb)
+              ON CONFLICT DO NOTHING
+            `;
+            await queueStudentEmailEvent(sql, {
+              studentId: student_id,
+              assignmentId: row.id,
+              eventType: EMAIL_EVENT_TYPES.NEW_ASSIGNMENT,
+            });
+          }
+          ctx?.waitUntil?.(processQueuedStudentEmails(sql, env, { limit: Math.max(10, classStudents.length * 2) }));
           return json(row, 201);
         }
       }
@@ -1877,6 +2252,14 @@ export default {
             )
             RETURNING *
           `;
+          // Mark assignment-related notifications as read since student has now submitted
+          await sql`
+            UPDATE notifications SET is_read = true, read_at = NOW()
+            WHERE student_id = ${studentId}::uuid
+              AND ref_id = ${p.id}::uuid
+              AND type IN ('new_assignment', 'deadline_reminder')
+              AND is_read = false
+          `;
           return json(submission, 201);
         } catch (dbErr) {
           if (audioUploadKeys) for (const k of audioUploadKeys) await env.R2.delete(k.key).catch(() => {});
@@ -2050,6 +2433,9 @@ export default {
         }
         if (method === 'PATCH') {
           const body = await request.json();
+          // Capture previous score to detect first-time grading
+          const [prev] = await sql`SELECT overall_score FROM submissions WHERE id = ${p.id}`;
+          const wasUnscored = prev && prev.overall_score == null;
           const [sub] = await sql`
             UPDATE submissions
             SET teacher_feedback = ${body.teacher_feedback != null ? JSON.stringify(body.teacher_feedback) : null}::jsonb,
@@ -2058,6 +2444,31 @@ export default {
             RETURNING *
           `;
           if (!sub) return err('Không tìm thấy bài nộp', 404);
+          // Create score_released notification on first grade of Writing/Speaking
+          if (body.overall_score != null && wasUnscored) {
+            const [asgn] = await sql`
+              SELECT a.id AS assignment_id, a.title, q.skill
+              FROM assignments a JOIN question_pool q ON q.id = a.question_id
+              WHERE a.id = ${sub.assignment_id}
+            `;
+            if (asgn && (asgn.skill === 'writing' || asgn.skill === 'speaking')) {
+              const meta = JSON.stringify({ title: asgn.title, skill: asgn.skill, score: body.overall_score });
+              await sql`
+                INSERT INTO notifications (student_id, type, ref_id, metadata)
+                VALUES (${sub.student_id}, 'score_released', ${asgn.assignment_id}, ${meta}::jsonb)
+              `;
+              await queueStudentEmailEvent(sql, {
+                studentId: sub.student_id,
+                assignmentId: asgn.assignment_id,
+                eventType: EMAIL_EVENT_TYPES.SCORE_RELEASED,
+              });
+              ctx?.waitUntil?.(processQueuedStudentEmails(sql, env, {
+                studentId: sub.student_id,
+                assignmentId: asgn.assignment_id,
+                eventTypes: [EMAIL_EVENT_TYPES.SCORE_RELEASED],
+              }));
+            }
+          }
           return json(sub);
         }
       }
@@ -2226,17 +2637,29 @@ export default {
           const body = await request.json().catch(() => null);
           if (!body?.label?.trim()) return err('label là bắt buộc', 400);
           const label = String(body.label).trim().slice(0, 200);
-          const fieldType = ['text', 'textarea', 'select', 'date'].includes(body.field_type) ? body.field_type : 'text';
+          const rawFieldKey = body.field_key == null ? '' : String(body.field_key).trim().toLowerCase();
+          if (rawFieldKey && !/^[a-z0-9_]+$/.test(rawFieldKey)) return err('field_key không hợp lệ', 400);
+          const fieldKey = rawFieldKey || null;
+          const fieldType = fieldKey === NOTIFICATION_EMAIL_FIELD_KEY
+            ? 'text'
+            : (['text', 'textarea', 'select', 'date'].includes(body.field_type) ? body.field_type : 'text');
           const options = fieldType === 'select' && Array.isArray(body.options) && body.options.length
             ? JSON.stringify(body.options.map(String).filter(Boolean))
             : null;
           const displayOrder = Number.isFinite(Number(body.display_order)) ? Number(body.display_order) : 0;
-          const [row] = await sql`
-            INSERT INTO profile_fields (label, field_type, options, display_order)
-            VALUES (${label}, ${fieldType}, ${options}, ${displayOrder})
-            RETURNING *
-          `;
-          return json(row, 201);
+          try {
+            const [row] = await sql`
+              INSERT INTO profile_fields (label, field_key, field_type, options, display_order)
+              VALUES (${label}, ${fieldKey}, ${fieldType}, ${options}, ${displayOrder})
+              RETURNING *
+            `;
+            return json(row, 201);
+          } catch (dbErr) {
+            if (String(dbErr?.message || '').includes('idx_profile_fields_field_key_unique')) {
+              return err('field_key này đã được sử dụng', 409);
+            }
+            throw dbErr;
+          }
         }
       }
 
@@ -2246,7 +2669,7 @@ export default {
       }
 
       if ((p = matchPath('/students/:id/profile-answers', path)) && method === 'GET') {
-        const [student] = await sql`SELECT id, full_name, username FROM students WHERE id = ${p.id}`;
+        const [student] = await sql`SELECT id, full_name, username, email FROM students WHERE id = ${p.id}`;
         if (!student) return err('Không tìm thấy học sinh', 404);
         const fields = await sql`SELECT * FROM profile_fields ORDER BY display_order ASC, created_at ASC`.catch(() => []);
         const answers = await sql`SELECT field_id, value FROM student_profile_answers WHERE student_id = ${p.id}`.catch(() => []);
@@ -2271,7 +2694,17 @@ export default {
         if (method === 'PATCH') {
           const body = await request.json().catch(() => null);
           if (!body?.answers || typeof body.answers !== 'object') return err('answers là bắt buộc', 400);
+          const fields = await sql`SELECT id, field_key FROM profile_fields ORDER BY display_order ASC, created_at ASC`.catch(() => []);
+          const fieldIds = new Set(fields.map(f => String(f.id)));
+          const notificationField = fields.find(f => f.field_key === NOTIFICATION_EMAIL_FIELD_KEY) || null;
+
+          if (notificationField && Object.prototype.hasOwnProperty.call(body.answers, notificationField.id)) {
+            const parsedEmail = normalizeStudentEmail(body.answers[notificationField.id]);
+            if (parsedEmail === false) return err('Email nhận thông báo không hợp lệ', 400);
+          }
+
           for (const [fieldId, value] of Object.entries(body.answers)) {
+            if (!fieldIds.has(String(fieldId))) continue;
             const v = String(value ?? '').trim();
             if (v) {
               await sql`
@@ -2282,6 +2715,29 @@ export default {
             } else {
               await sql`DELETE FROM student_profile_answers WHERE student_id = ${studentId} AND field_id = ${fieldId}`;
             }
+          }
+
+          if (notificationField) {
+            let sourceValue = body.answers[notificationField.id];
+            if (sourceValue === undefined) {
+              const [existing] = await sql`
+                SELECT value FROM student_profile_answers
+                WHERE student_id = ${studentId}::uuid AND field_id = ${notificationField.id}::uuid
+              `;
+              sourceValue = existing?.value || '';
+            }
+            const parsedEmail = normalizeStudentEmail(sourceValue);
+            await sql`
+              UPDATE students
+              SET email = ${parsedEmail || null}
+              WHERE id = ${studentId}::uuid
+            `;
+          } else {
+            await sql`
+              UPDATE students
+              SET email = NULL
+              WHERE id = ${studentId}::uuid
+            `;
           }
           return json({ ok: true });
         }
@@ -2367,6 +2823,144 @@ export default {
             'Cache-Control': 'public, max-age=31536000',
           },
         });
+      }
+
+      // ── Student Notifications ─────────────────────────────────────────────
+
+      // GET /student/notifications/count — badge count (must be before /student/notifications)
+      if (path === '/student/notifications/count' && method === 'GET') {
+        const claims = await requireStudentAuth(request, env);
+        if (!claims) return err('Unauthorized', 401);
+        const studentId = String(claims.student_id);
+        const classId = url.searchParams.get('class_id');
+        if (!classId) return err('class_id là bắt buộc', 400);
+        const [row] = await sql`
+          SELECT COUNT(*)::int AS count FROM notifications n
+          JOIN assignments a ON a.id = n.ref_id
+          WHERE n.student_id = ${studentId}::uuid
+            AND n.is_read = false
+            AND a.class_id = ${classId}::uuid
+            AND (
+              n.type IN ('score_released', 'new_assignment')
+              OR (
+                n.type = 'deadline_reminder'
+                AND a.is_active = true
+                AND NOT EXISTS (
+                  SELECT 1 FROM submissions sub
+                  WHERE sub.assignment_id = a.id AND sub.student_id = ${studentId}::uuid
+                )
+              )
+            )
+        `;
+        return json({ count: row?.count ?? 0 });
+      }
+
+      // GET /student/notifications — fetch all + lazy-create deadline reminders
+      if (path === '/student/notifications' && method === 'GET') {
+        const claims = await requireStudentAuth(request, env);
+        if (!claims) return err('Unauthorized', 401);
+        const studentId = String(claims.student_id);
+        const classId = url.searchParams.get('class_id');
+        if (!classId) return err('class_id là bắt buộc', 400);
+
+        // Lazy-create deadline_reminder notifications for approaching deadlines (within 3 days)
+        const today = new Date().toISOString().slice(0, 10);
+        const approaching = await sql`
+          SELECT a.id, a.title, a.deadline, q.skill
+          FROM assignments a
+          JOIN question_pool q ON q.id = a.question_id
+          JOIN student_classes sc ON sc.class_id = a.class_id AND sc.student_id = ${studentId}::uuid
+          LEFT JOIN submissions sub ON sub.assignment_id = a.id AND sub.student_id = ${studentId}::uuid
+          WHERE a.is_active = true
+            AND a.deadline IS NOT NULL
+            AND sub.id IS NULL
+            AND a.deadline > NOW()
+            AND a.deadline <= NOW() + INTERVAL '3 days'
+            AND a.class_id = ${classId}::uuid
+        `;
+        for (const a of approaching) {
+          const msLeft = new Date(a.deadline).getTime() - Date.now();
+          const daysLeft = Math.ceil(msLeft / 86400000);
+          const meta = JSON.stringify({ title: a.title, skill: a.skill, deadline: a.deadline, days_left: daysLeft });
+          await sql`
+            INSERT INTO notifications (student_id, type, ref_id, metadata, day_bucket)
+            VALUES (${studentId}::uuid, 'deadline_reminder', ${a.id}, ${meta}::jsonb, ${today})
+            ON CONFLICT DO NOTHING
+          `;
+        }
+
+        // Fetch notifications filtered by class (join assignments to get class_id)
+        const rows = await sql`
+          SELECT n.id, n.type, n.ref_id, n.metadata, n.is_read, n.day_bucket, n.created_at, n.read_at
+          FROM notifications n
+          JOIN assignments a ON a.id = n.ref_id
+          WHERE n.student_id = ${studentId}::uuid
+            AND a.class_id = ${classId}::uuid
+            AND (
+              n.type IN ('score_released', 'new_assignment')
+              OR (
+                n.type = 'deadline_reminder'
+                AND a.is_active = true
+                AND (
+                  n.is_read = true
+                  OR NOT EXISTS (
+                    SELECT 1 FROM submissions sub
+                    WHERE sub.assignment_id = a.id AND sub.student_id = ${studentId}::uuid
+                  )
+                )
+              )
+            )
+          ORDER BY n.is_read ASC, n.created_at DESC
+          LIMIT 50
+        `;
+        return json(rows);
+      }
+
+      // PATCH /student/notifications/read-all — mark all as read for current class (must be before /:id)
+      if (path === '/student/notifications/read-all' && method === 'PATCH') {
+        const claims = await requireStudentAuth(request, env);
+        if (!claims) return err('Unauthorized', 401);
+        const studentId = String(claims.student_id);
+        const classId = url.searchParams.get('class_id');
+        if (classId) {
+          // Only mark notifications for assignments in this class
+          await sql`
+            UPDATE notifications SET is_read = true, read_at = NOW()
+            WHERE student_id = ${studentId}::uuid
+              AND is_read = false
+              AND ref_id IN (SELECT id FROM assignments WHERE class_id = ${classId})
+          `;
+        } else {
+          await sql`
+            UPDATE notifications SET is_read = true, read_at = NOW()
+            WHERE student_id = ${studentId}::uuid AND is_read = false
+          `;
+        }
+        return json({ ok: true });
+      }
+
+      // PATCH /student/notifications/:id/read — mark single notification as read
+      if ((p = matchPath('/student/notifications/:id/read', path)) && method === 'PATCH') {
+        const claims = await requireStudentAuth(request, env);
+        if (!claims) return err('Unauthorized', 401);
+        const studentId = String(claims.student_id);
+        await sql`
+          UPDATE notifications SET is_read = true, read_at = NOW()
+          WHERE id = ${p.id}::uuid AND student_id = ${studentId}::uuid
+        `;
+        return json({ ok: true });
+      }
+
+      // DELETE /student/notifications/:id — delete a notification
+      if ((p = matchPath('/student/notifications/:id', path)) && method === 'DELETE') {
+        const claims = await requireStudentAuth(request, env);
+        if (!claims) return err('Unauthorized', 401);
+        const studentId = String(claims.student_id);
+        await sql`
+          DELETE FROM notifications
+          WHERE id = ${p.id}::uuid AND student_id = ${studentId}::uuid
+        `;
+        return json({ ok: true });
       }
 
       return err('Not found', 404);

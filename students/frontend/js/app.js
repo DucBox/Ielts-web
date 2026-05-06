@@ -226,6 +226,241 @@ function clearAllDrafts(aid) {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// NOTIFICATIONS
+// ═══════════════════════════════════════════════════════════════════════════
+
+let _notifPanelOpen = false;
+let _notifPollTimer = null;
+
+function notifDaysLabel(daysLeft) {
+  if (daysLeft <= 0)  return { text: 'hôm nay', cls: 'urgent' };
+  if (daysLeft === 1) return { text: '1 ngày', cls: 'warn' };
+  if (daysLeft === 2) return { text: '2 ngày', cls: 'caution' };
+  return { text: `${daysLeft} ngày`, cls: '' };
+}
+
+function notifTimeAgo(iso) {
+  const diff = Date.now() - new Date(iso).getTime();
+  const mins  = Math.floor(diff / 60000);
+  const hours = Math.floor(diff / 3600000);
+  const days  = Math.floor(diff / 86400000);
+  if (mins < 2)  return 'vừa xong';
+  if (mins < 60) return `${mins} phút trước`;
+  if (hours < 24) return `${hours} giờ trước`;
+  return `${days} ngày trước`;
+}
+
+function renderNotifItem(n) {
+  const meta = n.metadata || {};
+  let icon = '🔔';
+  let titleText = '';
+  let desc = '';
+  let urgencyCls = '';
+  let navUrl = '';
+
+  const skillTag = meta.skill
+    ? `<span class="badge badge-${meta.skill} notif-skill-badge">${SKILL_ICONS[meta.skill] || ''} ${SKILL_LABELS[meta.skill] || ''}</span> `
+    : '';
+
+  if (n.type === 'score_released') {
+    icon = '📊';
+    navUrl = `/result/${n.ref_id}`;
+    titleText = `${skillTag}Bài <strong>${escapeHtml(meta.title || '')}</strong> đã có điểm: <strong>${meta.score ?? '?'} Band</strong>`;
+    desc = notifTimeAgo(n.created_at);
+  } else if (n.type === 'deadline_reminder') {
+    icon = '⏰';
+    navUrl = `/assignment/${n.ref_id}`;
+    const dl = notifDaysLabel(meta.days_left ?? 99);
+    urgencyCls = dl.cls;
+    titleText = `${skillTag}Bài <strong>${escapeHtml(meta.title || '')}</strong> còn <strong>${dl.text}</strong> tới hạn`;
+    desc = notifTimeAgo(n.created_at);
+  } else if (n.type === 'new_assignment') {
+    icon = '📝';
+    navUrl = `/assignment/${n.ref_id}`;
+    const deadlineStr = meta.deadline
+      ? ` · Hạn: ${new Date(meta.deadline).toLocaleDateString('vi-VN')}`
+      : '';
+    titleText = `${skillTag}Bài mới: <strong>${escapeHtml(meta.title || '')}</strong>`;
+    desc = notifTimeAgo(n.created_at) + deadlineStr;
+  }
+
+  const readCls = n.is_read ? 'notif-item--read' : 'notif-item--unread';
+  const markReadBtn = n.is_read
+    ? ''
+    : `<button class="notif-btn-read" onclick="markNotifRead(this);event.stopPropagation()" title="Đánh dấu đã đọc">✓</button>`;
+
+  return `
+    <div class="notif-item ${readCls} ${urgencyCls ? 'notif-item--' + urgencyCls : ''}"
+         data-notif-id="${escapeHtml(String(n.id))}"
+         data-nav-url="${escapeHtml(navUrl)}">
+      <div class="notif-item-icon">${icon}</div>
+      <div class="notif-item-body" onclick="navigateFromNotif(this.closest('.notif-item').dataset.navUrl)">
+        <div class="notif-item-title">${titleText}</div>
+        <div class="notif-item-desc">${escapeHtml(desc)}</div>
+      </div>
+      <div class="notif-item-btns">
+        ${markReadBtn}
+        <button class="notif-btn-delete" onclick="deleteNotif(this);event.stopPropagation()" title="Xóa">✕</button>
+      </div>
+    </div>`;
+}
+
+function navigateFromNotif(url) {
+  closeNotifPanel();
+  if (url) navigate(url);
+}
+
+async function markNotifRead(btn) {
+  const item = btn.closest('.notif-item');
+  const notifId = item?.dataset.notifId;
+  if (!notifId) return;
+  btn.disabled = true;
+  try {
+    await api.patch(`/student/notifications/${notifId}/read`, {});
+    item.classList.remove('notif-item--unread');
+    item.classList.add('notif-item--read');
+    btn.remove();
+    await refreshNotifBadge();
+  } catch {
+    btn.disabled = false;
+  }
+}
+
+async function deleteNotif(btn) {
+  const item = btn.closest('.notif-item');
+  const notifId = item?.dataset.notifId;
+  if (!notifId) return;
+  btn.disabled = true;
+  try {
+    const wasUnread = item.classList.contains('notif-item--unread');
+    await fetch(`${API_BASE}/student/notifications/${notifId}`, {
+      method: 'DELETE',
+      headers: api._authHeaders(),
+    });
+    item.remove();
+    const listEl = document.getElementById('notif-list');
+    if (listEl && !listEl.querySelector('.notif-item')) {
+      listEl.innerHTML = '<div class="notif-empty">Không có thông báo nào</div>';
+    }
+    if (wasUnread) await refreshNotifBadge();
+  } catch {
+    btn.disabled = false;
+  }
+}
+
+async function markAllNotifsRead() {
+  try {
+    const classId = _selectedClass?.id;
+    if (!classId) return;
+    await fetch(`${API_BASE}/student/notifications/read-all?class_id=${encodeURIComponent(classId)}`, {
+      method: 'PATCH',
+      headers: api._authHeaders(),
+    });
+    document.querySelectorAll('.notif-item--unread').forEach(el => {
+      el.classList.remove('notif-item--unread');
+      el.classList.add('notif-item--read');
+      el.querySelector('.notif-btn-read')?.remove();
+    });
+    await refreshNotifBadge();
+  } catch {}
+}
+
+async function refreshNotifBadge() {
+  try {
+    const classId = _selectedClass?.id;
+    if (!classId) return;
+    const data = await fetch(
+      `${API_BASE}/student/notifications/count?class_id=${encodeURIComponent(classId)}`,
+      { headers: api._authHeaders() }
+    ).then(r => r.ok ? r.json() : { count: 0 });
+    const badge = document.getElementById('notif-badge');
+    if (!badge) return;
+    const count = data.count || 0;
+    if (count > 0) {
+      badge.textContent = count > 99 ? '99+' : String(count);
+      badge.classList.remove('hidden');
+    } else {
+      badge.classList.add('hidden');
+    }
+  } catch {}
+}
+
+async function loadNotifPanel() {
+  const listEl = document.getElementById('notif-list');
+  if (!listEl) return;
+  try {
+    const classId = _selectedClass?.id;
+    if (!classId) { listEl.innerHTML = '<div class="notif-empty">Vui lòng chọn lớp</div>'; return; }
+    const rows = await fetch(
+      `${API_BASE}/student/notifications?class_id=${encodeURIComponent(classId)}`,
+      { headers: api._authHeaders() }
+    ).then(r => r.ok ? r.json() : []);
+    listEl.innerHTML = rows.length ? rows.map(renderNotifItem).join('') : '<div class="notif-empty">Không có thông báo nào</div>';
+  } catch {
+    listEl.innerHTML = '<div class="notif-empty">Không thể tải thông báo</div>';
+  }
+}
+
+function toggleNotifPanel() {
+  _notifPanelOpen ? closeNotifPanel() : openNotifPanel();
+}
+
+function openNotifPanel() {
+  const panel = document.getElementById('notif-panel');
+  if (!panel) return;
+  _notifPanelOpen = true;
+  panel.classList.remove('hidden');
+  loadNotifPanel();
+  const list = document.getElementById('notif-list');
+  if (list) {
+    list.onscroll = () => {
+      const atBottom = list.scrollHeight - list.scrollTop <= list.clientHeight + 4;
+      list.classList.toggle('at-bottom', atBottom);
+    };
+  }
+}
+
+function closeNotifPanel() {
+  const panel = document.getElementById('notif-panel');
+  if (!panel) return;
+  _notifPanelOpen = false;
+  panel.classList.add('hidden');
+}
+
+async function syncNotifUIAfterSubmit() {
+  await refreshNotifBadge();
+  if (_notifPanelOpen) await loadNotifPanel();
+}
+
+function startNotifPolling() {
+  if (_notifPollTimer) return;
+  refreshNotifBadge();
+  _notifPollTimer = setInterval(refreshNotifBadge, 60000);
+}
+
+function stopNotifPolling() {
+  if (_notifPollTimer) clearInterval(_notifPollTimer);
+  _notifPollTimer = null;
+}
+
+// Close panel when clicking outside (bell wrap OR panel itself)
+document.addEventListener('click', e => {
+  if (!_notifPanelOpen) return;
+  const wrap  = document.getElementById('notif-bell-wrap');
+  const panel = document.getElementById('notif-panel');
+  if (
+    !(wrap  && wrap.contains(e.target)) &&
+    !(panel && panel.contains(e.target))
+  ) closeNotifPanel();
+});
+
+window.toggleNotifPanel  = toggleNotifPanel;
+window.markNotifRead     = markNotifRead;
+window.deleteNotif       = deleteNotif;
+window.markAllNotifsRead = markAllNotifsRead;
+window.navigateFromNotif = navigateFromNotif;
+
 function startTaskTimer(aid) {
   // Count-up timer; persists start time so refresh keeps counting
   let stored = loadDraft(aid, 'startedAt');
@@ -549,6 +784,7 @@ function updateHeader() {
     $('#header-student-name').textContent = _student.full_name;
     $('#header-class-name').textContent   = _selectedClass?.class_name ?? '';
     $('#app').classList.add('with-header');
+    startNotifPolling();
 
     // Show "Đổi lớp" button only if student has multiple classes
     const switchBtn = $('#switch-class-btn');
@@ -566,10 +802,12 @@ function updateHeader() {
   } else {
     header.classList.add('hidden');
     $('#app').classList.remove('with-header');
+    stopNotifPolling();
   }
 }
 
 function logout() {
+  stopNotifPolling();
   clearAuth();
   navigate('/login');
 }
@@ -2157,6 +2395,10 @@ selectCalDay = function(key) {
 
 renderProfile = function(assignments, profileData) {
   profileData = profileData || window._cachedProfileData || { fields: [], answers: {} };
+  const notificationEmailField = (profileData.fields || []).find(f => f.field_key === 'notification_email');
+  const displayEmail = (_student && typeof _student.email === 'string' && _student.email.trim())
+    || (profileData.student && typeof profileData.student.email === 'string' && profileData.student.email.trim())
+    || (notificationEmailField ? String(profileData.answers?.[notificationEmailField.id] || '').trim() : '');
   const streak = calculateSubmissionStreak(assignments, window._cachedVocabSessions || []);
   const targets = getTargetSettings();
   const submittedAssignments = getSubmittedAssignments(assignments);
@@ -2237,6 +2479,10 @@ renderProfile = function(assignments, profileData) {
           <div>
             <div class="pi-label">Username đăng nhập</div>
             <div class="pi-account-username">${escapeHtml(_student.username || '—')}</div>
+            <div class="pi-account-email-row">
+              <span class="pi-account-email-label">Gmail</span>
+              <span class="pi-account-email">${displayEmail ? escapeHtml(displayEmail) : 'Chưa cập nhật'}</span>
+            </div>
           </div>
           <button type="button" class="btn btn-outline pi-account-btn" onclick="openChangePasswordModal()">🔐 Đổi mật khẩu</button>
         </div>
@@ -2264,7 +2510,9 @@ renderProfile = function(assignments, profileData) {
                     } else if (f.field_type === 'date') {
                       inputEl = `<input id="${inputId}" class="form-input pi-input" type="date" data-field-id="${f.id}" value="${escapeHtml(val)}" />`;
                     } else {
-                      inputEl = `<input id="${inputId}" class="form-input pi-input" type="text" data-field-id="${f.id}" value="${escapeHtml(val)}" placeholder="Chưa có dữ liệu" />`;
+                      const inputType = f.field_key === 'notification_email' ? 'email' : 'text';
+                      const placeholder = f.field_key === 'notification_email' ? 'name@example.com' : 'Chưa có dữ liệu';
+                      inputEl = `<input id="${inputId}" class="form-input pi-input" type="${inputType}" data-field-id="${f.id}" value="${escapeHtml(val)}" placeholder="${placeholder}" />`;
                     }
                     return `<div class="pi-field">
                       <label class="pi-label" for="${inputId}">${escapeHtml(f.label)}</label>
@@ -3058,6 +3306,7 @@ async function submitAnswers(assignmentId, qCount, skill, btn) {
     await api.post(`/assignments/${assignmentId}/submit`, {
       student_id: _student.id, student_answers: answers,
     });
+    await syncNotifUIAfterSubmit();
     clearAllDrafts(assignmentId);
     stopAutoSave(); stopTaskTimer();
     toast('Nộp bài thành công! 🎉');
@@ -3153,6 +3402,7 @@ async function submitWriting(assignmentId, btn) {
     await api.post(`/assignments/${assignmentId}/submit`, {
       student_id: _student.id, writing_content: content,
     });
+    await syncNotifUIAfterSubmit();
     clearAllDrafts(assignmentId);
     stopAutoSave(); stopTaskTimer();
     toast('Nộp bài thành công! 🎉');
@@ -3493,6 +3743,7 @@ async function submitSpeaking(assignmentId, btn) {
       student_id: _student.id,
       audio_upload_keys: audioUploadKeys,
     });
+    await syncNotifUIAfterSubmit();
     clearAllDrafts(assignmentId);
     stopAutoSave(); stopTaskTimer();
     toast('Nộp bài thành công! 🎉');

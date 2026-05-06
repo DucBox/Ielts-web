@@ -30,6 +30,13 @@
       <button id="switch-class-btn" class="btn-switch-class" onclick="switchClass()" style="display:none">
         Đổi lớp
       </button>
+      <!-- Notification bell -->
+      <div class="notif-bell-wrap" id="notif-bell-wrap">
+        <button class="notif-bell-btn" id="notif-bell-btn" onclick="toggleNotifPanel()" aria-label="Thông báo" title="Thông báo">
+          🔔
+          <span class="notif-badge hidden" id="notif-badge"></span>
+        </button>
+      </div>
       <button id="dark-mode-toggle" class="btn-dark-toggle" onclick="toggleDarkMode()" title="Sáng/tối">🌙</button>
       <button class="btn-logout btn-logout-desktop" onclick="logout()">Đăng xuất</button>
     </div>
@@ -63,6 +70,17 @@
 
   <!-- Toast container -->
   <div id="toast-container"></div>
+
+  <!-- Notification panel — at body root level so z-index: 9999 is in root stacking context -->
+  <div class="notif-panel hidden" id="notif-panel">
+    <div class="notif-panel-header">
+      <span class="notif-panel-title">🔔 Thông báo</span>
+      <button class="notif-mark-all-btn" onclick="markAllNotifsRead()">Đánh dấu đọc</button>
+    </div>
+    <div class="notif-list" id="notif-list">
+      <div class="notif-empty">Đang tải...</div>
+    </div>
+  </div>
 
   <!-- Modal container -->
   <div id="modal-overlay" class="modal-overlay hidden" onclick="closeModal(event)">

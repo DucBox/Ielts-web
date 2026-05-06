@@ -1825,7 +1825,7 @@ function renderCalendar(assignments) {
   const byDate = {}; // 'YYYY-MM-DD' → { deadlines: [], submissions: [] }
   for (const a of assignments) {
     if (a.deadline) {
-      const k = a.deadline.slice(0, 10);
+      const k = toDateKey(a.deadline);
       (byDate[k] ||= { deadlines: [], submissions: [] }).deadlines.push(a);
     }
     if (a.submission_id) {
@@ -2315,7 +2315,7 @@ renderCalendar = function(assignments) {
   const byDate = {};
   for (const a of assignments) {
     if (a.deadline) {
-      const k = a.deadline.slice(0, 10);
+      const k = toDateKey(a.deadline);
       (byDate[k] ||= { deadlines: [], submissions: [] }).deadlines.push(a);
     }
     if (a.submission_id) {

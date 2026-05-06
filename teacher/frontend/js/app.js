@@ -726,6 +726,8 @@ function renderClassDetail(cls, students = []) {
                 </span>
                 📊 ${a.submission_count}/${cls.student_count} nộp
               </button>
+              <button class="btn-icon" title="Đổi hạn nộp"
+                onclick="changeDeadline('${a.id}')">📅</button>
               <button class="btn-icon danger" title="Xoá"
                 onclick="deleteAssignment('${a.id}', '${cls.id}', this)">🗑</button>
             </div>
@@ -938,6 +940,8 @@ function filterAssignments(search, skill) {
               </span>
               📊 ${a.submission_count}/${cls.student_count} nộp
             </button>
+            <button class="btn-icon" title="Đổi hạn nộp"
+              onclick="changeDeadline('${a.id}')">📅</button>
             <button class="btn-icon danger" title="Xoá"
               onclick="deleteAssignment('${a.id}', '${cls.id}', this)">🗑</button>
           </div>
@@ -1027,6 +1031,43 @@ async function toggleAssignment(id, isActive) {
     if (_cachedCls?.id) await showClassDetail({ id: _cachedCls.id });
   }
 }
+
+function changeDeadline(id) {
+  const currentISO = _cachedCls?.assignments?.find(a => a.id === id)?.deadline ?? null;
+  const localValue = currentISO
+    ? new Date(new Date(currentISO) - new Date().getTimezoneOffset() * 60000)
+        .toISOString().slice(0, 16)
+    : '';
+  openModal('Cập nhật hạn nộp', `
+    <div style="padding:4px 0 16px">
+      <label style="display:block;font-size:13px;font-weight:600;margin-bottom:8px">Hạn nộp mới</label>
+      <input id="new-deadline-input" type="datetime-local" class="form-input" value="${escapeHtml(localValue)}"
+        style="width:100%" />
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal()">Huỷ</button>
+      <button class="btn btn-primary" onclick="saveDeadline('${escapeHtml(id)}', this)">Lưu</button>
+    </div>
+  `);
+}
+window.changeDeadline = changeDeadline;
+
+async function saveDeadline(id, btn) {
+  const raw = $('#new-deadline-input')?.value;
+  if (!raw) { toast('Vui lòng chọn thời gian', 'error'); return; }
+  const deadline = new Date(raw).toISOString();
+  btnLoading(btn);
+  try {
+    await api.patch(`/assignments/${id}`, { deadline });
+    closeModal();
+    toast('Đã cập nhật hạn nộp');
+    if (_cachedCls?.id) await showClassDetail({ id: _cachedCls.id });
+  } catch (e) {
+    toast('Lỗi: ' + (e.error || e.message), 'error');
+    btnLoading(btn, false);
+  }
+}
+window.saveDeadline = saveDeadline;
 
 async function deleteAssignment(id, classId, btn) {
   if (!confirm('Xoá bài tập này? Tất cả bài nộp sẽ bị xoá theo.')) return;

@@ -4291,6 +4291,7 @@ const _vocabExpanded = {};
 let _vocabSearch = '';
 
 async function showVocabGames() {
+  setLoading('Đang tải từ vựng...');
   const needsAssignments = !window._cachedAssignments && _student && _selectedClass;
   await Promise.all([
     loadMyVocab(),

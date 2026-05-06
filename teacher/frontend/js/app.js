@@ -2043,7 +2043,8 @@ function selectQuestion(id, el) {
 
 async function submitAssign(btn) {
   const title = $('#assign-title')?.value.trim();
-  const deadline = $('#assign-deadline')?.value;
+  const deadlineRaw = $('#assign-deadline')?.value;
+  const deadline = deadlineRaw ? new Date(deadlineRaw).toISOString() : null;
 
   if (!title) { toast('Vui lòng nhập tên bài tập', 'error'); return; }
   if (!_selectedQuestionId) { toast('Vui lòng chọn một đề từ kho', 'error'); return; }

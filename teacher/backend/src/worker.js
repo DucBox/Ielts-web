@@ -1110,15 +1110,6 @@ const AI_FEEDBACK_RESPONSE_SCHEMA = {
       },
     },
   },
-
-  async scheduled(controller, env, ctx) {
-    const sql = neon(env.DATABASE_URL);
-    ctx.waitUntil((async () => {
-      await autoCloseExpired(sql);
-      await enqueueDeadline1DayEmails(sql);
-      await processQueuedStudentEmails(sql, env, { limit: 200 });
-    })());
-  },
 };
 
 function buildWritingPrompt(questionText, writingContent) {
@@ -2968,5 +2959,14 @@ export default {
       console.error('[worker error]', e);
       return err('Lỗi máy chủ nội bộ', 500);
     }
+  },
+
+  async scheduled(controller, env, ctx) {
+    const sql = neon(env.DATABASE_URL);
+    ctx.waitUntil((async () => {
+      await autoCloseExpired(sql);
+      await enqueueDeadline1DayEmails(sql);
+      await processQueuedStudentEmails(sql, env, { limit: 200 });
+    })());
   },
 };

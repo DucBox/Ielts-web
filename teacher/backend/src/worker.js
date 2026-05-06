@@ -1261,11 +1261,6 @@ export default {
     const path   = url.pathname;
     const method = request.method;
 
-    // Global rate limit — 200 requests per 10s per IP (anti-spam/DDoS)
-    const clientIp = request.headers.get('CF-Connecting-IP') || 'unknown';
-    if (await checkRateLimit(env.KV, `global:${clientIp}`, 600, 60))
-      return new Response(JSON.stringify({ error: 'Too many requests' }), { status: 429, headers: { 'Content-Type': 'application/json' } });
-
     // Per-request CORS (dynamic origin — avoids module-level state race)
     const origin      = request.headers.get('Origin') || '';
     const allowOrigin = ALLOWED_ORIGINS.includes(origin) ? origin : null;

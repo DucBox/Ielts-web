@@ -2045,6 +2045,20 @@ body.resizing-image {
   display: flex; align-items: center; justify-content: center;
   transition: background .15s;
 }
+.btn-logout {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: .8rem;
+  color: var(--text-muted);
+  margin-top: 6px;
+  width: 100%;
+  text-align: left;
+  transition: background .15s, color .15s;
+}
+.btn-logout:hover { background: var(--bg-subtle); color: #ef4444; }
 .btn-dark-toggle:hover { background: var(--bg-subtle); }
 
 /* ═══ BREADCRUMB ════════════════════════════════════════════════════════════ */

@@ -654,6 +654,24 @@ async function requireStudentAuth(request, env) {
   return verifyJWT(auth, env.JWT_SECRET);
 }
 
+function parseCookies(request) {
+  const header = request.headers.get('Cookie') || '';
+  const cookies = {};
+  for (const part of header.split(';')) {
+    const idx = part.indexOf('=');
+    if (idx < 0) continue;
+    cookies[part.slice(0, idx).trim()] = decodeURIComponent(part.slice(idx + 1).trim());
+  }
+  return cookies;
+}
+
+async function requireTeacherAuth(request, env) {
+  if (!env.TEACHER_ACCESS_SECRET) return null;
+  const { teacher_gate: token } = parseCookies(request);
+  if (!token) return null;
+  return verifyJWT(token, env.TEACHER_ACCESS_SECRET);
+}
+
 function getAppTimezone(env) {
   return String(env.APP_TIMEZONE || 'Asia/Ho_Chi_Minh');
 }
@@ -1253,6 +1271,7 @@ export default {
     const allowOrigin = ALLOWED_ORIGINS.includes(origin) ? origin : null;
     const CORS = {
       ...(allowOrigin ? { 'Access-Control-Allow-Origin': allowOrigin } : {}),
+      'Access-Control-Allow-Credentials': 'true',
       'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type, Authorization',
       'Vary': 'Origin',
@@ -1320,9 +1339,51 @@ export default {
         return json({ student: { ...studentSafe, classes }, token });
       }
 
+      // ── Teacher Auth ───────────────────────────────────────────────────────
+
+      if (path === '/teacher-auth/login' && method === 'POST') {
+        const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+        if (await checkRateLimit(env.KV, `teacher-login:${ip}`, 10, 60))
+          return err('Quá nhiều yêu cầu — thử lại sau', 429);
+        if (!env.TEACHER_ACCESS_PASSWORD || !env.TEACHER_ACCESS_SECRET)
+          return err('Server chưa cấu hình', 500);
+        const body = await request.json();
+        if (body.password !== env.TEACHER_ACCESS_PASSWORD)
+          return err('Sai mật khẩu', 401);
+        const token = await signJWT(
+          { teacher: true, exp: Date.now() + 8 * 60 * 60 * 1000 },
+          env.TEACHER_ACCESS_SECRET,
+        );
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: {
+            ...CORS,
+            'Content-Type': 'application/json',
+            'Set-Cookie': `teacher_gate=${token}; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=${8 * 60 * 60}`,
+          },
+        });
+      }
+
+      if (path === '/teacher-auth/logout' && method === 'POST') {
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: {
+            ...CORS,
+            'Content-Type': 'application/json',
+            'Set-Cookie': 'teacher_gate=; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=0',
+          },
+        });
+      }
+
+      if (path === '/teacher-auth/status' && method === 'GET') {
+        const claims = await requireTeacherAuth(request, env);
+        return json({ authenticated: !!claims });
+      }
+
       // ── Classes ────────────────────────────────────────────────────────────
 
       if (path === '/classes') {
+        if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
         if (method === 'GET') {
           await autoCloseExpired(sql);
           const rows = await sql`
@@ -1370,6 +1431,7 @@ export default {
       }
 
       if ((p = matchPath('/classes/:id/students', path))) {
+        if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
         if (method === 'GET') {
           const rows = await sql`
             SELECT s.id, s.full_name, s.username
@@ -1383,6 +1445,7 @@ export default {
       }
 
       if ((p = matchPath('/classes/:id', path))) {
+        if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
         if (method === 'GET') {
           await autoCloseExpired(sql, { classId: p.id });
           const [cls] = await sql`
@@ -1437,6 +1500,7 @@ export default {
       // ── Students ───────────────────────────────────────────────────────────
 
       if (path === '/students' && method === 'POST') {
+        if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
         const body = await request.json();
         const classId = String(body.class_id || '').trim() || null;
         const requestedStudents = Array.isArray(body.students) ? body.students : [];
@@ -1532,6 +1596,7 @@ export default {
       }
 
       if ((p = matchPath('/students/:id', path))) {
+        if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
         if (method === 'DELETE') {
           const subAudios = await sql`
             SELECT speaking_audio_url, speaking_audio_urls FROM submissions
@@ -1566,6 +1631,7 @@ export default {
       // ── Student-Classes (junction) ──────────────────────────────────────────
 
       if (path === '/student-classes') {
+        if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
         if (method === 'POST') {
           const body = await request.json();
           if (!body.class_id) return err('class_id là bắt buộc');
@@ -1604,6 +1670,7 @@ export default {
       }
 
       if (path === '/uploads/images/presign' && method === 'POST') {
+        if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
         const body = await request.json().catch(() => null);
         const fileName = String(body?.file_name || 'image');
         const contentType = String(body?.content_type || '').trim().toLowerCase();
@@ -1634,6 +1701,7 @@ export default {
       }
 
       if (path === '/uploads/images' && method === 'POST') {
+        if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
         const form = await request.formData();
         const file = form.get('image');
         if (!file || typeof file === 'string') return err('Thiếu file image', 400);
@@ -1669,6 +1737,7 @@ export default {
         let maxBytes = 0;
 
         if (scope === 'teacher-listening') {
+          if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
           maxBytes = 200 * 1024 * 1024;
           key = buildTeacherAudioKey(fileName);
         } else if (scope === 'student-speaking') {
@@ -1727,6 +1796,7 @@ export default {
       // ── Listening Script Transcription (by R2 key — no second browser upload) ─
 
       if (path === '/questions/transcribe-audio' && method === 'POST') {
+        if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
         const body = await request.json().catch(() => null);
 
         // Multi-key mode: keys = [{key, name}, ...]
@@ -1760,6 +1830,7 @@ export default {
       // ── Question Pool ──────────────────────────────────────────────────────
 
       if (path === '/questions') {
+        if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
         if (method === 'GET') {
           const skill = url.searchParams.get('skill');
           const rows = skill
@@ -1871,6 +1942,7 @@ export default {
 
       // B4.6 — Duplicate question (must match before /questions/:id)
       if ((p = matchPath('/questions/:id/duplicate', path)) && method === 'POST') {
+        if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
         const [src] = await sql`SELECT * FROM question_pool WHERE id = ${p.id}`;
         if (!src) return err('Không tìm thấy đề', 404);
         const teacherId = await getTeacherId(sql);
@@ -1901,6 +1973,7 @@ export default {
       }
 
       if ((p = matchPath('/questions/:id', path))) {
+        if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
         if (method === 'GET') {
           const [row] = await sql`SELECT * FROM question_pool WHERE id = ${p.id}`;
           if (!row) return err('Không tìm thấy đề', 404);
@@ -1989,6 +2062,7 @@ export default {
       // ── Assignments ────────────────────────────────────────────────────────
 
       if (path === '/assignments') {
+        if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
         if (method === 'GET') {
           const classId = url.searchParams.get('class_id');
           if (!classId) return err('class_id là bắt buộc');
@@ -2035,6 +2109,7 @@ export default {
 
       // Must match before /assignments/:id
       if ((p = matchPath('/assignments/:id/submissions', path)) && method === 'GET') {
+        if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
         await autoCloseExpired(sql, { assignmentId: p.id });
         const [assignment] = await sql`
           SELECT a.id, a.title, a.deadline, a.is_active, a.class_id,
@@ -2260,6 +2335,7 @@ export default {
       }
 
       if ((p = matchPath('/assignments/:id', path))) {
+        if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
         if (method === 'PATCH') {
           const body = await request.json();
           const fields = [];
@@ -2322,6 +2398,7 @@ export default {
       }
 
       if ((p = matchPath('/submissions/:id/ai-feedback', path)) && method === 'POST') {
+        if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
         if (!env.OPENAI_API_KEY) return err('Chưa cấu hình OPENAI_API_KEY', 500);
         const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
         if (await checkRateLimit(env.KV, `aifeedback:${ip}`, 60, 60))
@@ -2406,6 +2483,7 @@ export default {
       }
 
       if ((p = matchPath('/submissions/:id', path))) {
+        if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
         if (method === 'GET') {
           const [sub] = await sql`
             SELECT sub.*, a.id AS assignment_id, a.title AS assignment_title,
@@ -2467,6 +2545,7 @@ export default {
       // ── Teacher Inbox (B4.8) ──────────────────────────────────────────────
 
       if (path === '/inbox' && method === 'GET') {
+        if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
         const teacherId = await getTeacherId(sql);
         const rows = await sql`
           SELECT sub.id AS submission_id, sub.submitted_at, sub.overall_score, sub.status,
@@ -2620,6 +2699,7 @@ export default {
       // ── Profile Fields & Student Answers ──────────────────────────────────
 
       if (path === '/profile-fields') {
+        if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
         if (method === 'GET') {
           const rows = await sql`SELECT * FROM profile_fields ORDER BY display_order ASC, created_at ASC`;
           return json(rows);
@@ -2655,11 +2735,13 @@ export default {
       }
 
       if ((p = matchPath('/profile-fields/:id', path)) && method === 'DELETE') {
+        if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
         await sql`DELETE FROM profile_fields WHERE id = ${p.id}`;
         return json({ ok: true });
       }
 
       if ((p = matchPath('/students/:id/profile-answers', path)) && method === 'GET') {
+        if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
         const [student] = await sql`SELECT id, full_name, username, email FROM students WHERE id = ${p.id}`;
         if (!student) return err('Không tìm thấy học sinh', 404);
         const fields = await sql`SELECT * FROM profile_fields ORDER BY display_order ASC, created_at ASC`.catch(() => []);

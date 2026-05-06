@@ -48,11 +48,18 @@ const api = {
     } catch {}
   },
 
+  _handle401(res) {
+    if (res.status === 401) {
+      this.clearCache();
+      window._onTeacherUnauthorized?.();
+    }
+  },
+
   async get(path) {
     const cached = this._readCache(path);
     if (cached) return cached;
-    const res = await fetch(API_BASE + path);
-    if (!res.ok) throw await res.json();
+    const res = await fetch(API_BASE + path, { credentials: 'include' });
+    if (!res.ok) { this._handle401(res); throw await res.json(); }
     const data = await res.json();
     this._writeCache(path, data);
     return data;
@@ -63,8 +70,9 @@ const api = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
+      credentials: 'include',
     });
-    if (!res.ok) throw await res.json();
+    if (!res.ok) { this._handle401(res); throw await res.json(); }
     this.clearCache();
     return res.json();
   },
@@ -73,8 +81,9 @@ const api = {
     const res = await fetch(API_BASE + path, {
       method: 'POST',
       body: formData,
+      credentials: 'include',
     });
-    if (!res.ok) throw await res.json();
+    if (!res.ok) { this._handle401(res); throw await res.json(); }
     this.clearCache();
     return res.json();
   },
@@ -84,15 +93,16 @@ const api = {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
+      credentials: 'include',
     });
-    if (!res.ok) throw await res.json();
+    if (!res.ok) { this._handle401(res); throw await res.json(); }
     this.clearCache();
     return res.json();
   },
 
   async delete(path) {
-    const res = await fetch(API_BASE + path, { method: 'DELETE' });
-    if (!res.ok) throw await res.json();
+    const res = await fetch(API_BASE + path, { method: 'DELETE', credentials: 'include' });
+    if (!res.ok) { this._handle401(res); throw await res.json(); }
     this.clearCache();
     return res.json();
   },

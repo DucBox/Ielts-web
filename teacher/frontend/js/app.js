@@ -5092,8 +5092,6 @@ function navigateWithTransition(hash) {
 
 document.addEventListener('DOMContentLoaded', () => {
   initDarkMode();
-  // Refresh inbox badge on startup
-  refreshInboxBadge();
 });
 
 initDarkMode();
@@ -5145,8 +5143,114 @@ window.clearLocationValue       = clearLocationValue;
 window.cancelLocationPick       = cancelLocationPick;
 
 // Boot
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', router, { once: true });
-} else {
+// ── Teacher Auth Gate ─────────────────────────────────────────────────────
+
+function renderLoginGate(errorMsg = '') {
+  document.getElementById('sidebar').style.display = 'none';
+  document.getElementById('mobile-hamburger').style.display = 'none';
+  document.getElementById('app').innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:center;min-height:80vh">
+      <div style="width:100%;max-width:360px;padding:32px;border:1px solid var(--border);border-radius:12px;background:var(--bg-card)">
+        <div style="text-align:center;margin-bottom:24px">
+          <span style="font-size:2rem">🎓</span>
+          <h2 style="margin:8px 0 4px;font-size:1.25rem">IELTS Teacher Portal</h2>
+          <p style="color:var(--text-muted);font-size:.875rem">Nhập mật khẩu để truy cập</p>
+        </div>
+        ${errorMsg ? `<div style="color:#ef4444;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:8px 12px;margin-bottom:16px;font-size:.875rem">${errorMsg}</div>` : ''}
+        <form id="login-gate-form" onsubmit="submitLoginGate(event)">
+          <div style="position:relative;margin-bottom:12px">
+            <input id="gate-password" type="password" placeholder="Mật khẩu" autocomplete="current-password"
+              style="width:100%;padding:10px 40px 10px 12px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:1rem;box-sizing:border-box" />
+            <button type="button" onclick="toggleGatePassword()"
+              style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text-muted);font-size:1rem;padding:0;line-height:1"
+              id="gate-eye-btn" title="Hiện/ẩn mật khẩu">👁</button>
+          </div>
+          <button type="submit" id="gate-submit-btn"
+            style="width:100%;padding:10px;background:var(--primary);color:#fff;border:none;border-radius:6px;font-size:1rem;cursor:pointer">
+            Đăng nhập
+          </button>
+        </form>
+      </div>
+    </div>`;
+  document.getElementById('gate-password').focus();
+}
+
+const TEACHER_AUTH_FLAG = 'teacher_auth_ok';
+
+async function submitLoginGate(e) {
+  e.preventDefault();
+  const btn = document.getElementById('gate-submit-btn');
+  const password = document.getElementById('gate-password').value;
+  btn.disabled = true;
+  btn.textContent = 'Đang kiểm tra...';
+  try {
+    await fetch(api._base + '/teacher-auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password }),
+      credentials: 'include',
+    }).then(async res => {
+      if (!res.ok) throw new Error((await res.json()).error || 'Sai mật khẩu');
+    });
+    sessionStorage.setItem(TEACHER_AUTH_FLAG, '1');
+    document.getElementById('sidebar').style.display = '';
+    document.getElementById('mobile-hamburger').style.display = '';
+    refreshInboxBadge();
+    router();
+  } catch (err) {
+    renderLoginGate(err.message || 'Sai mật khẩu');
+  }
+}
+
+async function logout() {
+  await fetch(api._base + '/teacher-auth/logout', { method: 'POST', credentials: 'include' }).catch(() => {});
+  api.clearCache();
+  sessionStorage.removeItem(TEACHER_AUTH_FLAG);
+  history.replaceState(null, '', window.location.pathname);
+  renderLoginGate();
+}
+
+async function boot() {
+  // Fast path: session flag present → skip network check, go straight to app
+  if (sessionStorage.getItem(TEACHER_AUTH_FLAG)) {
+    refreshInboxBadge();
+    router();
+    return;
+  }
+  // Slow path: verify with server (first visit or after logout)
+  try {
+    const res = await fetch(api._base + '/teacher-auth/status', { credentials: 'include' });
+    const { authenticated } = await res.json();
+    if (!authenticated) { renderLoginGate(); return; }
+    sessionStorage.setItem(TEACHER_AUTH_FLAG, '1');
+  } catch {
+    renderLoginGate('Không kết nối được server');
+    return;
+  }
+  refreshInboxBadge();
   router();
+}
+
+function toggleGatePassword() {
+  const input = document.getElementById('gate-password');
+  const btn   = document.getElementById('gate-eye-btn');
+  if (!input) return;
+  const isHidden = input.type === 'password';
+  input.type = isHidden ? 'text' : 'password';
+  btn.textContent = isHidden ? '🙈' : '👁';
+}
+
+window.submitLoginGate        = submitLoginGate;
+window.toggleGatePassword     = toggleGatePassword;
+window.logout                 = logout;
+window._onTeacherUnauthorized = () => {
+  document.getElementById('sidebar').style.display = 'none';
+  document.getElementById('mobile-hamburger').style.display = 'none';
+  renderLoginGate('Phiên đăng nhập hết hạn. Vui lòng đăng nhập lại.');
+};
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', boot, { once: true });
+} else {
+  boot();
 }

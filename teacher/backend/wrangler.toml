@@ -15,9 +15,13 @@ preview_bucket_name = "ielts-web"
 [vars]
 R2_PUBLIC_URL = "https://pub-75b0370b5b5a4c15b26531707c369a0f.r2.dev"
 R2_BUCKET_NAME = "ielts-web"
+APP_TIMEZONE = "Asia/Ho_Chi_Minh"
 
 [observability]
 enabled = true
 
 [placement]
 mode = "smart"
+
+[triggers]
+crons = ["5 * * * *"]

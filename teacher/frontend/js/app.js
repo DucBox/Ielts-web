@@ -4536,18 +4536,21 @@ async function showProfileFields() {
 
 function renderProfileFieldsPage(fields) {
   const PF_TYPE_LABELS = { text: 'Văn bản ngắn', textarea: 'Văn bản dài', select: 'Chọn đáp án', date: 'Ngày sinh' };
+  const PF_KEY_LABELS = { notification_email: 'Email thông báo' };
   const listHtml = fields.length === 0
     ? `<div class="pf-empty"><div class="pf-empty-icon">📋</div><div>Chưa có câu hỏi nào. Thêm câu hỏi đầu tiên bên trên!</div></div>`
     : `<table class="pf-table">
-        <thead><tr><th>#</th><th>Câu hỏi</th><th>Kiểu</th><th></th></tr></thead>
+        <thead><tr><th>#</th><th>Câu hỏi</th><th>Kiểu</th><th>Vai trò</th><th></th></tr></thead>
         <tbody>${fields.map((f, i) => {
           const opts = Array.isArray(f.options) && f.options.length
             ? `<div class="pf-opts-preview">${f.options.slice(0, 3).map(o => `<span class="pf-opt-pill">${escapeHtml(String(o))}</span>`).join('')}${f.options.length > 3 ? `<span class="pf-opt-more">+${f.options.length - 3}</span>` : ''}</div>`
             : '';
+          const role = f.field_key ? `<span class="pf-type-badge">${PF_KEY_LABELS[f.field_key] || f.field_key}</span>` : '<span style="color:var(--gray-400)">—</span>';
           return `<tr>
             <td class="pf-num">${i + 1}</td>
             <td><div class="pf-label-cell">${escapeHtml(f.label)}${opts}</div></td>
             <td><span class="pf-type-badge">${PF_TYPE_LABELS[f.field_type] || f.field_type}</span></td>
+            <td>${role}</td>
             <td><button class="btn-icon danger" onclick="deleteProfileField('${f.id}')">🗑</button></td>
           </tr>`;
         }).join('')}</tbody>
@@ -4581,6 +4584,10 @@ function renderProfileFieldsPage(fields) {
             <textarea id="pf-options" class="form-input" rows="4"
               placeholder="Dưới 1 năm&#10;1-3 năm&#10;3-5 năm&#10;Trên 5 năm"></textarea>
           </div>
+          <label style="display:inline-flex;align-items:center;gap:8px;margin-top:12px;font-size:13px;color:var(--gray-600)">
+            <input id="pf-notification-email" type="checkbox" onchange="onPfSpecialToggle()" />
+            Dùng câu hỏi này làm email nhận thông báo cho học sinh
+          </label>
         </form>
       </div>
 
@@ -4595,23 +4602,47 @@ function renderProfileFieldsPage(fields) {
 }
 
 function onPfTypeChange() {
+  if ($('#pf-notification-email')?.checked) {
+    $('#pf-options-row')?.classList.add('hidden');
+    return;
+  }
   const type = $('#pf-type')?.value;
   $('#pf-options-row')?.classList.toggle('hidden', type !== 'select');
 }
 window.onPfTypeChange = onPfTypeChange;
 
+function onPfSpecialToggle() {
+  const isNotificationEmail = !!$('#pf-notification-email')?.checked;
+  const typeEl = $('#pf-type');
+  const labelEl = $('#pf-label');
+  if (typeEl) {
+    if (isNotificationEmail) {
+      typeEl.value = 'text';
+      typeEl.disabled = true;
+    } else {
+      typeEl.disabled = false;
+    }
+  }
+  if (isNotificationEmail && labelEl && !labelEl.value.trim()) {
+    labelEl.value = 'Gmail';
+  }
+  onPfTypeChange();
+}
+window.onPfSpecialToggle = onPfSpecialToggle;
+
 async function submitAddProfileField(e) {
   e.preventDefault();
   const label = $('#pf-label')?.value.trim();
   const fieldType = $('#pf-type')?.value || 'text';
+  const fieldKey = $('#pf-notification-email')?.checked ? 'notification_email' : null;
   const optionsRaw = $('#pf-options')?.value || '';
-  const options = fieldType === 'select'
+  const options = !fieldKey && fieldType === 'select'
     ? optionsRaw.split('\n').map(s => s.trim()).filter(Boolean)
     : null;
   if (!label) { toast('Vui lòng nhập nội dung câu hỏi', 'error'); return; }
-  if (fieldType === 'select' && (!options || options.length < 2)) { toast('Nhập ít nhất 2 lựa chọn', 'error'); return; }
+  if (!fieldKey && fieldType === 'select' && (!options || options.length < 2)) { toast('Nhập ít nhất 2 lựa chọn', 'error'); return; }
   try {
-    await api.post('/profile-fields', { label, field_type: fieldType, options });
+    await api.post('/profile-fields', { label, field_key: fieldKey, field_type: fieldType, options });
     toast('Đã thêm câu hỏi!');
     showProfileFields();
   } catch (e2) {
@@ -4649,6 +4680,10 @@ async function openStudentProfileModal(studentId, fullName) {
           <div class="pf-modal-row">
             <span class="pf-modal-label">Tên đăng nhập</span>
             <span class="pf-modal-value" style="font-family:monospace">${escapeHtml(student.username)}</span>
+          </div>
+          <div class="pf-modal-row">
+            <span class="pf-modal-label">Email thông báo</span>
+            <span class="pf-modal-value ${student.email ? '' : 'pf-empty-val'}">${student.email ? escapeHtml(student.email) : 'Chưa có dữ liệu'}</span>
           </div>
           <div class="pf-modal-divider"></div>
           ${fields.map(f => `

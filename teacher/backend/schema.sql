@@ -33,7 +33,8 @@ CREATE TABLE IF NOT EXISTS students (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   full_name TEXT NOT NULL,
   username TEXT UNIQUE NOT NULL,
-  password_hash TEXT NOT NULL
+  password_hash TEXT NOT NULL,
+  email TEXT
 );
 
 CREATE TABLE IF NOT EXISTS student_classes (
@@ -98,6 +99,7 @@ CREATE TABLE IF NOT EXISTS practice_attempts (
 CREATE TABLE IF NOT EXISTS profile_fields (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   label TEXT NOT NULL,
+  field_key TEXT,
   field_type TEXT NOT NULL DEFAULT 'text',
   options JSONB DEFAULT NULL,
   display_order INT DEFAULT 0,
@@ -126,6 +128,19 @@ CREATE TABLE IF NOT EXISTS vocab_sessions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   student_id UUID REFERENCES students(id) ON DELETE CASCADE,
   practiced_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS student_email_events (
+  student_id UUID NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+  assignment_id UUID NOT NULL REFERENCES assignments(id) ON DELETE CASCADE,
+  event_type TEXT NOT NULL CHECK (event_type IN ('new_assignment', 'score_released', 'deadline_1day')),
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'sending', 'sent', 'failed', 'skipped')),
+  provider_message_id TEXT,
+  last_error TEXT,
+  sent_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (student_id, assignment_id, event_type)
 );
 
 CREATE INDEX IF NOT EXISTS idx_classes_teacher_created
@@ -175,14 +190,27 @@ CREATE INDEX IF NOT EXISTS idx_practice_attempts_student_attempted
 CREATE INDEX IF NOT EXISTS idx_profile_fields_order
   ON profile_fields (display_order ASC, created_at ASC);
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_profile_fields_field_key_unique
+  ON profile_fields (field_key)
+  WHERE field_key IS NOT NULL;
+
 CREATE INDEX IF NOT EXISTS idx_student_vocab_saved
   ON student_vocab (student_id, saved_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_vocab_sessions_student_practiced
   ON vocab_sessions (student_id, practiced_at DESC);
 
+CREATE INDEX IF NOT EXISTS idx_student_email_events_status_created
+  ON student_email_events (status, created_at DESC);
+
 -- Default teacher. Teacher auth is intentionally not implemented for the
 -- current single-teacher deployment model.
 INSERT INTO teachers (full_name, email)
 VALUES ('Giáo viên', 'teacher@local.dev')
 ON CONFLICT (email) DO NOTHING;
+
+INSERT INTO profile_fields (label, field_key, field_type, display_order)
+SELECT 'Gmail', 'notification_email', 'text', 999
+WHERE NOT EXISTS (
+  SELECT 1 FROM profile_fields WHERE field_key = 'notification_email'
+);

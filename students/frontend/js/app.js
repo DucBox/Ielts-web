@@ -1209,7 +1209,7 @@ function showLogin() {
       <div class="login-card">
         <div class="login-logo">
           <span class="login-logo-icon">🎓</span>
-          <div class="login-logo-title">IELTS Student</div>
+          <div class="login-logo-title">English Student</div>
           <div class="login-logo-sub">Cổng học sinh luyện thi IELTS</div>
         </div>
 

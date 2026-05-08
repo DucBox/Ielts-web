@@ -39,8 +39,6 @@ function sanitizeHtml(html) {
 const ALLOWED_ORIGINS = [
   'https://ielts-teacher.pages.dev',
   'https://ielts-student.pages.dev',
-  'https://english-teacher.pages.dev',
-  'https://english-student.pages.dev',
 ];
 
 const NOTIFICATION_EMAIL_FIELD_KEY = 'notification_email';
@@ -751,7 +749,7 @@ function buildEmailText({ headline, intro, rows = [], outro = '' }) {
 async function sendResendEmail(env, { to, subject, html, text, idempotencyKey }) {
   const apiKey = String(env.RESEND_API_KEY || '').trim();
   const fromEmail = String(env.EMAIL_FROM || '').trim();
-  const fromName = String(env.EMAIL_FROM_NAME || 'English Student').trim();
+  const fromName = String(env.EMAIL_FROM_NAME || 'IELTS Student').trim();
   if (!apiKey) throw new Error('RESEND_API_KEY is not configured');
   if (!fromEmail) throw new Error('EMAIL_FROM is not configured');
 
@@ -886,7 +884,7 @@ function buildStudentEmailPayload(env, eventType, ctx) {
 
   if (eventType === EMAIL_EVENT_TYPES.NEW_ASSIGNMENT) {
     return {
-      subject: `[English Student] Bài mới: ${ctx.assignment_title}`,
+      subject: `[IELTS Student] Bài mới: ${ctx.assignment_title}`,
       html: buildEmailHtml({
         headline: 'Bạn có bài tập mới',
         intro: `${ctx.student_name || 'Học sinh'} ơi, giáo viên vừa giao một bài tập mới cho lớp của bạn.`,
@@ -904,7 +902,7 @@ function buildStudentEmailPayload(env, eventType, ctx) {
 
   if (eventType === EMAIL_EVENT_TYPES.SCORE_RELEASED) {
     return {
-      subject: `[English Student] Đã có điểm ${skillText}: ${ctx.assignment_title}`,
+      subject: `[IELTS Student] Đã có điểm ${skillText}: ${ctx.assignment_title}`,
       html: buildEmailHtml({
         headline: 'Bài làm của bạn đã có điểm',
         intro: `${ctx.student_name || 'Học sinh'} ơi, giáo viên đã cập nhật điểm cho bài ${skillText} của bạn.`,
@@ -921,7 +919,7 @@ function buildStudentEmailPayload(env, eventType, ctx) {
   }
 
   return {
-    subject: `[English Student] Nhắc hạn 1 ngày: ${ctx.assignment_title}`,
+    subject: `[IELTS Student] Nhắc hạn 1 ngày: ${ctx.assignment_title}`,
     html: buildEmailHtml({
       headline: 'Sắp tới hạn nộp bài',
       intro: `${ctx.student_name || 'Học sinh'} ơi, bài tập dưới đây còn dưới 24 giờ là tới hạn.`,

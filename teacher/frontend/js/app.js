@@ -627,11 +627,11 @@ function openCreateClassModal() {
   openModal('Tạo lớp học mới', `
     <div class="form-group">
       <label class="form-label">Tên lớp <span style="color:var(--danger)">*</span></label>
-      <input id="cls-name" class="form-input" placeholder="VD: English Foundation - Tháng 4/2025" />
+      <input id="cls-name" class="form-input" placeholder="VD: IELTS 5.5 - Tháng 4/2025" />
     </div>
     <div class="form-group">
       <label class="form-label">Mô tả</label>
-      <input id="cls-desc" class="form-input" placeholder="VD: Lớp tiếng Anh tổng quát cho học viên nền tảng" />
+      <input id="cls-desc" class="form-input" placeholder="VD: Lớp luyện thi IELTS band 5.5" />
     </div>
     <div class="modal-footer">
       <button class="btn btn-outline" onclick="closeModal()">Hủy</button>
@@ -5153,7 +5153,7 @@ function renderLoginGate(errorMsg = '') {
       <div style="width:100%;max-width:360px;padding:32px;border:1px solid var(--border);border-radius:12px;background:var(--bg-card)">
         <div style="text-align:center;margin-bottom:24px">
           <span style="font-size:2rem">🎓</span>
-          <h2 style="margin:8px 0 4px;font-size:1.25rem">English Teacher Portal</h2>
+          <h2 style="margin:8px 0 4px;font-size:1.25rem">IELTS Teacher Portal</h2>
           <p style="color:var(--text-muted);font-size:.875rem">Nhập mật khẩu để truy cập</p>
         </div>
         ${errorMsg ? `<div style="color:#ef4444;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:8px 12px;margin-bottom:16px;font-size:.875rem">${errorMsg}</div>` : ''}

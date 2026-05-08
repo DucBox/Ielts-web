@@ -2719,9 +2719,13 @@ tr[draggable="true"]:active { cursor: grabbing; }
   background: rgba(0,0,0,.4);
   z-index: 99;
   opacity: 0;
+  pointer-events: none;
   transition: opacity .25s;
 }
-.sidebar-backdrop.active { opacity: 1; }
+.sidebar-backdrop.active {
+  opacity: 1;
+  pointer-events: auto;
+}
 
 /* ═══ RESPONSIVE — 768px (tablet + phone) ════════════════════════════════════ */
 @media (max-width: 768px) {

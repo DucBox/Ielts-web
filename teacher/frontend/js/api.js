@@ -2,10 +2,29 @@
 const API_BASE = 'https://ielts-teacher-api.quangducngo0811.workers.dev';
 const API_CACHE_TTL_MS = 10 * 1000;
 const API_CACHE_PREFIX = 'ielts_teacher_api_cache:';
+const TEACHER_AUTH_TOKEN_KEY = 'teacher_auth_token';
 
 const api = {
   _base: API_BASE,
   _cache: new Map(),
+
+  _authToken() {
+    try { return sessionStorage.getItem(TEACHER_AUTH_TOKEN_KEY) || ''; } catch { return ''; }
+  },
+
+  setAuthToken(token) {
+    try {
+      if (token) sessionStorage.setItem(TEACHER_AUTH_TOKEN_KEY, token);
+      else sessionStorage.removeItem(TEACHER_AUTH_TOKEN_KEY);
+    } catch {}
+  },
+
+  _authHeaders(extra = {}) {
+    const headers = { ...extra };
+    const token = this._authToken();
+    if (token) headers.Authorization = `Bearer ${token}`;
+    return headers;
+  },
 
   _cacheKey(path) {
     return API_CACHE_PREFIX + path;
@@ -58,7 +77,10 @@ const api = {
   async get(path) {
     const cached = this._readCache(path);
     if (cached) return cached;
-    const res = await fetch(API_BASE + path, { credentials: 'include' });
+    const res = await fetch(API_BASE + path, {
+      headers: this._authHeaders(),
+      credentials: 'include',
+    });
     if (!res.ok) { this._handle401(res); throw await res.json(); }
     const data = await res.json();
     this._writeCache(path, data);
@@ -68,7 +90,7 @@ const api = {
   async post(path, data) {
     const res = await fetch(API_BASE + path, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: this._authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(data),
       credentials: 'include',
     });
@@ -80,6 +102,7 @@ const api = {
   async postForm(path, formData) {
     const res = await fetch(API_BASE + path, {
       method: 'POST',
+      headers: this._authHeaders(),
       body: formData,
       credentials: 'include',
     });
@@ -91,7 +114,7 @@ const api = {
   async patch(path, data) {
     const res = await fetch(API_BASE + path, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
+      headers: this._authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(data),
       credentials: 'include',
     });
@@ -101,7 +124,11 @@ const api = {
   },
 
   async delete(path) {
-    const res = await fetch(API_BASE + path, { method: 'DELETE', credentials: 'include' });
+    const res = await fetch(API_BASE + path, {
+      method: 'DELETE',
+      headers: this._authHeaders(),
+      credentials: 'include',
+    });
     if (!res.ok) { this._handle401(res); throw await res.json(); }
     this.clearCache();
     return res.json();

@@ -162,6 +162,15 @@ function togglePasswordVisibility(btn, inputId = 'login-password') {
   syncPasswordToggleButton(btn || document.querySelector(`[data-toggle-password="${inputId}"]`), input);
 }
 
+function getStudentPasswordValidationError(password) {
+  const value = String(password || '');
+  if (value.length < 6) return 'Mật khẩu mới phải có ít nhất 6 ký tự.';
+  if (!/\p{L}/u.test(value)) return 'Mật khẩu mới phải có ít nhất 1 chữ cái.';
+  if (!/\p{N}/u.test(value)) return 'Mật khẩu mới phải có ít nhất 1 số.';
+  if (!/[^\p{L}\p{N}\s]/u.test(value)) return 'Mật khẩu mới phải có ít nhất 1 ký tự đặc biệt.';
+  return '';
+}
+
 const SKILL_ICONS  = { reading: '📖', listening: '🎧', writing: '✍️', speaking: '🎤' };
 const SKILL_LABELS = { reading: 'Reading', listening: 'Listening', writing: 'Writing', speaking: 'Speaking' };
 const SKILL_ORDER  = ['reading', 'listening', 'writing', 'speaking'];
@@ -369,13 +378,13 @@ async function markAllNotifsRead() {
 async function refreshNotifBadge() {
   try {
     const classId = _selectedClass?.id;
-    if (!classId) return;
+    if (!classId) return 0;
     const data = await fetch(
       `${API_BASE}/student/notifications/count?class_id=${encodeURIComponent(classId)}`,
       { headers: api._authHeaders() }
     ).then(r => r.ok ? r.json() : { count: 0 });
     const badge = document.getElementById('notif-badge');
-    if (!badge) return;
+    if (!badge) return 0;
     const count = data.count || 0;
     if (count > 0) {
       badge.textContent = count > 99 ? '99+' : String(count);
@@ -383,7 +392,16 @@ async function refreshNotifBadge() {
     } else {
       badge.classList.add('hidden');
     }
-  } catch {}
+    return count;
+  } catch { return 0; }
+}
+
+let _notifToastShown = false;
+function maybeShowNotifToast(count) {
+  if (count > 0 && !_notifToastShown) {
+    _notifToastShown = true;
+    toast(`🔔 Bạn có ${count} thông báo chưa đọc`, 'info');
+  }
 }
 
 async function loadNotifPanel() {
@@ -435,8 +453,8 @@ async function syncNotifUIAfterSubmit() {
 
 function startNotifPolling() {
   if (_notifPollTimer) return;
-  refreshNotifBadge();
-  _notifPollTimer = setInterval(refreshNotifBadge, 60000);
+  refreshNotifBadge().then(maybeShowNotifToast);
+  _notifPollTimer = setInterval(refreshNotifBadge, 30000);
 }
 
 function stopNotifPolling() {
@@ -584,11 +602,11 @@ function setHighlightColor(color) {
   });
 }
 
-function applyStudentHighlight() {
+function applyStudentHighlight(targetId = 'reading-text') {
   const sel = window.getSelection();
   if (!sel || sel.isCollapsed || !sel.rangeCount) return;
   const range = sel.getRangeAt(0);
-  const target = document.getElementById('reading-text');
+  const target = document.getElementById(targetId);
   if (!target || !target.contains(range.commonAncestorContainer)) return;
   const mark = document.createElement('mark');
   mark.className = `student-highlight hl-${_highlightColor}`;
@@ -609,8 +627,8 @@ function removeStudentHighlight(mark) {
   parent.normalize();
 }
 
-function bindReadingTextInteractions() {
-  const target = document.getElementById('reading-text');
+function bindReadingTextInteractions(targetId = 'reading-text') {
+  const target = document.getElementById(targetId);
   if (!target) return;
   target.addEventListener('click', e => {
     const source = e.target instanceof Element ? e.target : e.target?.parentElement;
@@ -622,7 +640,7 @@ function bindReadingTextInteractions() {
     window.getSelection()?.removeAllRanges();
   });
   target.addEventListener('mouseup', () => {
-    setTimeout(() => applyStudentHighlight(), 0);
+    setTimeout(() => applyStudentHighlight(targetId), 0);
   });
 }
 
@@ -660,6 +678,179 @@ function renderListeningAudioHtml(obj) {
         <button class="btn-replay" onclick="audioSeekEl(this,10)"  title="Tới 10s">+10s ⏩</button>
       </div>
     </div>`).join('');
+}
+
+function renderLockedListeningAudioHtml(obj) {
+  const tracks = Array.isArray(obj?.content_urls) && obj.content_urls.length > 0
+    ? obj.content_urls
+    : (obj?.content_url ? [{ url: obj.content_url, name: '' }] : []);
+  if (!tracks.length) return '';
+  const multi = tracks.length > 1;
+  return `
+    <div class="listening-once-notice">
+      <strong>Lưu ý:</strong> Bài nghe này chỉ được nghe 1 lần cho mỗi audio và sẽ phát liên tục đến hết.
+      Bạn không thể tạm dừng, tua lại hoặc thao tác điều khiển audio trong lúc làm bài.
+    </div>
+    ${tracks.map((t, i) => `
+      <div class="audio-player-box audio-player-box--locked" data-locked-audio-box="${i}">
+        ${multi ? `<div class="audio-track-label">🎧 ${escapeHtml(t.name || ('File ' + (i + 1)))}</div>` : '<span class="audio-player-icon">🎧</span>'}
+        <audio class="locked-audio" data-locked-audio="${i}" preload="metadata" playsinline
+          controlslist="nodownload noplaybackrate noremoteplayback nofullscreen"
+          disablepictureinpicture src="${escapeHtml(t.url || '')}">Trình duyệt không hỗ trợ audio.</audio>
+        <div class="locked-audio-shell">
+          <div class="locked-audio-shell-icon">🎧</div>
+          <div class="locked-audio-shell-main">
+            <div class="locked-audio-progress-wrap">
+              <div class="locked-audio-progress-bar">
+                <div class="locked-audio-progress-fill" data-locked-audio-progress="${i}"></div>
+              </div>
+              <div class="locked-audio-time">
+                <span data-locked-audio-current="${i}">00:00</span>
+                <span data-locked-audio-duration="${i}">--:--</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="locked-audio-actions">
+          <button type="button" class="btn btn-primary btn-sm locked-audio-start" data-locked-audio-start="${i}">
+            ▶ Bắt đầu nghe
+          </button>
+          <div class="locked-audio-status" data-locked-audio-status="${i}">
+            Chỉ được nghe 1 lần và sẽ phát liên tục đến hết.
+          </div>
+        </div>
+      </div>`).join('')}
+  `;
+}
+
+function formatAudioPlaybackTime(seconds) {
+  const total = Math.max(0, Math.floor(Number(seconds) || 0));
+  const mins = Math.floor(total / 60);
+  const secs = total % 60;
+  return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+}
+
+function setupLockedListeningAudio() {
+  const audios = Array.from(document.querySelectorAll('[data-locked-audio]'));
+  if (!audios.length) return;
+
+  function updateStartButtons(activeAudio = null) {
+    const activePlaying = activeAudio && !activeAudio.paused && !activeAudio.ended;
+    audios.forEach(audio => {
+      const state = audio._lockedListening;
+      if (!state) return;
+      if (state.finished) {
+        state.button.disabled = true;
+        state.button.textContent = '✓ Đã nghe xong';
+        return;
+      }
+      if (state.started) {
+        state.button.disabled = true;
+        state.button.textContent = activePlaying && audio === activeAudio ? '🔊 Đang phát...' : '✓ Đã bắt đầu';
+        return;
+      }
+      state.button.disabled = !!activePlaying;
+      state.button.textContent = '▶ Bắt đầu nghe';
+    });
+  }
+
+  audios.forEach(audio => {
+    const index = audio.dataset.lockedAudio;
+    const button = document.querySelector(`[data-locked-audio-start="${index}"]`);
+    const status = document.querySelector(`[data-locked-audio-status="${index}"]`);
+    const progressFill = document.querySelector(`[data-locked-audio-progress="${index}"]`);
+    const currentTimeEl = document.querySelector(`[data-locked-audio-current="${index}"]`);
+    const durationEl = document.querySelector(`[data-locked-audio-duration="${index}"]`);
+    if (!button || !status || !progressFill || !currentTimeEl || !durationEl) return;
+
+    audio.controls = false;
+    audio.disablePictureInPicture = true;
+    audio.playbackRate = 1;
+
+    const state = audio._lockedListening = {
+      button,
+      status,
+      progressFill,
+      currentTimeEl,
+      durationEl,
+      started: false,
+      finished: false,
+      lastTime: 0,
+      internalSeek: false,
+    };
+
+    function syncAudioUi() {
+      const current = Number(audio.currentTime) || 0;
+      const duration = Number(audio.duration) || 0;
+      state.currentTimeEl.textContent = formatAudioPlaybackTime(current);
+      state.durationEl.textContent = Number.isFinite(duration) && duration > 0
+        ? formatAudioPlaybackTime(duration)
+        : '--:--';
+      const pct = duration > 0 ? Math.max(0, Math.min(100, current / duration * 100)) : 0;
+      state.progressFill.style.width = `${pct}%`;
+    }
+
+    audio.addEventListener('contextmenu', e => e.preventDefault());
+    audio.addEventListener('loadedmetadata', syncAudioUi);
+    audio.addEventListener('timeupdate', () => {
+      if (state.started && !audio.seeking) state.lastTime = audio.currentTime;
+      syncAudioUi();
+    });
+    audio.addEventListener('play', () => {
+      state.status.textContent = 'Đang phát liên tục. Bạn không thể tạm dừng hoặc tua audio này.';
+      updateStartButtons(audio);
+      syncAudioUi();
+    });
+    audio.addEventListener('pause', () => {
+      const nearEnd = Number.isFinite(audio.duration) && audio.duration > 0
+        && audio.currentTime >= audio.duration - 0.1;
+      if (!state.started || state.finished || audio.ended || nearEnd) return;
+      audio.play().catch(() => {});
+    });
+    audio.addEventListener('seeking', () => {
+      if (!state.started || state.finished || state.internalSeek) return;
+      state.internalSeek = true;
+      audio.currentTime = state.lastTime;
+      syncAudioUi();
+    });
+    audio.addEventListener('seeked', () => {
+      state.internalSeek = false;
+      syncAudioUi();
+    });
+    audio.addEventListener('ratechange', () => {
+      if (audio.playbackRate !== 1) audio.playbackRate = 1;
+    });
+    audio.addEventListener('ended', () => {
+      state.finished = true;
+      state.status.textContent = 'Đã phát xong audio này.';
+      syncAudioUi();
+      updateStartButtons(null);
+    });
+
+    button.addEventListener('click', async () => {
+      if (state.started || state.finished) return;
+      state.started = true;
+      state.lastTime = 0;
+      state.status.textContent = 'Đang chuẩn bị phát audio...';
+      updateStartButtons(audio);
+      try {
+        state.internalSeek = true;
+        audio.currentTime = 0;
+        state.internalSeek = false;
+        syncAudioUi();
+        await audio.play();
+      } catch (e) {
+        state.started = false;
+        state.internalSeek = false;
+        state.status.textContent = 'Không thể phát audio lúc này. Vui lòng bấm lại để thử tiếp.';
+        updateStartButtons(null);
+      }
+    });
+
+    syncAudioUi();
+  });
+
+  updateStartButtons(null);
 }
 
 function audioSeek(delta) {
@@ -827,11 +1018,20 @@ function openChangePasswordModal() {
       <label class="form-label">Mật khẩu mới</label>
       <div class="password-wrap">
         <input id="cp-new-password" class="form-input" type="password"
-          placeholder="Ít nhất 8 ký tự" autocomplete="new-password" />
+          placeholder="Ví dụ: duc123@" autocomplete="new-password" />
         <button type="button" class="btn-eye" data-toggle-password="cp-new-password"
           onclick="togglePasswordVisibility(this, 'cp-new-password')" title="Hiện mật khẩu" aria-label="Hiện mật khẩu">🙈</button>
       </div>
-      <div class="form-hint">Mật khẩu mới phải có ít nhất 8 ký tự.</div>
+      <div class="form-hint">Ít nhất 6 ký tự, gồm chữ cái, số và ký tự đặc biệt. Ví dụ: duc123@</div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Nhập lại mật khẩu mới</label>
+      <div class="password-wrap">
+        <input id="cp-confirm-password" class="form-input" type="password"
+          placeholder="Nhập lại mật khẩu mới" autocomplete="new-password" />
+        <button type="button" class="btn-eye" data-toggle-password="cp-confirm-password"
+          onclick="togglePasswordVisibility(this, 'cp-confirm-password')" title="Hiện mật khẩu" aria-label="Hiện mật khẩu">🙈</button>
+      </div>
     </div>
     <div class="modal-actions">
       <button class="btn btn-outline" onclick="closeModal()">Hủy</button>
@@ -844,17 +1044,23 @@ function openChangePasswordModal() {
 async function submitChangePassword(btn) {
   const oldPassword = $('#cp-old-password')?.value || '';
   const newPassword = $('#cp-new-password')?.value || '';
+  const confirmPassword = $('#cp-confirm-password')?.value || '';
 
-  if (!oldPassword || !newPassword) {
-    toast('Vui lòng nhập đầy đủ mật khẩu cũ và mật khẩu mới.', 'error');
+  if (!oldPassword || !newPassword || !confirmPassword) {
+    toast('Vui lòng nhập đầy đủ mật khẩu cũ, mật khẩu mới và nhập lại mật khẩu mới.', 'error');
     return;
   }
-  if (newPassword.length < 8) {
-    toast('Mật khẩu mới phải có ít nhất 8 ký tự.', 'error');
+  const passwordError = getStudentPasswordValidationError(newPassword);
+  if (passwordError) {
+    toast(passwordError, 'error');
     return;
   }
   if (oldPassword === newPassword) {
     toast('Mật khẩu mới phải khác mật khẩu cũ.', 'error');
+    return;
+  }
+  if (newPassword !== confirmPassword) {
+    toast('Mật khẩu nhập lại không khớp.', 'error');
     return;
   }
 
@@ -871,6 +1077,7 @@ async function submitChangePassword(btn) {
     await api.post('/student/change-password', {
       old_password: oldPassword,
       new_password: newPassword,
+      confirm_password: confirmPassword,
     });
     closeModal();
     toast('Đổi mật khẩu thành công!');
@@ -883,6 +1090,9 @@ async function submitChangePassword(btn) {
 function switchClass() {
   _selectedClass = null;
   localStorage.removeItem('ielts_class');
+  _notifToastShown = false;
+  const badge = document.getElementById('notif-badge');
+  if (badge) badge.classList.add('hidden');
   navigate('/select-class');
 }
 
@@ -1128,6 +1338,7 @@ function showClassSelect() {
 function chooseClass(classId, className) {
   selectClass({ id: classId, class_name: className });
   navigate('/home');
+  refreshNotifBadge().then(maybeShowNotifToast);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -3139,24 +3350,7 @@ function renderListening(a) {
       </div>
       <div class="assignment-content">
         <div class="content-pane">
-          ${(() => {
-            const tracks = Array.isArray(a.content_urls) && a.content_urls.length > 0
-              ? a.content_urls
-              : (a.content_url ? [{ url: a.content_url, name: '' }] : []);
-            if (!tracks.length) return '';
-            const multi = tracks.length > 1;
-            return tracks.map((t, i) => `
-              <div class="audio-player-box">
-                ${multi ? `<div class="audio-track-label">🎧 ${escapeHtml(t.name || ('File ' + (i + 1)))}</div>` : '<span class="audio-player-icon">🎧</span>'}
-                <audio controls src="${escapeHtml(t.url || '')}">Trình duyệt không hỗ trợ audio.</audio>
-                <div class="audio-replay-controls">
-                  <button class="btn-replay" onclick="audioSeekEl(this,-10)" title="Lùi 10s">⏪ -10s</button>
-                  <button class="btn-replay" onclick="audioSeekEl(this,-5)"  title="Lùi 5s">◀ -5s</button>
-                  <button class="btn-replay" onclick="audioSeekEl(this,5)"   title="Tới 5s">+5s ▶</button>
-                  <button class="btn-replay" onclick="audioSeekEl(this,10)"  title="Tới 10s">+10s ⏩</button>
-                </div>
-              </div>`).join('');
-          })()}
+          ${renderLockedListeningAudioHtml(a)}
           <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:16px">
             <div class="section-title" style="margin-bottom:0">Câu hỏi</div>
             ${buildHighlightToolbar()}
@@ -3174,6 +3368,7 @@ function renderListening(a) {
     </div>`;
 
   restoreAnswerDraft(a.id, qCount);
+  setupLockedListeningAudio();
   bindReadingTextInteractions();
   updateNavigatorState();
   startAutoSave(() => autoSaveAnswers(a.id, qCount));
@@ -4944,7 +5139,10 @@ function renderPractice() {
       <div class="assignment-content">
         <div class="content-pane" id="practice-content-pane">
           ${a.skill === 'listening' ? renderListeningAudioHtml(a) : ''}
-          <div class="section-title">${a.skill === 'listening' ? 'Câu hỏi' : 'Bài đọc & Câu hỏi'}</div>
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:16px">
+            <div class="section-title" style="margin-bottom:0">${a.skill === 'listening' ? 'Câu hỏi' : 'Bài đọc & Câu hỏi'}</div>
+            ${buildHighlightToolbar()}
+          </div>
           <div class="reading-text" id="practice-reading-text">${renderQuestionContentHTML(a.content_blocks, a.content_text || '')}</div>
         </div>
         <div class="answer-pane">
@@ -4954,6 +5152,8 @@ function renderPractice() {
         </div>
       </div>
     </div>`;
+
+  bindReadingTextInteractions('practice-reading-text');
 }
 
 async function submitPractice(assignmentId, btn) {

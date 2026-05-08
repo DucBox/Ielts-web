@@ -24,4 +24,4 @@ enabled = true
 mode = "smart"
 
 [triggers]
-crons = ["5 * * * *"]
+crons = ["50 * * * *"]

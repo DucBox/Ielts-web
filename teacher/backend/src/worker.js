@@ -71,6 +71,15 @@ function matchPath(pattern, pathname) {
   return params;
 }
 
+function getStudentPasswordValidationError(password) {
+  const value = String(password || '');
+  if (value.length < 6) return 'Mật khẩu mới phải có ít nhất 6 ký tự';
+  if (!/\p{L}/u.test(value)) return 'Mật khẩu mới phải có ít nhất 1 chữ cái';
+  if (!/\p{N}/u.test(value)) return 'Mật khẩu mới phải có ít nhất 1 số';
+  if (!/[^\p{L}\p{N}\s]/u.test(value)) return 'Mật khẩu mới phải có ít nhất 1 ký tự đặc biệt';
+  return '';
+}
+
 function extractR2Key(url, publicBase) {
   if (!url) return null;
   if (publicBase && url.startsWith(publicBase + '/')) return url.slice(publicBase.length + 1);
@@ -667,7 +676,10 @@ function parseCookies(request) {
 
 async function requireTeacherAuth(request, env) {
   if (!env.TEACHER_ACCESS_SECRET) return null;
-  const { teacher_gate: token } = parseCookies(request);
+  const authHeader = request.headers.get('Authorization') || '';
+  const bearerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+  const { teacher_gate: cookieToken } = parseCookies(request);
+  const token = bearerToken || cookieToken;
   if (!token) return null;
   return verifyJWT(token, env.TEACHER_ACCESS_SECRET);
 }
@@ -765,6 +777,16 @@ async function sendResendEmail(env, { to, subject, html, text, idempotencyKey })
   return data;
 }
 
+function logStudentEmail(stage, data = {}, level = 'log') {
+  const payload = { stage, ...data };
+  const writer = level === 'error' ? console.error : console.log;
+  writer('[student-email]', JSON.stringify(payload));
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 async function queueStudentEmailEvent(sql, { studentId, assignmentId, eventType }) {
   await sql`
     INSERT INTO student_email_events (student_id, assignment_id, event_type, status, updated_at)
@@ -772,6 +794,7 @@ async function queueStudentEmailEvent(sql, { studentId, assignmentId, eventType 
     ON CONFLICT (student_id, assignment_id, event_type)
     DO NOTHING
   `;
+  logStudentEmail('queued', { studentId, assignmentId, eventType, status: 'pending' });
 }
 
 async function claimStudentEmailEvent(sql, { studentId, assignmentId, eventType }) {
@@ -788,6 +811,14 @@ async function claimStudentEmailEvent(sql, { studentId, assignmentId, eventType 
       )
     RETURNING student_id, assignment_id, event_type
   `;
+  if (row) {
+    logStudentEmail('claimed', {
+      studentId: row.student_id,
+      assignmentId: row.assignment_id,
+      eventType: row.event_type,
+      status: 'sending',
+    });
+  }
   return row || null;
 }
 
@@ -803,6 +834,14 @@ async function updateStudentEmailEvent(sql, { studentId, assignmentId, eventType
       AND assignment_id = ${assignmentId}::uuid
       AND event_type = ${eventType}
   `;
+  logStudentEmail('status_updated', {
+    studentId,
+    assignmentId,
+    eventType,
+    status,
+    providerMessageId,
+    lastError,
+  }, status === 'failed' ? 'error' : 'log');
 }
 
 async function loadStudentEmailContext(sql, { studentId, assignmentId }) {
@@ -898,7 +937,10 @@ function buildStudentEmailPayload(env, eventType, ctx) {
 
 async function deliverQueuedStudentEmail(sql, env, { studentId, assignmentId, eventType }) {
   const claimed = await claimStudentEmailEvent(sql, { studentId, assignmentId, eventType });
-  if (!claimed) return false;
+  if (!claimed) {
+    logStudentEmail('claim_skipped', { studentId, assignmentId, eventType });
+    return false;
+  }
 
   try {
     const ctx = await loadStudentEmailContext(sql, { studentId, assignmentId });
@@ -931,6 +973,14 @@ async function deliverQueuedStudentEmail(sql, env, { studentId, assignmentId, ev
     }
 
     const payload = buildStudentEmailPayload(env, eventType, ctx);
+    logStudentEmail('sending', {
+      studentId,
+      assignmentId,
+      eventType,
+      to: email,
+      assignmentTitle: ctx.assignment_title || '',
+      className: ctx.class_name || '',
+    });
     const response = await sendResendEmail(env, {
       to: email,
       subject: payload.subject,
@@ -957,33 +1007,105 @@ async function deliverQueuedStudentEmail(sql, env, { studentId, assignmentId, ev
 
 async function processQueuedStudentEmails(sql, env, opts = {}) {
   const limit = Math.max(1, Math.min(Number(opts.limit) || 50, 200));
+  const concurrency = Math.max(1, Math.min(Number(opts.concurrency) || 1, 20));
+  const delayMs = Math.max(0, Math.min(Number(opts.delayMs) || 2000, 10000));
   let rows;
   if (opts.studentId && opts.assignmentId && Array.isArray(opts.eventTypes) && opts.eventTypes.length > 0) {
     rows = opts.eventTypes.map(eventType => ({
       student_id: opts.studentId,
       assignment_id: opts.assignmentId,
       event_type: eventType,
+      status: 'manual',
     }));
   } else {
     rows = await sql`
-      SELECT student_id, assignment_id, event_type
+      SELECT student_id, assignment_id, event_type, status
       FROM student_email_events
       WHERE status IN ('pending', 'failed')
+         OR (status = 'sending' AND updated_at < NOW() - INTERVAL '15 minutes')
       ORDER BY
-        CASE WHEN status = 'pending' THEN 0 ELSE 1 END,
+        CASE
+          WHEN status = 'pending' THEN 0
+          WHEN status = 'failed' THEN 1
+          ELSE 2
+        END,
         updated_at ASC,
         created_at ASC
       LIMIT ${limit}
     `;
   }
 
-  await Promise.allSettled(rows.map(row => (
-    deliverQueuedStudentEmail(sql, env, {
+  logStudentEmail('process_batch', {
+    limit,
+    concurrency,
+    delayMs,
+    selectedCount: rows.length,
+    selected: rows.map(row => ({
       studentId: row.student_id,
       assignmentId: row.assignment_id,
       eventType: row.event_type,
-    })
-  )));
+      sourceStatus: row.status || null,
+    })),
+  });
+
+  const summary = { attempted: rows.length, fulfilled: 0, sent: 0, notSent: 0, rejected: 0 };
+  for (let start = 0; start < rows.length; start += concurrency) {
+    const chunk = rows.slice(start, start + concurrency);
+    logStudentEmail('process_chunk_start', {
+      start,
+      size: chunk.length,
+      concurrency,
+      items: chunk.map(row => ({
+        studentId: row.student_id,
+        assignmentId: row.assignment_id,
+        eventType: row.event_type,
+        sourceStatus: row.status || null,
+      })),
+    });
+
+    const settled = await Promise.allSettled(chunk.map(row => (
+      deliverQueuedStudentEmail(sql, env, {
+        studentId: row.student_id,
+        assignmentId: row.assignment_id,
+        eventType: row.event_type,
+      })
+    )));
+
+    settled.forEach((item, index) => {
+      const row = chunk[index];
+      if (item.status === 'fulfilled') {
+        summary.fulfilled += 1;
+        if (item.value) summary.sent += 1;
+        else summary.notSent += 1;
+        return;
+      }
+
+      summary.rejected += 1;
+      logStudentEmail('process_item_rejected', {
+        studentId: row.student_id,
+        assignmentId: row.assignment_id,
+        eventType: row.event_type,
+        sourceStatus: row.status || null,
+        reason: String(item.reason?.stack || item.reason?.message || item.reason || 'unknown_rejection').slice(0, 2000),
+      }, 'error');
+    });
+
+    logStudentEmail('process_chunk_done', {
+      start,
+      size: chunk.length,
+      summary: { ...summary },
+    }, summary.rejected > 0 ? 'error' : 'log');
+
+    if (start + concurrency < rows.length && delayMs > 0) {
+      logStudentEmail('process_chunk_pause', {
+        nextStart: start + concurrency,
+        delayMs,
+      });
+      await sleep(delayMs);
+    }
+  }
+
+  logStudentEmail('process_batch_done', summary, summary.rejected > 0 ? 'error' : 'log');
 }
 
 async function enqueueDeadline1DayEmails(sql) {
@@ -1349,7 +1471,7 @@ export default {
           { teacher: true, exp: Date.now() + 8 * 60 * 60 * 1000 },
           env.TEACHER_ACCESS_SECRET,
         );
-        return new Response(JSON.stringify({ ok: true }), {
+        return new Response(JSON.stringify({ ok: true, token }), {
           status: 200,
           headers: {
             ...CORS,
@@ -2605,15 +2727,20 @@ export default {
 
         const oldPassword = String(body.old_password || '');
         const newPassword = String(body.new_password || '');
+        const confirmPassword = String(body.confirm_password || '');
 
-        if (!oldPassword || !newPassword) {
-          return err('old_password và new_password là bắt buộc', 400);
-        }
-        if (newPassword.length < 8) {
-          return err('Mật khẩu mới phải có ít nhất 8 ký tự', 400);
+        if (!oldPassword || !newPassword || !confirmPassword) {
+          return err('old_password, new_password và confirm_password là bắt buộc', 400);
         }
         if (oldPassword === newPassword) {
           return err('Mật khẩu mới phải khác mật khẩu cũ', 400);
+        }
+        if (newPassword !== confirmPassword) {
+          return err('Mật khẩu nhập lại không khớp', 400);
+        }
+        const passwordError = getStudentPasswordValidationError(newPassword);
+        if (passwordError) {
+          return err(passwordError, 400);
         }
 
         const [student] = await sql`
@@ -3041,9 +3168,11 @@ export default {
   async scheduled(controller, env, ctx) {
     const sql = neon(env.DATABASE_URL);
     ctx.waitUntil((async () => {
+      logStudentEmail('scheduled_start', { cron: controller?.cron || null });
       await autoCloseExpired(sql);
       await enqueueDeadline1DayEmails(sql);
-      await processQueuedStudentEmails(sql, env, { limit: 200 });
+      await processQueuedStudentEmails(sql, env, { limit: 200, concurrency: 1, delayMs: 2000 });
+      logStudentEmail('scheduled_done', { cron: controller?.cron || null });
     })());
   },
 };

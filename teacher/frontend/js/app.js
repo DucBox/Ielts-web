@@ -5177,6 +5177,16 @@ function renderLoginGate(errorMsg = '') {
 
 const TEACHER_AUTH_FLAG = 'teacher_auth_ok';
 
+function expireTeacherSession(errorMsg = '') {
+  api.clearCache();
+  api.setAuthToken('');
+  sessionStorage.removeItem(TEACHER_AUTH_FLAG);
+  history.replaceState(null, '', window.location.pathname);
+  document.getElementById('sidebar').style.display = 'none';
+  document.getElementById('mobile-hamburger').style.display = 'none';
+  renderLoginGate(errorMsg);
+}
+
 async function submitLoginGate(e) {
   e.preventDefault();
   const btn = document.getElementById('gate-submit-btn');
@@ -5190,7 +5200,10 @@ async function submitLoginGate(e) {
       body: JSON.stringify({ password }),
       credentials: 'include',
     }).then(async res => {
-      if (!res.ok) throw new Error((await res.json()).error || 'Sai mật khẩu');
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Sai mật khẩu');
+      if (!data?.token) throw new Error('Không nhận được token đăng nhập');
+      api.setAuthToken(data.token);
     });
     sessionStorage.setItem(TEACHER_AUTH_FLAG, '1');
     document.getElementById('sidebar').style.display = '';
@@ -5204,24 +5217,17 @@ async function submitLoginGate(e) {
 
 async function logout() {
   await fetch(api._base + '/teacher-auth/logout', { method: 'POST', credentials: 'include' }).catch(() => {});
-  api.clearCache();
-  sessionStorage.removeItem(TEACHER_AUTH_FLAG);
-  history.replaceState(null, '', window.location.pathname);
-  renderLoginGate();
+  expireTeacherSession();
 }
 
 async function boot() {
-  // Fast path: session flag present → skip network check, go straight to app
-  if (sessionStorage.getItem(TEACHER_AUTH_FLAG)) {
-    refreshInboxBadge();
-    router();
-    return;
-  }
-  // Slow path: verify with server (first visit or after logout)
   try {
-    const res = await fetch(api._base + '/teacher-auth/status', { credentials: 'include' });
+    const res = await fetch(api._base + '/teacher-auth/status', {
+      headers: api._authHeaders(),
+      credentials: 'include',
+    });
     const { authenticated } = await res.json();
-    if (!authenticated) { renderLoginGate(); return; }
+    if (!authenticated) { expireTeacherSession(); return; }
     sessionStorage.setItem(TEACHER_AUTH_FLAG, '1');
   } catch {
     renderLoginGate('Không kết nối được server');
@@ -5244,9 +5250,7 @@ window.submitLoginGate        = submitLoginGate;
 window.toggleGatePassword     = toggleGatePassword;
 window.logout                 = logout;
 window._onTeacherUnauthorized = () => {
-  document.getElementById('sidebar').style.display = 'none';
-  document.getElementById('mobile-hamburger').style.display = 'none';
-  renderLoginGate('Phiên đăng nhập hết hạn. Vui lòng đăng nhập lại.');
+  expireTeacherSession('Phiên đăng nhập hết hạn. Vui lòng đăng nhập lại.');
 };
 
 if (document.readyState === 'loading') {

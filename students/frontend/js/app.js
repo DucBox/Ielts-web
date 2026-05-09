@@ -203,7 +203,7 @@ const HIGHLIGHT_COLORS = {
 
 // Vocab game state
 let _vocabGameId   = null;
-let _vocabGameData = null; // { assignment_title, skill, vocabulary: [{word, definition, example}] }
+let _vocabGameData = null; // { assignment_title, skill, vocabulary: [{word, definition, collocation?, example?}] }
 let _fc            = null; // flashcard: { cards, idx, flipped } | null
 let _match         = null; // matching: { cards, firstSelected, wrongCount, startTime, timerInterval, done } | null
 
@@ -211,23 +211,62 @@ let _match         = null; // matching: { cards, firstSelected, wrongCount, star
 let _taskTimer       = null;       // setInterval id for count-up timer
 let _taskStartTime   = 0;
 let _autoSaveTimer   = null;
+let _autoSaveFn      = null;
+let _autoSaveDebounceTimer = null;
 let _flaggedSet      = new Set();  // q_no flagged for review
 let _activeAssignmentId = null;
 let _waveformAnim    = null;       // requestAnimationFrame id for speaking waveform
 let _audioCtx        = null;       // shared AudioContext for waveform
+const ASSIGNMENT_DRAFT_TTL_MS = 15 * 60 * 1000;
+const ASSIGNMENT_AUTOSAVE_INTERVAL_MS = 15 * 1000;
+const ASSIGNMENT_AUTOSAVE_DEBOUNCE_MS = 800;
 
 function draftKey(aid, kind = 'answers') {
   return `ielts_draft:${_student?.id || 'anon'}:${aid}:${kind}`;
 }
+function pruneStudentDrafts() {
+  const prefix = 'ielts_draft:';
+  try {
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const key = localStorage.key(i);
+      if (!key || !key.startsWith(prefix)) continue;
+      try {
+        const raw = localStorage.getItem(key);
+        if (!raw) continue;
+        const parsed = JSON.parse(raw);
+        if (!parsed?.expiresAt || parsed.expiresAt <= Date.now()) {
+          localStorage.removeItem(key);
+        }
+      } catch {
+        localStorage.removeItem(key);
+      }
+    }
+  } catch {}
+}
 function saveDraft(aid, kind, data) {
-  try { localStorage.setItem(draftKey(aid, kind), JSON.stringify({ data, savedAt: Date.now() })); } catch {}
+  const savedAt = Date.now();
+  try {
+    localStorage.setItem(draftKey(aid, kind), JSON.stringify({
+      data,
+      savedAt,
+      expiresAt: savedAt + ASSIGNMENT_DRAFT_TTL_MS,
+    }));
+  } catch {}
 }
 function loadDraft(aid, kind = 'answers') {
   try {
     const raw = localStorage.getItem(draftKey(aid, kind));
     if (!raw) return null;
-    return JSON.parse(raw);
-  } catch { return null; }
+    const parsed = JSON.parse(raw);
+    if (!parsed?.expiresAt || parsed.expiresAt <= Date.now()) {
+      localStorage.removeItem(draftKey(aid, kind));
+      return null;
+    }
+    return parsed;
+  } catch {
+    try { localStorage.removeItem(draftKey(aid, kind)); } catch {}
+    return null;
+  }
 }
 function clearAllDrafts(aid) {
   for (const k of ['answers', 'writing', 'flags', 'notes', 'startedAt']) {
@@ -505,11 +544,30 @@ function stopTaskTimer() {
 
 function startAutoSave(fn) {
   if (_autoSaveTimer) clearInterval(_autoSaveTimer);
-  _autoSaveTimer = setInterval(() => { try { fn(); } catch {} }, 5000);
+  _autoSaveFn = fn;
+  _autoSaveTimer = setInterval(() => { try { _autoSaveFn?.(); } catch {} }, ASSIGNMENT_AUTOSAVE_INTERVAL_MS);
 }
 function stopAutoSave() {
   if (_autoSaveTimer) clearInterval(_autoSaveTimer);
+  if (_autoSaveDebounceTimer) clearTimeout(_autoSaveDebounceTimer);
   _autoSaveTimer = null;
+  _autoSaveFn = null;
+  _autoSaveDebounceTimer = null;
+}
+function scheduleAutoSave(fn) {
+  _autoSaveFn = fn;
+  if (_autoSaveDebounceTimer) clearTimeout(_autoSaveDebounceTimer);
+  _autoSaveDebounceTimer = setTimeout(() => {
+    _autoSaveDebounceTimer = null;
+    try { fn(); } catch {}
+  }, ASSIGNMENT_AUTOSAVE_DEBOUNCE_MS);
+}
+function flushAutoSave() {
+  if (_autoSaveDebounceTimer) {
+    clearTimeout(_autoSaveDebounceTimer);
+    _autoSaveDebounceTimer = null;
+  }
+  try { _autoSaveFn?.(); } catch {}
 }
 
 function showSavedIndicator() {
@@ -1117,6 +1175,7 @@ const routes = {
 };
 
 function navigate(hash) {
+  flushAutoSave();
   closeMobileNav();
   window.location.hash = hash;
 }
@@ -1162,6 +1221,10 @@ function matchRoute(pattern, path) {
 }
 
 function router() {
+  flushAutoSave();
+  stopAutoSave();
+  stopTaskTimer();
+  _activeAssignmentId = null;
   const hash = window.location.hash.slice(1) || '/home';
   updateHeader();
 
@@ -3232,12 +3295,15 @@ async function showAssignment({ id }) {
     // If already submitted → go to result
     try {
       await api.get(`/submissions?assignment_id=${id}&student_id=${_student.id}`);
+      clearAllDrafts(id);
       navigate(`/result/${id}`);
       return;
     } catch {}
 
     renderAssignment(assignment);
   } catch (e) {
+    const msg = String(e?.error || e?.message || '').toLowerCase();
+    if (msg.includes('đóng') || msg.includes('không tìm thấy')) clearAllDrafts(id);
     toast('Lỗi tải bài tập: ' + (e.error || e.message), 'error');
     navigate('/assignments');
   }
@@ -3287,7 +3353,7 @@ function renderReading(a) {
       <div class="answer-row">
         <span class="q-label">Q${i}</span>
         <input class="answer-input" id="ans-${i}" type="text" placeholder="Đáp án câu ${i}"
-          oninput="updateNavigatorState();autoSaveAnswers('${a.id}', ${qCount})" />
+          oninput="updateNavigatorState();scheduleAnswerDraftSave('${a.id}', ${qCount})" />
         <button class="q-flag-btn${flagged}" data-flag-q="${i}" onclick="toggleFlag(${i})" title="Đánh dấu xem lại">🚩</button>
       </div>`;
   }
@@ -3321,7 +3387,7 @@ function renderReading(a) {
   restoreAnswerDraft(a.id, qCount);
   bindReadingTextInteractions();
   updateNavigatorState();
-  startAutoSave(() => autoSaveAnswers(a.id, qCount));
+  startAutoSave(() => persistAnswerDraft(a.id, qCount));
 }
 
 // ── Listening ─────────────────────────────────────────────────────────────────
@@ -3335,7 +3401,7 @@ function renderListening(a) {
       <div class="answer-row">
         <span class="q-label">Q${i}</span>
         <input class="answer-input" id="ans-${i}" type="text" placeholder="Đáp án câu ${i}"
-          oninput="updateNavigatorState();autoSaveAnswers('${a.id}', ${qCount})" />
+          oninput="updateNavigatorState();scheduleAnswerDraftSave('${a.id}', ${qCount})" />
         <button class="q-flag-btn${flagged}" data-flag-q="${i}" onclick="toggleFlag(${i})" title="Đánh dấu xem lại">🚩</button>
       </div>`;
   }
@@ -3371,17 +3437,20 @@ function renderListening(a) {
   setupLockedListeningAudio();
   bindReadingTextInteractions();
   updateNavigatorState();
-  startAutoSave(() => autoSaveAnswers(a.id, qCount));
+  startAutoSave(() => persistAnswerDraft(a.id, qCount));
 }
 
 // Auto-save / restore answers (B1.1)
-function autoSaveAnswers(aid, qCount) {
+function persistAnswerDraft(aid, qCount) {
   const answers = [];
   for (let i = 1; i <= qCount; i++) {
     answers.push({ q_no: i, answer: ($(`#ans-${i}`)?.value || '') });
   }
   saveDraft(aid, 'answers', answers);
   showSavedIndicator();
+}
+function scheduleAnswerDraftSave(aid, qCount) {
+  scheduleAutoSave(() => persistAnswerDraft(aid, qCount));
 }
 function restoreAnswerDraft(aid, qCount) {
   const draft = loadDraft(aid, 'answers');
@@ -3533,7 +3602,7 @@ function renderWriting(a) {
           <div class="section-title">Bài làm của bạn</div>
           <textarea id="writing-answer" class="writing-textarea"
             placeholder="Viết bài của bạn vào đây..."
-            oninput="updateWordCount(this);autoSaveWriting('${a.id}')"></textarea>
+            oninput="updateWordCount(this);scheduleWritingDraftSave('${a.id}')"></textarea>
           <div id="word-count" class="word-count word-count-extended">
             <span data-stat="words">0 từ</span>
             <span data-stat="chars">0 ký tự</span>
@@ -3551,7 +3620,7 @@ function renderWriting(a) {
     const ta = $('#writing-answer');
     if (ta) { ta.value = draft.data; updateWordCount(ta); }
   }
-  startAutoSave(() => autoSaveWriting(a.id));
+  startAutoSave(() => persistWritingDraft(a.id));
 }
 
 function updateWordCount(textarea) {
@@ -3570,10 +3639,13 @@ function updateWordCount(textarea) {
   set('paragraphs', `${paragraphs} đoạn`);
 }
 
-function autoSaveWriting(aid) {
+function persistWritingDraft(aid) {
   const v = $('#writing-answer')?.value || '';
   saveDraft(aid, 'writing', v);
   showSavedIndicator();
+}
+function scheduleWritingDraftSave(aid) {
+  scheduleAutoSave(() => persistWritingDraft(aid));
 }
 
 async function submitWriting(assignmentId, btn) {
@@ -4033,6 +4105,7 @@ function renderGradedResult(sub) {
           </div>
           <div class="vocab-result-detail hidden" id="vocab-detail-${i}">
             <div class="vocab-result-def">${escapeHtml(v.definition)}</div>
+            ${v.collocation ? `<div class="vocab-result-collocation">Collocation: ${escapeHtml(v.collocation)}</div>` : ''}
             ${v.example ? `<div class="vocab-result-example">"${escapeHtml(v.example)}"</div>` : ''}
           </div>
         </div>`;}).join('')}
@@ -4725,6 +4798,7 @@ function renderFlashcard() {
           <div class="flashcard-face flashcard-back">
             <div class="flashcard-lang">Nghĩa tiếng Việt</div>
             <div class="flashcard-word">${escapeHtml(card.definition)}</div>
+            ${card.collocation ? `<div class="flashcard-collocation">Collocation: ${escapeHtml(card.collocation)}</div>` : ''}
             ${card.example ? `<div class="flashcard-example">"${escapeHtml(card.example)}"</div>` : ''}
           </div>
         </div>
@@ -5034,8 +5108,8 @@ window.toggleFlag          = toggleFlag;
 window.jumpToQuestion      = jumpToQuestion;
 window.updateNavigatorState= updateNavigatorState;
 window.audioSeek           = audioSeek;
-window.autoSaveAnswers     = autoSaveAnswers;
-window.autoSaveWriting     = autoSaveWriting;
+window.scheduleAnswerDraftSave = scheduleAnswerDraftSave;
+window.scheduleWritingDraftSave = scheduleWritingDraftSave;
 window.resetRecording      = resetRecording;
 window.setHistoryFilter    = setHistoryFilter;
 window.changeCalMonth      = changeCalMonth;
@@ -5280,11 +5354,13 @@ function locatePracticeText(searchText, metaRaw = '') {
 window.locatePracticeText = locatePracticeText;
 
 loadAuth();
+pruneStudentDrafts();
 
 // If any API call returns 401 (missing or expired JWT), clear session and go to login
 window.addEventListener('auth:expired', () => {
   clearAuth();
   navigate('/login');
 });
+window.addEventListener('pagehide', flushAutoSave);
 
 router();

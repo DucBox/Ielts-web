@@ -143,6 +143,18 @@ CREATE TABLE IF NOT EXISTS student_email_events (
   PRIMARY KEY (student_id, assignment_id, event_type)
 );
 
+CREATE TABLE IF NOT EXISTS student_email_dispatch_state (
+  singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
+  lease_owner TEXT,
+  lease_until TIMESTAMPTZ,
+  last_sent_at TIMESTAMPTZ,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+INSERT INTO student_email_dispatch_state (singleton)
+VALUES (TRUE)
+ON CONFLICT (singleton) DO NOTHING;
+
 CREATE INDEX IF NOT EXISTS idx_classes_teacher_created
   ON classes (teacher_id, created_at DESC);
 

@@ -1315,6 +1315,12 @@ body {
   line-height: 1.5;
 }
 
+.vocab-result-collocation {
+  font-size: 12px;
+  color: var(--primary);
+  margin-top: 4px;
+}
+
 .vocab-result-example {
   font-size: 12px;
   color: var(--gray-400);
@@ -2198,6 +2204,12 @@ body {
   color: var(--gray-600);
   text-align: center;
   margin-top: 6px;
+}
+.flashcard-collocation {
+  font-size: 12px;
+  color: var(--primary);
+  text-align: center;
+  margin-top: 8px;
 }
 .fc-nav {
   display: flex;
@@ -4479,11 +4491,16 @@ select.pi-input { height: 42px; cursor: pointer; }
 [data-theme="dark"] .class-select-sub,
 [data-theme="dark"] .score-band,
 [data-theme="dark"] .stat-label,
+[data-theme="dark"] .vocab-result-collocation,
 [data-theme="dark"] .vocab-result-example,
 [data-theme="dark"] .submit-confirm-body,
 [data-theme="dark"] .submit-bar-info,
 [data-theme="dark"] .feedback-ann-quote,
 [data-theme="dark"] .audio-slot-filename {
+  color: var(--text-muted);
+}
+
+[data-theme="dark"] .flashcard-collocation {
   color: var(--text-muted);
 }
 

@@ -516,6 +516,45 @@ tbody tr:hover { background: var(--bg-surface-alt); }
 }
 .btn-clear-location.hidden { display: none; }
 
+.btn-delete-row {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 15px;
+  line-height: 1;
+  padding: 0 5px;
+  border: none;
+  background: transparent;
+  color: var(--gray-400);
+  cursor: pointer;
+  border-radius: 4px;
+  transition: color 0.15s, background 0.15s;
+}
+.btn-delete-row:hover {
+  color: var(--danger, #e53935);
+  background: rgba(229, 57, 53, 0.08);
+}
+
+.btn-add-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 10px;
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  border: 1px dashed var(--primary);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--primary);
+  cursor: pointer;
+  width: 100%;
+  justify-content: center;
+  transition: background 0.15s;
+}
+.btn-add-row:hover {
+  background: color-mix(in srgb, var(--primary) 8%, transparent);
+}
+
 .answer-explanation {
   border: none;
   outline: none;
@@ -1155,6 +1194,15 @@ body.resizing-image {
   gap: 6px;
 }
 
+.vocab-list-heading {
+  margin: 10px 0 2px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--gray-400);
+}
+
 .vocab-item {
   display: flex;
   align-items: center;
@@ -1179,12 +1227,37 @@ body.resizing-image {
   min-width: 120px;
 }
 
+.vocab-collocation {
+  flex: 1;
+  color: var(--primary);
+  font-size: 12px;
+  min-width: 120px;
+}
+
 .vocab-example {
   flex: 1;
   color: var(--gray-400);
   font-style: italic;
   font-size: 12px;
   min-width: 100px;
+}
+
+.vocab-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.vocab-edit {
+  border: 1px solid var(--gray-200);
+  background: var(--gray-50);
+  color: var(--gray-700);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
 }
 
 .vocab-remove {
@@ -1195,9 +1268,9 @@ body.resizing-image {
   font-size: 16px;
   line-height: 1;
   padding: 0;
-  margin-left: auto;
   flex-shrink: 0;
 }
+.vocab-edit:hover { border-color: var(--primary); color: var(--primary-dk); }
 .vocab-remove:hover { color: var(--danger); }
 
 /* ═══ AUDIO UPLOAD ═══════════════════════════════════════════════════════════ */
@@ -1477,7 +1550,7 @@ body.resizing-image {
   justify-content: flex-end;
   gap: 10px;
   margin-top: 24px;
-  padding-top: 16px;
+  padding: 16px 24px 20px;
   border-top: 1px solid var(--border);
 }
 
@@ -3395,9 +3468,17 @@ tr[draggable="true"]:active { cursor: grabbing; }
 
 [data-theme="dark"] .pdf-import-sub,
 [data-theme="dark"] .pdf-import-meta,
+[data-theme="dark"] .vocab-list-heading,
 [data-theme="dark"] .vocab-def,
+[data-theme="dark"] .vocab-collocation,
 [data-theme="dark"] .vocab-example {
   color: var(--text-muted);
+}
+
+[data-theme="dark"] .vocab-edit {
+  background: var(--surface);
+  border-color: var(--border);
+  color: var(--text);
 }
 
 [data-theme="dark"] .fmt-color-palette,

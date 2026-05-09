@@ -143,6 +143,229 @@ function renderRouteError(title, error, retryHash = window.location.hash.slice(1
   if (retryHash) window._lastFailedRoute = retryHash;
 }
 
+const QUESTION_DRAFT_PREFIX = 'ielts_teacher_question_draft:';
+const QUESTION_DRAFT_TTL_MS = 15 * 60 * 1000;
+const QUESTION_DRAFT_SAVE_INTERVAL_MS = 15 * 1000;
+const QUESTION_DRAFT_SAVE_DEBOUNCE_MS = 800;
+let _questionDraftContext = null;
+let _questionDraftTimer = null;
+let _questionDraftDebounceTimer = null;
+let _suspendQuestionDraftSave = false;
+
+function getQuestionDraftKey(mode, questionId = '') {
+  return `${QUESTION_DRAFT_PREFIX}${mode}:${questionId || 'new'}`;
+}
+
+function pruneTeacherQuestionDrafts() {
+  try {
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const key = localStorage.key(i);
+      if (!key || !key.startsWith(QUESTION_DRAFT_PREFIX)) continue;
+      try {
+        const raw = localStorage.getItem(key);
+        if (!raw) continue;
+        const parsed = JSON.parse(raw);
+        if (!parsed?.expiresAt || parsed.expiresAt <= Date.now()) {
+          localStorage.removeItem(key);
+        }
+      } catch {
+        localStorage.removeItem(key);
+      }
+    }
+  } catch {}
+}
+
+function loadQuestionDraft(key) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed?.expiresAt || parsed.expiresAt <= Date.now()) {
+      localStorage.removeItem(key);
+      return null;
+    }
+    return parsed.data || null;
+  } catch {
+    try { localStorage.removeItem(key); } catch {}
+    return null;
+  }
+}
+
+function saveQuestionDraft(key, data) {
+  const savedAt = Date.now();
+  try {
+    localStorage.setItem(key, JSON.stringify({
+      data,
+      savedAt,
+      expiresAt: savedAt + QUESTION_DRAFT_TTL_MS,
+    }));
+  } catch {}
+}
+
+function clearQuestionDraft(key) {
+  if (!key) return;
+  try { localStorage.removeItem(key); } catch {}
+}
+
+function hasMeaningfulQuestionDraft(snapshot) {
+  if (!snapshot) return false;
+  if (String(snapshot.title || '').trim()) return true;
+  if (String(snapshot.skill || '').trim()) return true;
+  if (Array.isArray(snapshot.tags) && snapshot.tags.length > 0) return true;
+  if (String(snapshot.script || '').trim()) return true;
+  if (Array.isArray(snapshot.vocabulary) && snapshot.vocabulary.length > 0) return true;
+  if (Array.isArray(snapshot.questions_data) && snapshot.questions_data.some(item =>
+    (Array.isArray(item.answers) && item.answers.length > 0)
+      || String(item.location || '').trim()
+      || String(item.explanation || '').trim()
+  )) return true;
+  const contentText = blocksToPlainText(snapshot.content_blocks || []).trim();
+  return !!contentText;
+}
+
+function getQuestionTagContainer() {
+  return $('#q-tags-chip-edit') || $('#q-tags-chip');
+}
+
+function getQuestionTagInput() {
+  return $('#q-tag-input-edit') || $('#q-tag-input');
+}
+
+function setQuestionChipValues(container, input, values = []) {
+  if (!container || !input) return;
+  container.querySelectorAll('.chip').forEach(chip => chip.remove());
+  values.forEach(value => {
+    const chip = document.createElement('span');
+    chip.className = 'chip';
+    chip.dataset.value = String(value).trim();
+    chip.innerHTML = `${escapeHtml(String(value).trim())} <button type="button" class="chip-remove">×</button>`;
+    chip.querySelector('.chip-remove').onclick = () => chip.remove();
+    container.insertBefore(chip, input);
+  });
+}
+
+function snapshotCurrentQuestionDraft() {
+  const titleInput = $('#q-title');
+  if (!titleInput) return null;
+  const skill = $('#q-skill')?.value || _questionDraftContext?.skill || '';
+  const contentBlocks = normalizeContentBlocksForEditor(_contentBlocks);
+  const snapshot = {
+    mode: _questionDraftContext?.mode || 'new',
+    question_id: _questionDraftContext?.questionId || '',
+    title: titleInput.value.trim(),
+    skill,
+    tags: (() => {
+      const container = getQuestionTagContainer();
+      return container ? getChipValues(container) : [];
+    })(),
+    content_blocks: contentBlocks,
+    questions_data: (skill === 'reading' || skill === 'listening') ? collectAnswerGrid() : [],
+    vocabulary: Array.isArray(_vocabItems) ? _vocabItems.map(item => ({ ...item })) : [],
+    script: skill === 'listening' ? (($('#listening-script')?.value || '').trim()) : '',
+  };
+  return snapshot;
+}
+
+function flushQuestionDraftSave() {
+  if (_questionDraftDebounceTimer) {
+    clearTimeout(_questionDraftDebounceTimer);
+    _questionDraftDebounceTimer = null;
+  }
+  if (_suspendQuestionDraftSave || !_questionDraftContext) return;
+  const snapshot = snapshotCurrentQuestionDraft();
+  if (!hasMeaningfulQuestionDraft(snapshot)) {
+    clearQuestionDraft(_questionDraftContext.key);
+    return;
+  }
+  saveQuestionDraft(_questionDraftContext.key, snapshot);
+}
+
+function scheduleQuestionDraftSave() {
+  if (_suspendQuestionDraftSave || !_questionDraftContext) return;
+  if (_questionDraftDebounceTimer) clearTimeout(_questionDraftDebounceTimer);
+  _questionDraftDebounceTimer = setTimeout(() => {
+    _questionDraftDebounceTimer = null;
+    flushQuestionDraftSave();
+  }, QUESTION_DRAFT_SAVE_DEBOUNCE_MS);
+}
+
+function stopQuestionDraftAutosave() {
+  flushQuestionDraftSave();
+  if (_questionDraftTimer) clearInterval(_questionDraftTimer);
+  if (_questionDraftDebounceTimer) clearTimeout(_questionDraftDebounceTimer);
+  _questionDraftTimer = null;
+  _questionDraftDebounceTimer = null;
+  _questionDraftContext = null;
+}
+
+function startQuestionDraftAutosave(mode, questionId = '', skill = '') {
+  stopQuestionDraftAutosave();
+  _questionDraftContext = {
+    mode,
+    questionId,
+    key: getQuestionDraftKey(mode, questionId),
+    skill,
+  };
+  _questionDraftTimer = setInterval(flushQuestionDraftSave, QUESTION_DRAFT_SAVE_INTERVAL_MS);
+}
+
+function restoreQuestionDraftIntoForm(mode, questionId = '', fallbackSkill = '') {
+  const draft = loadQuestionDraft(getQuestionDraftKey(mode, questionId));
+  if (!draft) return false;
+  _suspendQuestionDraftSave = true;
+  try {
+    const titleInput = $('#q-title');
+    if (titleInput) titleInput.value = draft.title || '';
+
+    const skillSelect = $('#q-skill');
+    const nextSkill = draft.skill || fallbackSkill || skillSelect?.value || '';
+    if (skillSelect && !skillSelect.disabled) {
+      skillSelect.value = nextSkill;
+      onSkillChange(nextSkill);
+    }
+
+    const tagContainer = getQuestionTagContainer();
+    const tagInput = getQuestionTagInput();
+    if (tagContainer && tagInput) setQuestionChipValues(tagContainer, tagInput, draft.tags || []);
+
+    initContentComposer(draft.content_blocks || [], '');
+
+    if ((nextSkill === 'reading' || nextSkill === 'listening') && Array.isArray(draft.questions_data) && draft.questions_data.length > 0) {
+      renderAnswerGridWithData(draft.questions_data);
+    }
+
+    _vocabItems = Array.isArray(draft.vocabulary) ? draft.vocabulary.map(item => ({ ...item })) : [];
+    if (nextSkill === 'reading' || nextSkill === 'listening') renderVocabList();
+
+    const scriptInput = $('#listening-script');
+    if (scriptInput) scriptInput.value = draft.script || '';
+
+    attachChipListeners();
+    return true;
+  } finally {
+    _suspendQuestionDraftSave = false;
+  }
+}
+
+function isQuestionDraftTarget(target) {
+  return !!(_questionDraftContext && target instanceof Element && target.closest('#app .form-card'));
+}
+
+document.addEventListener('input', e => {
+  if (isQuestionDraftTarget(e.target)) scheduleQuestionDraftSave();
+}, true);
+
+document.addEventListener('change', e => {
+  if (isQuestionDraftTarget(e.target)) scheduleQuestionDraftSave();
+}, true);
+
+document.addEventListener('click', e => {
+  if (!(e.target instanceof Element)) return;
+  const hit = e.target.closest('.chip-remove, .vocab-remove, .vocab-edit, .btn-clear-location');
+  if (!hit || !isQuestionDraftTarget(hit)) return;
+  setTimeout(scheduleQuestionDraftSave, 0);
+});
+
 function formatDate(iso) {
   if (!iso) return '—';
   return new Date(iso).toLocaleDateString('vi-VN', {
@@ -278,6 +501,7 @@ function addChip(container, value) {
   chip.querySelector('.chip-remove').onclick = () => chip.remove();
   const input = container.querySelector('.chip-input');
   container.insertBefore(chip, input);
+  scheduleQuestionDraftSave();
 }
 
 function getChipValues(container) {
@@ -293,11 +517,55 @@ function _chipKeydown(e) {
   }
 }
 
+function _chipBlur(e) {
+  const val = e.target.value.trim();
+  if (val) {
+    addChip(e.target.parentElement, val);
+    e.target.value = '';
+  }
+}
+
 function attachChipListeners() {
   document.querySelectorAll('.chip-input').forEach(input => {
     input.removeEventListener('keydown', _chipKeydown);
+    input.removeEventListener('blur', _chipBlur);
     input.addEventListener('keydown', _chipKeydown);
+    input.addEventListener('blur', _chipBlur);
   });
+}
+
+function checkEmptyAnswers() {
+  const rows = document.querySelectorAll('#answer-grid .answer-row');
+  const empty = [];
+  rows.forEach((row, idx) => {
+    const container = row.querySelector('.chip-container');
+    const chips = container ? container.querySelectorAll('.chip') : [];
+    const pendingInput = row.querySelector('.chip-input')?.value.trim() || '';
+    if (chips.length === 0 && !pendingInput) empty.push(idx + 1);
+  });
+  return empty;
+}
+
+function confirmSaveWithEmptyAnswers(emptyQnos, onConfirm) {
+  const list = emptyQnos.map(n => `Q${n}`).join(', ');
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.innerHTML = `
+    <div class="modal" style="max-width:400px">
+      <div class="modal-header"><h3>⚠️ Câu chưa có đáp án</h3></div>
+      <div class="modal-body">
+        <p style="margin:0 0 8px">Các câu sau chưa có đáp án: <strong>${list}</strong></p>
+        <p style="margin:0;font-size:13px;color:var(--gray-500)">Bạn vẫn muốn lưu?</p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" id="confirm-cancel-save">Quay lại điền</button>
+        <button class="btn btn-primary" id="confirm-do-save">Vẫn lưu</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  modal.querySelector('#confirm-cancel-save').onclick = () => modal.remove();
+  modal.querySelector('#confirm-do-save').onclick = () => { modal.remove(); onConfirm(); };
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
 }
 
 function collectAnswerGrid() {
@@ -318,33 +586,105 @@ function collectAnswerGrid() {
   });
 }
 
+function _createAnswerRow(qNo, data = null) {
+  const row = document.createElement('div');
+  row.className = 'answer-row';
+
+  const main = document.createElement('div');
+  main.className = 'answer-row-main';
+
+  const label = document.createElement('span');
+  label.className = 'q-label';
+  label.textContent = `Q${qNo}`;
+
+  const chipContainer = document.createElement('div');
+  chipContainer.className = 'chip-container';
+  if (data?.answers) {
+    for (const a of data.answers) {
+      const chip = document.createElement('span');
+      chip.className = 'chip';
+      chip.dataset.value = a;
+      chip.innerHTML = `${escapeHtml(a)} <button class="chip-remove" title="Xoá">×</button>`;
+      chip.querySelector('.chip-remove').onclick = () => chip.remove();
+      chipContainer.appendChild(chip);
+    }
+  }
+  const chipInput = document.createElement('input');
+  chipInput.className = 'chip-input';
+  chipInput.placeholder = 'Đáp án + Enter';
+  chipContainer.appendChild(chipInput);
+
+  const deleteBtn = document.createElement('button');
+  deleteBtn.className = 'btn-delete-row';
+  deleteBtn.title = 'Xoá câu này';
+  deleteBtn.textContent = '×';
+  deleteBtn.onclick = function() { removeAnswerRow(this.closest('.answer-row')); };
+
+  main.appendChild(label);
+  main.appendChild(chipContainer);
+  main.appendChild(deleteBtn);
+
+  const locRow = document.createElement('div');
+  locRow.className = 'location-row';
+  locRow.innerHTML = `
+    <span class="field-section-label">📍 Vị trí:</span>
+    <span class="location-text-display">${data?.location || 'Chưa chọn'}</span>
+    <input type="hidden" class="answer-location" value="${escapeHtml(data?.location || '')}" />
+    <input type="hidden" class="answer-location-meta" value="${data?.location_meta ? escapeHtml(JSON.stringify(data.location_meta)) : ''}" />
+    <button class="btn-clear-location${data?.location ? '' : ' hidden'}" onclick="clearLocationValue(this.closest('.answer-row'))">×</button>
+    <button class="btn-pick-location" onclick="activateLocationPick(this.closest('.answer-row'))">Chọn</button>`;
+
+  const expRow = document.createElement('div');
+  expRow.className = 'explanation-row';
+  const expLabel = document.createElement('span');
+  expLabel.className = 'field-section-label';
+  expLabel.textContent = '💡 Giải thích:';
+  const expArea = document.createElement('textarea');
+  expArea.className = 'answer-explanation';
+  expArea.rows = 2;
+  expArea.placeholder = 'Nhập giải thích đáp án...';
+  expArea.value = data?.explanation || '';
+  expRow.appendChild(expLabel);
+  expRow.appendChild(expArea);
+
+  row.appendChild(main);
+  row.appendChild(locRow);
+  row.appendChild(expRow);
+  return row;
+}
+
+function renumberAnswerRows() {
+  const rows = document.querySelectorAll('#answer-grid .answer-row');
+  rows.forEach((row, idx) => {
+    const label = row.querySelector('.q-label');
+    if (label) label.textContent = `Q${idx + 1}`;
+  });
+  const countInput = $('#answer-count');
+  if (countInput) countInput.value = rows.length;
+}
+
+function removeAnswerRow(row) {
+  row.remove();
+  renumberAnswerRows();
+}
+
+function addAnswerRow() {
+  const grid = $('#answer-grid');
+  if (!grid) return;
+  const current = grid.querySelectorAll('.answer-row').length;
+  const newRow = _createAnswerRow(current + 1);
+  grid.appendChild(newRow);
+  attachChipListeners();
+  renumberAnswerRows();
+  newRow.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
 function renderAnswerGrid(count) {
   const grid = $('#answer-grid');
   if (!grid) return;
   grid.innerHTML = '';
   for (let i = 1; i <= count; i++) {
-    const row = document.createElement('div');
-    row.className = 'answer-row';
-    row.innerHTML = `
-      <div class="answer-row-main">
-        <span class="q-label">Q${i}</span>
-        <div class="chip-container">
-          <input class="chip-input" placeholder="Đáp án + Enter" />
-        </div>
-      </div>
-      <div class="location-row">
-        <span class="field-section-label">📍 Vị trí:</span>
-        <span class="location-text-display">Chưa chọn</span>
-        <input type="hidden" class="answer-location" value="" />
-        <input type="hidden" class="answer-location-meta" value="" />
-        <button class="btn-clear-location hidden" onclick="clearLocationValue(this.closest('.answer-row'))">×</button>
-        <button class="btn-pick-location" onclick="activateLocationPick(this.closest('.answer-row'))">Chọn</button>
-      </div>
-      <div class="explanation-row">
-        <span class="field-section-label">💡 Giải thích:</span>
-        <textarea class="answer-explanation" rows="2" placeholder="Nhập giải thích đáp án..."></textarea>
-      </div>`;
-    grid.appendChild(row);
+    grid.appendChild(_createAnswerRow(i));
   }
   attachChipListeners();
 }
@@ -378,11 +718,13 @@ const routeLoadingMessages = {
 };
 
 function navigate(hash) {
+  flushQuestionDraftSave();
   closeMobileSidebar();
   window.location.hash = hash;
 }
 
 function router() {
+  stopQuestionDraftAutosave();
   const hash = window.location.hash.slice(1) || '/classes';
   try {
     hideTableFloatToolbar();
@@ -2882,6 +3224,7 @@ function syncContentBlocksFromEditor() {
   flushHtml();
   _contentBlocks = blocks.length ? blocks : [createTextBlock('')];
   refreshContentComposerPreview();
+  scheduleQuestionDraftSave();
 }
 
 function saveComposerRange() {
@@ -3455,6 +3798,7 @@ async function showQuestionDetail({ id }) {
 
 function renderQuestionDetail(q) {
   _audioFile  = null;
+  _editingVocabIndex = -1;
   _vocabItems = Array.isArray(q.vocabulary) ? [...q.vocabulary] : [];
 
   let skillSection = '';
@@ -3559,6 +3903,7 @@ function renderQuestionDetail(q) {
 
   if (q.skill === 'reading' || q.skill === 'listening') {
     renderVocabList();
+    syncVocabEditorState();
   }
 
   attachChipListeners();
@@ -3572,6 +3917,11 @@ function renderQuestionDetail(q) {
       if (n > 0 && n <= 100) renderAnswerGrid(n);
     });
   }
+
+  const restored = restoreQuestionDraftIntoForm('edit', q.id, q.skill);
+  startQuestionDraftAutosave('edit', q.id, q.skill);
+  syncVocabEditorState();
+  if (restored) toast('Đã khôi phục bản nháp chưa lưu trong 15 phút gần nhất.', 'info');
 }
 
 function renderAnswerGridWithData(questionsData) {
@@ -3580,96 +3930,9 @@ function renderAnswerGridWithData(questionsData) {
   const countInput = $('#answer-count');
   if (countInput) countInput.value = questionsData.length;
   grid.innerHTML = '';
-  for (const q of questionsData) {
-    const row = document.createElement('div');
-    row.className = 'answer-row';
-
-    const main = document.createElement('div');
-    main.className = 'answer-row-main';
-
-    const label = document.createElement('span');
-    label.className = 'q-label';
-    label.textContent = `Q${q.q_no}`;
-
-    const container = document.createElement('div');
-    container.className = 'chip-container';
-    for (const a of (q.answers || [])) {
-      const chip = document.createElement('span');
-      chip.className = 'chip';
-      chip.dataset.value = a;
-      chip.innerHTML = `${escapeHtml(a)} <button class="chip-remove" title="Xoá">×</button>`;
-      chip.querySelector('.chip-remove').onclick = () => chip.remove();
-      container.appendChild(chip);
-    }
-    const input = document.createElement('input');
-    input.className = 'chip-input';
-    input.placeholder = 'Đáp án + Enter';
-    container.appendChild(input);
-
-    main.appendChild(label);
-    main.appendChild(container);
-
-    // Location row
-    const locRow = document.createElement('div');
-    locRow.className = 'location-row';
-
-    const locLabel = document.createElement('span');
-    locLabel.className = 'field-section-label';
-    locLabel.textContent = '📍 Vị trí:';
-
-    const locDisp = document.createElement('span');
-    locDisp.className = 'location-text-display';
-    locDisp.textContent = q.location || 'Chưa chọn';
-
-    const locInput = document.createElement('input');
-    locInput.type = 'hidden';
-    locInput.className = 'answer-location';
-    locInput.value = q.location || '';
-
-    const locMetaInput = document.createElement('input');
-    locMetaInput.type = 'hidden';
-    locMetaInput.className = 'answer-location-meta';
-    locMetaInput.value = q.location_meta ? JSON.stringify(q.location_meta) : '';
-
-    const clearBtn = document.createElement('button');
-    clearBtn.className = 'btn-clear-location' + (q.location ? '' : ' hidden');
-    clearBtn.textContent = '×';
-    clearBtn.onclick = function() { clearLocationValue(this.closest('.answer-row')); };
-
-    const pickBtn = document.createElement('button');
-    pickBtn.className = 'btn-pick-location';
-    pickBtn.textContent = 'Chọn';
-    pickBtn.onclick = function() { activateLocationPick(this.closest('.answer-row')); };
-
-    locRow.appendChild(locLabel);
-    locRow.appendChild(locDisp);
-    locRow.appendChild(locInput);
-    locRow.appendChild(locMetaInput);
-    locRow.appendChild(clearBtn);
-    locRow.appendChild(pickBtn);
-
-    // Explanation row
-    const expRow = document.createElement('div');
-    expRow.className = 'explanation-row';
-
-    const expLabel = document.createElement('span');
-    expLabel.className = 'field-section-label';
-    expLabel.textContent = '💡 Giải thích:';
-
-    const expArea = document.createElement('textarea');
-    expArea.className = 'answer-explanation';
-    expArea.rows = 2;
-    expArea.placeholder = 'Nhập giải thích đáp án...';
-    expArea.value = q.explanation || '';
-
-    expRow.appendChild(expLabel);
-    expRow.appendChild(expArea);
-
-    row.appendChild(main);
-    row.appendChild(locRow);
-    row.appendChild(expRow);
-    grid.appendChild(row);
-  }
+  questionsData.forEach((q, idx) => {
+    grid.appendChild(_createAnswerRow(idx + 1, q));
+  });
   attachChipListeners();
 }
 
@@ -3685,6 +3948,11 @@ async function submitQuestionEdit(id, btn) {
   let questions_data = [];
   if (skill === 'reading' || skill === 'listening') {
     questions_data = collectAnswerGrid();
+    const emptyQnos = checkEmptyAnswers();
+    if (emptyQnos.length > 0) {
+      confirmSaveWithEmptyAnswers(emptyQnos, () => submitQuestionEdit(id, btn));
+      return;
+    }
   }
 
   const tags = getChipValues($('#q-tags-chip-edit'));
@@ -3702,6 +3970,8 @@ async function submitQuestionEdit(id, btn) {
         script: ($('#listening-script')?.value || '').trim() || null,
       } : {}),
     });
+    stopQuestionDraftAutosave();
+    clearQuestionDraft(getQuestionDraftKey('edit', id));
     toast('Đã lưu thay đổi! ✓');
     navigate('/questions');
   } catch (e) {
@@ -3722,6 +3992,7 @@ let _audioUploading = false;
 let _scriptTranscribing = false;
 let _audioFile = null, _audioUploadUrl = null, _audioUploadKey = null, _audioUploadName = '', _audioUploadSize = 0;
 let _vocabItems = [];
+let _editingVocabIndex = -1;
 let _pendingLocationRow = null;
 
 function vocabSectionHtml() {
@@ -3731,28 +4002,87 @@ function vocabSectionHtml() {
       <div class="vocab-add-row">
         <input id="vocab-word"    class="form-input" placeholder="Từ vựng"         style="flex:1;min-width:0" />
         <input id="vocab-def"     class="form-input" placeholder="Định nghĩa"       style="flex:2;min-width:0" />
+        <input id="vocab-collocation" class="form-input" placeholder="Collocation (tùy chọn)" style="flex:2;min-width:0" />
         <input id="vocab-example" class="form-input" placeholder="Ví dụ (tùy chọn)" style="flex:2;min-width:0" />
-        <button class="btn btn-primary btn-sm" onclick="addVocabItem()">+ Thêm</button>
+        <button id="vocab-submit-btn" class="btn btn-primary btn-sm" onclick="addVocabItem()">+ Thêm</button>
+        <button id="vocab-cancel-btn" class="btn btn-outline btn-sm hidden" onclick="cancelVocabEdit()">Hủy sửa</button>
       </div>
+      <div class="vocab-list-heading">Danh sách từ vựng</div>
       <div id="vocab-list" class="vocab-list"></div>
     </div>`;
+}
+
+function syncVocabEditorState() {
+  const submitBtn = $('#vocab-submit-btn');
+  const cancelBtn = $('#vocab-cancel-btn');
+  if (submitBtn) submitBtn.textContent = _editingVocabIndex >= 0 ? 'Lưu sửa' : '+ Thêm';
+  if (cancelBtn) cancelBtn.classList.toggle('hidden', _editingVocabIndex < 0);
+}
+
+function resetVocabInputs() {
+  if ($('#vocab-word')) $('#vocab-word').value = '';
+  if ($('#vocab-def')) $('#vocab-def').value = '';
+  if ($('#vocab-collocation')) $('#vocab-collocation').value = '';
+  if ($('#vocab-example')) $('#vocab-example').value = '';
+}
+
+function cancelVocabEdit() {
+  _editingVocabIndex = -1;
+  resetVocabInputs();
+  syncVocabEditorState();
+  scheduleQuestionDraftSave();
 }
 
 function addVocabItem() {
   const word = $('#vocab-word')?.value.trim();
   const def  = $('#vocab-def')?.value.trim();
+  const collocation = $('#vocab-collocation')?.value.trim() || '';
   const ex   = $('#vocab-example')?.value.trim() || '';
   if (!word || !def) { toast('Nhập từ vựng và định nghĩa', 'warning'); return; }
-  _vocabItems.push({ word, definition: def, ...(ex && { example: ex }) });
-  if ($('#vocab-word'))    $('#vocab-word').value    = '';
-  if ($('#vocab-def'))     $('#vocab-def').value     = '';
-  if ($('#vocab-example')) $('#vocab-example').value = '';
+  const item = {
+    word,
+    definition: def,
+    ...(collocation && { collocation }),
+    ...(ex && { example: ex }),
+  };
+  if (_editingVocabIndex >= 0 && _vocabItems[_editingVocabIndex]) {
+    _vocabItems[_editingVocabIndex] = item;
+  } else {
+    _vocabItems.push(item);
+  }
+  _editingVocabIndex = -1;
+  resetVocabInputs();
   renderVocabList();
+  syncVocabEditorState();
+  scheduleQuestionDraftSave();
 }
 
 function removeVocabItem(idx) {
   _vocabItems.splice(idx, 1);
+  if (_editingVocabIndex === idx) {
+    _editingVocabIndex = -1;
+    resetVocabInputs();
+  } else if (_editingVocabIndex > idx) {
+    _editingVocabIndex -= 1;
+  }
   renderVocabList();
+  syncVocabEditorState();
+  scheduleQuestionDraftSave();
+}
+
+function editVocabItem(idx) {
+  const item = _vocabItems[idx];
+  if (!item) return;
+  _editingVocabIndex = idx;
+  if ($('#vocab-word')) $('#vocab-word').value = item.word || '';
+  if ($('#vocab-def')) $('#vocab-def').value = item.definition || '';
+  if ($('#vocab-collocation')) $('#vocab-collocation').value = item.collocation || '';
+  if ($('#vocab-example')) $('#vocab-example').value = item.example || '';
+  syncVocabEditorState();
+  const wordInput = $('#vocab-word');
+  wordInput?.closest('.vocab-add-row')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  wordInput?.focus();
+  scheduleQuestionDraftSave();
 }
 
 function renderVocabList() {
@@ -3766,8 +4096,12 @@ function renderVocabList() {
     <div class="vocab-item">
       <span class="vocab-word">${escapeHtml(v.word)}</span>
       <span class="vocab-def">${escapeHtml(v.definition)}</span>
+      ${v.collocation ? `<span class="vocab-collocation">${escapeHtml(v.collocation)}</span>` : ''}
       ${v.example ? `<span class="vocab-example">${escapeHtml(v.example)}</span>` : ''}
-      <button class="vocab-remove" onclick="removeVocabItem(${i})">×</button>
+      <div class="vocab-actions">
+        <button class="vocab-edit" onclick="editVocabItem(${i})">Sửa</button>
+        <button class="vocab-remove" onclick="removeVocabItem(${i})">×</button>
+      </div>
     </div>`).join('');
 }
 
@@ -3775,6 +4109,7 @@ function showQuestionForm() {
   _audioSlots = [_newAudioSlot()]; _audioFiles = _audioSlots;
   _audioFile = null; _audioUploadUrl = null; _audioUploadKey = null; _audioUploadName = ''; _audioUploadSize = 0;
   _audioUploading = false;
+  _editingVocabIndex = -1;
   $('#app').innerHTML = `
     <a class="back-link" onclick="navigate('/questions')">← Kho đề</a>
 
@@ -3822,10 +4157,15 @@ function showQuestionForm() {
       </div>
     </div>`;
   attachChipListeners();
+  const restored = restoreQuestionDraftIntoForm('new');
+  startQuestionDraftAutosave('new');
+  syncVocabEditorState();
+  if (restored) toast('Đã khôi phục bản nháp chưa lưu trong 15 phút gần nhất.', 'info');
 }
 
 function onSkillChange(skill) {
   _vocabItems = [];
+  _editingVocabIndex = -1;
   _contentBlocks = [];
   _audioSlots = [_newAudioSlot()]; _audioFiles = _audioSlots;
   _audioFile = null; _audioUploadUrl = null; _audioUploadKey = null; _audioUploadName = ''; _audioUploadSize = 0;
@@ -3915,6 +4255,7 @@ function answerGridHtml() {
             Nhập số câu hỏi ở trên để hiển thị form đáp án
           </div>
         </div>
+        <button type="button" class="btn-add-row" onclick="addAnswerRow()">+ Thêm câu</button>
       </div>
       <div class="form-hint">Mỗi câu có thể có nhiều đáp án chấp nhận được. Gõ đáp án rồi nhấn Enter.</div>
     </div>`;
@@ -4367,6 +4708,11 @@ async function submitQuestion(btn) {
   let questions_data = [];
   if (skill === 'reading' || skill === 'listening') {
     questions_data = collectAnswerGrid();
+    const emptyQnos = checkEmptyAnswers();
+    if (emptyQnos.length > 0) {
+      confirmSaveWithEmptyAnswers(emptyQnos, () => submitQuestion(btn));
+      return;
+    }
   }
   // B4.5 — collect tags chips
   const tags = getChipValues($('#q-tags-chip'));
@@ -4395,6 +4741,8 @@ async function submitQuestion(btn) {
       ...listeningExtra,
     });
 
+    stopQuestionDraftAutosave();
+    clearQuestionDraft(getQuestionDraftKey('new'));
     toast('Đã lưu đề vào kho! 🎉');
     _audioSlots = [_newAudioSlot()]; _audioFiles = _audioSlots;
     _audioFile = null; _audioUploadUrl = null; _audioUploadKey = null; _audioUploadName = ''; _audioUploadSize = 0;
@@ -4859,6 +5207,7 @@ function clearLocationValue(rowEl) {
   if (metaInput) metaInput.value = '';
   rowEl.querySelector('.location-text-display').textContent = 'Chưa chọn';
   rowEl.querySelector('.btn-clear-location').classList.add('hidden');
+  scheduleQuestionDraftSave();
 }
 
 function getPreviewBlockElement(node) {
@@ -5012,6 +5361,7 @@ function commitLocationSelection(directResult) {
   const savedRow = _pendingLocationRow;
   cancelLocationPick();
   savedRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  scheduleQuestionDraftSave();
 }
 
 document.addEventListener('mouseup', (e) => {
@@ -5221,6 +5571,7 @@ async function logout() {
 }
 
 async function boot() {
+  pruneTeacherQuestionDrafts();
   try {
     const res = await fetch(api._base + '/teacher-auth/status', {
       headers: api._authHeaders(),
@@ -5252,6 +5603,7 @@ window.logout                 = logout;
 window._onTeacherUnauthorized = () => {
   expireTeacherSession('Phiên đăng nhập hết hạn. Vui lòng đăng nhập lại.');
 };
+window.addEventListener('pagehide', flushQuestionDraftSave);
 
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', boot, { once: true });

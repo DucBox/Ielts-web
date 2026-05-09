@@ -787,14 +787,53 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function queueStudentEmailEvent(sql, { studentId, assignmentId, eventType }) {
+async function ensureStudentEmailDispatchState(sql) {
   await sql`
-    INSERT INTO student_email_events (student_id, assignment_id, event_type, status, updated_at)
-    VALUES (${studentId}::uuid, ${assignmentId}::uuid, ${eventType}, 'pending', NOW())
+    INSERT INTO student_email_dispatch_state (singleton)
+    VALUES (TRUE)
+    ON CONFLICT (singleton) DO NOTHING
+  `;
+}
+
+async function insertStudentEmailEvents(sql, { studentIds, assignmentId, eventType, status, lastError = null }) {
+  const ids = Array.isArray(studentIds)
+    ? studentIds.map(id => String(id || '').trim()).filter(Boolean)
+    : [];
+  if (ids.length === 0) return;
+  await sql`
+    WITH input_rows AS (
+      SELECT UNNEST(${ids}::uuid[]) AS student_id
+    )
+    INSERT INTO student_email_events (student_id, assignment_id, event_type, status, last_error, updated_at)
+    SELECT student_id, ${assignmentId}::uuid, ${eventType}, ${status}, ${lastError}, NOW()
+    FROM input_rows
     ON CONFLICT (student_id, assignment_id, event_type)
     DO NOTHING
   `;
-  logStudentEmail('queued', { studentId, assignmentId, eventType, status: 'pending' });
+  logStudentEmail('queued_bulk', {
+    assignmentId,
+    eventType,
+    status,
+    count: ids.length,
+  });
+}
+
+async function queueStudentEmailEvent(sql, { studentId, assignmentId, eventType, email = null }) {
+  const normalizedEmail = normalizeStudentEmail(email);
+  const status = normalizedEmail ? 'pending' : 'skipped';
+  const lastError = normalizedEmail ? null : 'missing_or_invalid_student_email';
+  await sql`
+    INSERT INTO student_email_events (student_id, assignment_id, event_type, status, last_error, updated_at)
+    VALUES (${studentId}::uuid, ${assignmentId}::uuid, ${eventType}, ${status}, ${lastError}, NOW())
+    ON CONFLICT (student_id, assignment_id, event_type)
+    DO NOTHING
+  `;
+  logStudentEmail(status === 'pending' ? 'queued' : 'skipped_no_email', {
+    studentId,
+    assignmentId,
+    eventType,
+    status,
+  });
 }
 
 async function claimStudentEmailEvent(sql, { studentId, assignmentId, eventType }) {
@@ -820,6 +859,110 @@ async function claimStudentEmailEvent(sql, { studentId, assignmentId, eventType 
     });
   }
   return row || null;
+}
+
+async function claimNextStudentEmailEvent(sql, { ownerId, delayMs = 2000, leaseMs = 60000 }) {
+  const [row] = await sql`
+    WITH gate AS (
+      SELECT singleton
+      FROM student_email_dispatch_state
+      WHERE singleton = TRUE
+        AND (lease_until IS NULL OR lease_until <= NOW())
+        AND (
+          last_sent_at IS NULL
+          OR last_sent_at <= NOW() - (${delayMs} * INTERVAL '1 millisecond')
+        )
+      FOR UPDATE
+    ),
+    candidate AS (
+      SELECT e.student_id, e.assignment_id, e.event_type, e.status
+      FROM student_email_events e
+      WHERE e.status IN ('pending', 'failed')
+         OR (e.status = 'sending' AND e.updated_at < NOW() - INTERVAL '15 minutes')
+      ORDER BY
+        CASE
+          WHEN e.event_type = ${EMAIL_EVENT_TYPES.DEADLINE_1DAY} THEN 1
+          ELSE 0
+        END,
+        CASE
+          WHEN e.status = 'pending' THEN 0
+          WHEN e.status = 'failed' THEN 1
+          ELSE 2
+        END,
+        e.updated_at ASC,
+        e.created_at ASC
+      LIMIT 1
+      FOR UPDATE SKIP LOCKED
+    ),
+    claimed_event AS (
+      UPDATE student_email_events e
+      SET status = 'sending', updated_at = NOW(), last_error = NULL
+      FROM candidate c, gate g
+      WHERE e.student_id = c.student_id
+        AND e.assignment_id = c.assignment_id
+        AND e.event_type = c.event_type
+      RETURNING e.student_id, e.assignment_id, e.event_type, c.status AS source_status
+    ),
+    claimed_lock AS (
+      UPDATE student_email_dispatch_state s
+      SET lease_owner = ${ownerId},
+          lease_until = NOW() + (${leaseMs} * INTERVAL '1 millisecond'),
+          updated_at = NOW()
+      WHERE s.singleton = TRUE
+        AND EXISTS (SELECT 1 FROM claimed_event)
+      RETURNING lease_owner, lease_until
+    )
+    SELECT
+      ce.student_id,
+      ce.assignment_id,
+      ce.event_type,
+      ce.source_status,
+      cl.lease_until
+    FROM claimed_event ce
+    JOIN claimed_lock cl ON TRUE
+  `;
+
+  if (row) {
+    logStudentEmail('claimed_global', {
+      ownerId,
+      studentId: row.student_id,
+      assignmentId: row.assignment_id,
+      eventType: row.event_type,
+      sourceStatus: row.source_status,
+      leaseUntil: row.lease_until,
+    });
+  }
+  return row || null;
+}
+
+async function hasQueuedStudentEmails(sql) {
+  const [row] = await sql`
+    SELECT 1 AS queued
+    FROM student_email_events
+    WHERE status IN ('pending', 'failed')
+       OR (status = 'sending' AND updated_at < NOW() - INTERVAL '15 minutes')
+    LIMIT 1
+  `;
+  return !!row;
+}
+
+async function releaseStudentEmailDispatch(sql, { ownerId, updateLastSentAt = true }) {
+  await sql`
+    UPDATE student_email_dispatch_state
+    SET lease_owner = NULL,
+        lease_until = NULL,
+        last_sent_at = CASE
+          WHEN ${updateLastSentAt} THEN NOW()
+          ELSE last_sent_at
+        END,
+        updated_at = NOW()
+    WHERE singleton = TRUE
+      AND lease_owner = ${ownerId}
+  `;
+  logStudentEmail('dispatch_released', {
+    ownerId,
+    updateLastSentAt,
+  });
 }
 
 async function updateStudentEmailEvent(sql, { studentId, assignmentId, eventType, status, providerMessageId = null, lastError = null }) {
@@ -935,13 +1078,7 @@ function buildStudentEmailPayload(env, eventType, ctx) {
   };
 }
 
-async function deliverQueuedStudentEmail(sql, env, { studentId, assignmentId, eventType }) {
-  const claimed = await claimStudentEmailEvent(sql, { studentId, assignmentId, eventType });
-  if (!claimed) {
-    logStudentEmail('claim_skipped', { studentId, assignmentId, eventType });
-    return false;
-  }
-
+async function deliverClaimedStudentEmail(sql, env, { studentId, assignmentId, eventType }) {
   try {
     const ctx = await loadStudentEmailContext(sql, { studentId, assignmentId });
     if (!ctx) {
@@ -957,7 +1094,7 @@ async function deliverQueuedStudentEmail(sql, env, { studentId, assignmentId, ev
     if (!email) {
       await updateStudentEmailEvent(sql, {
         studentId, assignmentId, eventType,
-        status: 'failed',
+        status: 'skipped',
         lastError: 'missing_or_invalid_student_email',
       });
       return false;
@@ -1005,100 +1142,78 @@ async function deliverQueuedStudentEmail(sql, env, { studentId, assignmentId, ev
   }
 }
 
+async function deliverQueuedStudentEmail(sql, env, { studentId, assignmentId, eventType }) {
+  const claimed = await claimStudentEmailEvent(sql, { studentId, assignmentId, eventType });
+  if (!claimed) {
+    logStudentEmail('claim_skipped', { studentId, assignmentId, eventType });
+    return false;
+  }
+  return deliverClaimedStudentEmail(sql, env, { studentId, assignmentId, eventType });
+}
+
 async function processQueuedStudentEmails(sql, env, opts = {}) {
   const limit = Math.max(1, Math.min(Number(opts.limit) || 50, 200));
-  const concurrency = Math.max(1, Math.min(Number(opts.concurrency) || 1, 20));
   const delayMs = Math.max(0, Math.min(Number(opts.delayMs) || 2000, 10000));
-  let rows;
-  if (opts.studentId && opts.assignmentId && Array.isArray(opts.eventTypes) && opts.eventTypes.length > 0) {
-    rows = opts.eventTypes.map(eventType => ({
-      student_id: opts.studentId,
-      assignment_id: opts.assignmentId,
-      event_type: eventType,
-      status: 'manual',
-    }));
-  } else {
-    rows = await sql`
-      SELECT student_id, assignment_id, event_type, status
-      FROM student_email_events
-      WHERE status IN ('pending', 'failed')
-         OR (status = 'sending' AND updated_at < NOW() - INTERVAL '15 minutes')
-      ORDER BY
-        CASE
-          WHEN status = 'pending' THEN 0
-          WHEN status = 'failed' THEN 1
-          ELSE 2
-        END,
-        updated_at ASC,
-        created_at ASC
-      LIMIT ${limit}
-    `;
-  }
-
+  const leaseMs = Math.max(delayMs + 30000, 60000);
+  const ownerId = crypto.randomUUID();
+  await ensureStudentEmailDispatchState(sql);
   logStudentEmail('process_batch', {
     limit,
-    concurrency,
     delayMs,
-    selectedCount: rows.length,
-    selected: rows.map(row => ({
-      studentId: row.student_id,
-      assignmentId: row.assignment_id,
-      eventType: row.event_type,
-      sourceStatus: row.status || null,
-    })),
+    leaseMs,
+    ownerId,
   });
 
-  const summary = { attempted: rows.length, fulfilled: 0, sent: 0, notSent: 0, rejected: 0 };
-  for (let start = 0; start < rows.length; start += concurrency) {
-    const chunk = rows.slice(start, start + concurrency);
-    logStudentEmail('process_chunk_start', {
-      start,
-      size: chunk.length,
-      concurrency,
-      items: chunk.map(row => ({
-        studentId: row.student_id,
-        assignmentId: row.assignment_id,
-        eventType: row.event_type,
-        sourceStatus: row.status || null,
-      })),
+  const summary = { attempted: 0, fulfilled: 0, sent: 0, notSent: 0, rejected: 0, exitedBusy: false };
+  for (let index = 0; index < limit; index += 1) {
+    const claimed = await claimNextStudentEmailEvent(sql, { ownerId, delayMs, leaseMs });
+    if (!claimed) {
+      const remaining = await hasQueuedStudentEmails(sql);
+      logStudentEmail(remaining ? 'process_batch_busy' : 'process_batch_empty', {
+        ownerId,
+        processedCount: summary.attempted,
+      });
+      summary.exitedBusy = remaining;
+      break;
+    }
+
+    summary.attempted += 1;
+    logStudentEmail('process_item_start', {
+      ownerId,
+      index,
+      studentId: claimed.student_id,
+      assignmentId: claimed.assignment_id,
+      eventType: claimed.event_type,
+      sourceStatus: claimed.source_status,
     });
 
-    const settled = await Promise.allSettled(chunk.map(row => (
-      deliverQueuedStudentEmail(sql, env, {
-        studentId: row.student_id,
-        assignmentId: row.assignment_id,
-        eventType: row.event_type,
-      })
-    )));
-
-    settled.forEach((item, index) => {
-      const row = chunk[index];
-      if (item.status === 'fulfilled') {
-        summary.fulfilled += 1;
-        if (item.value) summary.sent += 1;
-        else summary.notSent += 1;
-        return;
-      }
-
+    try {
+      const sent = await deliverClaimedStudentEmail(sql, env, {
+        studentId: claimed.student_id,
+        assignmentId: claimed.assignment_id,
+        eventType: claimed.event_type,
+      });
+      summary.fulfilled += 1;
+      if (sent) summary.sent += 1;
+      else summary.notSent += 1;
+    } catch (error) {
       summary.rejected += 1;
       logStudentEmail('process_item_rejected', {
-        studentId: row.student_id,
-        assignmentId: row.assignment_id,
-        eventType: row.event_type,
-        sourceStatus: row.status || null,
-        reason: String(item.reason?.stack || item.reason?.message || item.reason || 'unknown_rejection').slice(0, 2000),
+        ownerId,
+        studentId: claimed.student_id,
+        assignmentId: claimed.assignment_id,
+        eventType: claimed.event_type,
+        sourceStatus: claimed.source_status,
+        reason: String(error?.stack || error?.message || error || 'unknown_rejection').slice(0, 2000),
       }, 'error');
-    });
+    } finally {
+      await releaseStudentEmailDispatch(sql, { ownerId, updateLastSentAt: true });
+    }
 
-    logStudentEmail('process_chunk_done', {
-      start,
-      size: chunk.length,
-      summary: { ...summary },
-    }, summary.rejected > 0 ? 'error' : 'log');
-
-    if (start + concurrency < rows.length && delayMs > 0) {
+    if (index + 1 < limit && delayMs > 0) {
       logStudentEmail('process_chunk_pause', {
-        nextStart: start + concurrency,
+        ownerId,
+        nextIndex: index + 1,
         delayMs,
       });
       await sleep(delayMs);
@@ -1110,9 +1225,10 @@ async function processQueuedStudentEmails(sql, env, opts = {}) {
 
 async function enqueueDeadline1DayEmails(sql) {
   const rows = await sql`
-    SELECT sc.student_id, a.id AS assignment_id
+    SELECT sc.student_id, a.id AS assignment_id, s.email AS student_email
     FROM assignments a
     JOIN student_classes sc ON sc.class_id = a.class_id
+    JOIN students s ON s.id = sc.student_id
     LEFT JOIN submissions sub ON sub.assignment_id = a.id AND sub.student_id = sc.student_id
     WHERE a.is_active = true
       AND a.deadline IS NOT NULL
@@ -1120,14 +1236,30 @@ async function enqueueDeadline1DayEmails(sql) {
       AND a.deadline <= NOW() + INTERVAL '24 hours'
       AND sub.id IS NULL
   `;
+  const grouped = new Map();
+  for (const row of rows) {
+    const key = String(row.assignment_id);
+    const bucket = grouped.get(key) || { valid: [], skipped: [] };
+    if (normalizeStudentEmail(row.student_email)) bucket.valid.push(row.student_id);
+    else bucket.skipped.push(row.student_id);
+    grouped.set(key, bucket);
+  }
 
-  await Promise.allSettled(rows.map(row => (
-    queueStudentEmailEvent(sql, {
-      studentId: row.student_id,
-      assignmentId: row.assignment_id,
+  for (const [assignmentId, bucket] of grouped.entries()) {
+    await insertStudentEmailEvents(sql, {
+      studentIds: bucket.valid,
+      assignmentId,
       eventType: EMAIL_EVENT_TYPES.DEADLINE_1DAY,
-    })
-  )));
+      status: 'pending',
+    });
+    await insertStudentEmailEvents(sql, {
+      studentIds: bucket.skipped,
+      assignmentId,
+      eventType: EMAIL_EVENT_TYPES.DEADLINE_1DAY,
+      status: 'skipped',
+      lastError: 'missing_or_invalid_student_email',
+    });
+  }
 }
 
 // ─── Auto-grade ───────────────────────────────────────────────────────────────
@@ -2205,21 +2337,51 @@ export default {
             RETURNING *
           `;
           // Notify all students in the class about the new assignment
-          const classStudents = await sql`SELECT student_id FROM student_classes WHERE class_id = ${body.class_id}`;
+          const classStudents = await sql`
+            SELECT sc.student_id, s.email
+            FROM student_classes sc
+            JOIN students s ON s.id = sc.student_id
+            WHERE sc.class_id = ${body.class_id}
+          `;
           const notifMeta = JSON.stringify({ title: body.title, skill: question?.skill ?? null, deadline: body.deadline ?? null });
-          for (const { student_id } of classStudents) {
+          const studentIds = classStudents.map(row => row.student_id);
+          if (studentIds.length > 0) {
             await sql`
+              WITH input_rows AS (
+                SELECT UNNEST(${studentIds}::uuid[]) AS student_id
+              )
               INSERT INTO notifications (student_id, type, ref_id, metadata)
-              VALUES (${student_id}, 'new_assignment', ${row.id}, ${notifMeta}::jsonb)
+              SELECT student_id, 'new_assignment', ${row.id}, ${notifMeta}::jsonb
+              FROM input_rows
               ON CONFLICT DO NOTHING
             `;
-            await queueStudentEmailEvent(sql, {
-              studentId: student_id,
-              assignmentId: row.id,
-              eventType: EMAIL_EVENT_TYPES.NEW_ASSIGNMENT,
-            });
           }
-          ctx?.waitUntil?.(processQueuedStudentEmails(sql, env, { limit: Math.max(10, classStudents.length * 2) }));
+          const deliverableStudentIds = [];
+          const skippedStudentIds = [];
+          for (const student of classStudents) {
+            if (normalizeStudentEmail(student.email)) deliverableStudentIds.push(student.student_id);
+            else skippedStudentIds.push(student.student_id);
+          }
+          await insertStudentEmailEvents(sql, {
+            studentIds: deliverableStudentIds,
+            assignmentId: row.id,
+            eventType: EMAIL_EVENT_TYPES.NEW_ASSIGNMENT,
+            status: 'pending',
+          });
+          await insertStudentEmailEvents(sql, {
+            studentIds: skippedStudentIds,
+            assignmentId: row.id,
+            eventType: EMAIL_EVENT_TYPES.NEW_ASSIGNMENT,
+            status: 'skipped',
+            lastError: 'missing_or_invalid_student_email',
+          });
+          const immediateEmailDispatchLimit = Math.min(Math.max(deliverableStudentIds.length, 1), 5);
+          if (deliverableStudentIds.length > 0) {
+            ctx?.waitUntil?.(processQueuedStudentEmails(sql, env, {
+              limit: immediateEmailDispatchLimit,
+              delayMs: 2000,
+            }));
+          }
           return json(row, 201);
         }
       }
@@ -2633,8 +2795,10 @@ export default {
           // Create score_released notification on first grade of Writing/Speaking
           if (body.overall_score != null && wasUnscored) {
             const [asgn] = await sql`
-              SELECT a.id AS assignment_id, a.title, q.skill
-              FROM assignments a JOIN question_pool q ON q.id = a.question_id
+              SELECT a.id AS assignment_id, a.title, q.skill, s.email AS student_email
+              FROM assignments a
+              JOIN question_pool q ON q.id = a.question_id
+              JOIN students s ON s.id = ${sub.student_id}
               WHERE a.id = ${sub.assignment_id}
             `;
             if (asgn && (asgn.skill === 'writing' || asgn.skill === 'speaking')) {
@@ -2647,12 +2811,11 @@ export default {
                 studentId: sub.student_id,
                 assignmentId: asgn.assignment_id,
                 eventType: EMAIL_EVENT_TYPES.SCORE_RELEASED,
+                email: asgn.student_email,
               });
-              ctx?.waitUntil?.(processQueuedStudentEmails(sql, env, {
-                studentId: sub.student_id,
-                assignmentId: asgn.assignment_id,
-                eventTypes: [EMAIL_EVENT_TYPES.SCORE_RELEASED],
-              }));
+              if (normalizeStudentEmail(asgn.student_email)) {
+                ctx?.waitUntil?.(processQueuedStudentEmails(sql, env, { limit: 1, delayMs: 2000 }));
+              }
             }
           }
           return json(sub);
@@ -3168,11 +3331,24 @@ export default {
   async scheduled(controller, env, ctx) {
     const sql = neon(env.DATABASE_URL);
     ctx.waitUntil((async () => {
-      logStudentEmail('scheduled_start', { cron: controller?.cron || null });
+      const scheduledTime = Number(controller?.scheduledTime || Date.now());
+      const scheduledDate = new Date(scheduledTime);
+      const shouldEnqueueDeadlines = scheduledDate.getUTCMinutes() === 50;
+      logStudentEmail('scheduled_start', {
+        cron: controller?.cron || null,
+        scheduledTime,
+        shouldEnqueueDeadlines,
+      });
       await autoCloseExpired(sql);
-      await enqueueDeadline1DayEmails(sql);
-      await processQueuedStudentEmails(sql, env, { limit: 200, concurrency: 1, delayMs: 2000 });
-      logStudentEmail('scheduled_done', { cron: controller?.cron || null });
+      if (shouldEnqueueDeadlines) {
+        await enqueueDeadline1DayEmails(sql);
+      }
+      await processQueuedStudentEmails(sql, env, { limit: 25, delayMs: 2000 });
+      logStudentEmail('scheduled_done', {
+        cron: controller?.cron || null,
+        scheduledTime,
+        shouldEnqueueDeadlines,
+      });
     })());
   },
 };

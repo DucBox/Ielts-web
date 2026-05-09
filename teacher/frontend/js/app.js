@@ -1014,6 +1014,10 @@ async function showClassDetail({ id }) {
     _classDetailTab = 'assignments';
     _assignFilterSkill = '';
     _assignFilterSearch = '';
+    _statsData = null;
+    _statsSkillFilter = '';
+    _statsStatusFilter = '';
+    destroyStatsCharts();
     renderClassDetail(cls, students);
   } catch (e) {
     toast('Lỗi tải lớp: ' + (e.error || e.message), 'error');
@@ -1027,8 +1031,699 @@ function switchClassTab(tab) {
   const el = document.getElementById(`tab-${tab}`);
   if (el) el.style.display = '';
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  if (tab === 'stats' && _cachedCls) loadStatsTab(_cachedCls.id);
 }
 window.switchClassTab = switchClassTab;
+
+// ─── Stats tab ────────────────────────────────────────────────────────────────
+
+let _statsCharts = [];
+let _statsData = null;
+let _statsSkillFilter = '';
+let _statsStatusFilter = '';
+let _statsSortCol = '';
+let _statsSortDir = 'desc';
+let _statsAllScoredSubs = []; // flat list of all scored submissions with student_name
+let _statsTrendSkill = ''; // skill filter for the trend chart only
+
+function destroyStatsCharts() {
+  _statsCharts.forEach(c => { try { c.destroy(); } catch {} });
+  _statsCharts = [];
+}
+
+function refreshStatsTab() {
+  const container = document.getElementById('tab-stats');
+  if (container) delete container.dataset.loadedFor;
+  if (_cachedCls) loadStatsTab(_cachedCls.id);
+}
+window.refreshStatsTab = refreshStatsTab;
+
+async function loadStatsTab(classId) {
+  const container = document.getElementById('tab-stats');
+  if (!container) return;
+  if (container.dataset.loadedFor === classId) return;
+  destroyStatsCharts();
+  _statsData = null;
+  container.innerHTML = `<div class="stats-loading-placeholder"><div class="spinner"></div><p>Đang tải thống kê...</p></div>`;
+  try {
+    _statsData = await api.get(`/classes/${classId}/analytics`);
+    _statsSkillFilter = '';
+    _statsStatusFilter = '';
+    _statsSortCol = '';
+    _statsSortDir = 'desc';
+    // Default to first skill that has assignments
+    const skillOrder = ['reading','listening','writing','speaking'];
+    _statsTrendSkill = skillOrder.find(sk =>
+      _statsData.per_assignment.some(a => a.skill === sk)
+    ) || 'reading';
+    renderStatsTab(container, _statsData);
+    container.dataset.loadedFor = classId;
+  } catch (e) {
+    container.innerHTML = `<div class="empty-state" style="padding:40px"><p>Lỗi tải thống kê: ${escapeHtml(e.error || e.message)}</p></div>`;
+  }
+}
+
+function applyStatsFilter() {
+  const container = document.getElementById('tab-stats');
+  if (!container || !_statsData) return;
+  renderStatsTab(container, _statsData);
+  container.dataset.loadedFor = _cachedCls?.id || '';
+}
+window.applyStatsFilter = applyStatsFilter;
+
+function sortStudentTable(col) {
+  if (_statsSortCol === col) {
+    _statsSortDir = _statsSortDir === 'asc' ? 'desc' : 'asc';
+  } else {
+    _statsSortCol = col;
+    _statsSortDir = col === 'name' ? 'asc' : 'desc';
+  }
+  applyStatsFilter();
+}
+window.sortStudentTable = sortStudentTable;
+
+function toggleTrendStudent(studentId) {
+  const btn = document.querySelector(`.stats-student-toggle[data-sid="${studentId}"]`);
+  if (!btn) return;
+  btn.classList.toggle('active');
+  const chart = _statsCharts.find(c => c.canvas?.id === 'chart-trend');
+  if (!chart) return;
+  const idx = chart.data.datasets.findIndex(d => d._studentId === studentId);
+  if (idx !== -1) {
+    chart.setDatasetVisibility(idx, btn.classList.contains('active'));
+    chart.update();
+  }
+}
+window.toggleTrendStudent = toggleTrendStudent;
+
+function filterTrendSkill(skill) {
+  _statsTrendSkill = skill;
+  document.querySelectorAll('.trend-skill-pill').forEach(b => {
+    b.classList.toggle('active', b.dataset.skill === skill);
+  });
+  rebuildTrendChart();
+}
+window.filterTrendSkill = filterTrendSkill;
+
+function rebuildTrendChart() {
+  const chart = _statsCharts.find(c => c.canvas?.id === 'chart-trend');
+  if (!chart || !_statsData) return;
+
+  const { per_student, per_assignment } = _statsData;
+  const skill = _statsTrendSkill;
+
+  // Assignments in chronological order, filtered by selected skill
+  const chronoAssigns = [...per_assignment].reverse().filter(a => !skill || a.skill === skill);
+
+  const emptyEl = document.getElementById('trend-empty-msg');
+  const canvasEl = document.getElementById('chart-trend');
+
+  if (chronoAssigns.length < 2) {
+    if (canvasEl) canvasEl.style.display = 'none';
+    if (emptyEl) emptyEl.style.display = '';
+    return;
+  }
+  if (canvasEl) canvasEl.style.display = '';
+  if (emptyEl) emptyEl.style.display = 'none';
+
+  chart.data.labels = chronoAssigns.map(a => a.title.length > 18 ? a.title.slice(0, 16) + '…' : a.title);
+  chart.data.datasets.forEach(dataset => {
+    const student = per_student.find(st => st.id === dataset._studentId);
+    if (!student) { dataset.data = []; return; }
+    dataset.data = chronoAssigns.map(a => {
+      const sub = student.submissions.find(s => s.assignment_id === a.id);
+      return (sub && sub.overall_score !== null) ? Number(sub.overall_score) : null;
+    });
+  });
+  chart.update();
+}
+window.rebuildTrendChart = rebuildTrendChart;
+
+function showHistogramStudents(bucketIdx) {
+  const ranges = [[0,2],[2,4],[4,6],[6,8],[8,10]];
+  const labels = ['0 – 2','2 – 4','4 – 6','6 – 8','8 – 9'];
+  const [lo, hi] = ranges[bucketIdx] || [0,10];
+  const panel = document.getElementById('stats-hist-detail');
+  if (!panel) return;
+  const matching = _statsAllScoredSubs.filter(s => {
+    const sc = Number(s.overall_score);
+    return sc >= lo && sc < hi;
+  });
+  if (matching.length === 0) { panel.style.display = 'none'; return; }
+  panel.style.display = '';
+  panel.innerHTML = `
+    <div class="stats-hist-detail-header">
+      Điểm <strong>${labels[bucketIdx]}</strong> — ${matching.length} bài
+      <button onclick="document.getElementById('stats-hist-detail').style.display='none'"
+        style="float:right;background:none;border:none;cursor:pointer;color:var(--gray-400);font-size:16px">✕</button>
+    </div>
+    <div class="stats-hist-detail-list">
+      ${matching.map(s => `
+        <div class="stats-hist-detail-item">
+          <span class="student-avatar" style="width:22px;height:22px;font-size:10px;flex-shrink:0">
+            ${escapeHtml(s.student_name.charAt(0).toUpperCase())}
+          </span>
+          <span style="font-weight:500">${escapeHtml(s.student_name)}</span>
+          <span style="color:var(--gray-400);font-size:12px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+            ${escapeHtml(s.assignment_title)}
+          </span>
+          <span class="stats-score-badge" style="margin-left:8px;flex-shrink:0">
+            ${Number(s.overall_score).toFixed(1)}
+          </span>
+        </div>`).join('')}
+    </div>`;
+}
+window.showHistogramStudents = showHistogramStudents;
+
+function renderStatsTab(container, data) {
+  destroyStatsCharts();
+  const { overview, score_distribution, score_by_skill, completion_by_skill, timeline, per_student, per_assignment } = data;
+
+  const sf = _statsSkillFilter;
+  const stf = _statsStatusFilter;
+
+  // Build flat list of all scored submissions (used for histogram click)
+  _statsAllScoredSubs = [];
+  per_student.forEach(st => {
+    st.submissions.forEach(s => {
+      if (s.overall_score !== null) {
+        _statsAllScoredSubs.push({ ...s, student_name: st.name });
+      }
+    });
+  });
+
+  const filteredAssignments = per_assignment.filter(a => {
+    if (sf && a.skill !== sf) return false;
+    if (stf === 'active' && !a.is_active) return false;
+    if (stf === 'closed' && a.is_active) return false;
+    return true;
+  });
+
+  // Build student rows with computed on_time_rate for sorting
+  let displayStudents = (sf
+    ? per_student.map(st => ({
+        ...st,
+        avg_score: st[`avg_${sf}`],
+        submitted: st.submissions.filter(s => s.skill === sf).length,
+        total: per_assignment.filter(a => a.skill === sf).length,
+      }))
+    : per_student
+  ).map(st => ({
+    ...st,
+    on_time_rate: st.closed_total > 0 ? st.on_time / st.closed_total : null,
+  }));
+
+  // Apply sort
+  if (_statsSortCol) {
+    displayStudents = [...displayStudents].sort((a, b) => {
+      let av = a[_statsSortCol], bv = b[_statsSortCol];
+      if (av === null || av === undefined) return 1;
+      if (bv === null || bv === undefined) return -1;
+      if (typeof av === 'string') return _statsSortDir === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av);
+      return _statsSortDir === 'asc' ? av - bv : bv - av;
+    });
+  }
+
+  const scoreNum = v => (v !== null && v !== undefined) ? Number(v).toFixed(1) : '—';
+  const pct = (a, b) => b > 0 ? Math.round(a / b * 100) : 0;
+  const sortIcon = col => {
+    if (_statsSortCol !== col) return '<span class="sort-icon">↕</span>';
+    return `<span class="sort-icon active">${_statsSortDir === 'asc' ? '↑' : '↓'}</span>`;
+  };
+
+  const skillColors = {
+    reading: '#3b82f6', listening: '#f59e0b', writing: '#8b5cf6', speaking: '#22c55e',
+  };
+  const studentPalette = ['#3b82f6','#ef4444','#22c55e','#f59e0b','#8b5cf6','#06b6d4','#ec4899','#14b8a6','#f97316','#a3e635'];
+  const skillLabels = { reading: 'Reading', listening: 'Listening', writing: 'Writing', speaking: 'Speaking' };
+
+  // Overview cards
+  const cardsHtml = `
+    <div class="stats-cards-grid">
+      <div class="stats-card">
+        <div class="stats-card-icon" style="background:#e0f2fe;color:#0284c7">👥</div>
+        <div class="stats-card-body">
+          <div class="stats-card-value">${overview.total_students}</div>
+          <div class="stats-card-label">Học sinh</div>
+        </div>
+      </div>
+      <div class="stats-card">
+        <div class="stats-card-icon" style="background:#dcfce7;color:#16a34a">📋</div>
+        <div class="stats-card-body">
+          <div class="stats-card-value">${overview.total_assignments}</div>
+          <div class="stats-card-label">${overview.active_assignments} đang mở · ${overview.closed_assignments} đã đóng</div>
+        </div>
+      </div>
+      <div class="stats-card">
+        <div class="stats-card-icon" style="background:#fef9c3;color:#ca8a04">📊</div>
+        <div class="stats-card-body">
+          <div class="stats-card-value">${overview.submission_rate}%</div>
+          <div class="stats-card-label">${overview.total_submissions} / ${overview.total_assignments * overview.total_students} lượt nộp</div>
+        </div>
+      </div>
+      <div class="stats-card">
+        <div class="stats-card-icon" style="background:var(--primary-lt);color:var(--primary)">🎯</div>
+        <div class="stats-card-body">
+          <div class="stats-card-value">${overview.avg_score !== null ? Number(overview.avg_score).toFixed(2) : '—'}</div>
+          <div class="stats-card-label">Điểm TB lớp (${overview.scored_submissions} bài đã chấm)</div>
+        </div>
+      </div>
+    </div>`;
+
+  // Skill completion bars
+  const skillCompHtml = `
+    <div class="stats-section-card">
+      <div class="stats-section-title">Tỷ lệ nộp bài theo kỹ năng</div>
+      <div class="stats-skill-chart">
+        ${['reading','listening','writing','speaking'].map(skill => {
+          const c = completion_by_skill[skill];
+          if (!c || c.count === 0) return '';
+          return `<div class="stats-skill-row">
+            <div class="stats-skill-label">${skillBadge(skill)}</div>
+            <div class="stats-bar-wrap">
+              <div class="stats-bar-fill" style="width:${c.pct}%;background:${skillColors[skill]}"></div>
+            </div>
+            <div class="stats-pct">${c.pct}% &nbsp;<span style="color:var(--gray-400)">(${c.submitted}/${c.count * overview.total_students} nộp)</span></div>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>`;
+
+  // Chart: avg score by skill
+  const skillScoreChartHtml = `
+    <div class="stats-section-card stats-chart-card">
+      <div class="stats-section-title">Điểm TB theo kỹ năng</div>
+      <canvas id="chart-skill-score" height="200"></canvas>
+    </div>`;
+
+  // Chart: score distribution with click-to-drill-down
+  const scoreDistChartHtml = `
+    <div class="stats-section-card stats-chart-card">
+      <div class="stats-section-title">
+        Phân bổ điểm (${overview.scored_submissions} bài chấm)
+        <span style="font-size:11px;font-weight:400;color:var(--gray-400);margin-left:6px">Click vào cột để xem chi tiết</span>
+      </div>
+      <canvas id="chart-score-dist" height="200" style="cursor:pointer"></canvas>
+      <div id="stats-hist-detail" style="display:none;margin-top:12px"></div>
+    </div>`;
+
+  // Chart: timeline
+  const timelineChartHtml = timeline.length < 2 ? '' : `
+    <div class="stats-section-card">
+      <div class="stats-section-title">Xu hướng nộp bài theo tuần</div>
+      <canvas id="chart-timeline" height="100"></canvas>
+    </div>`;
+
+  // Chart: on-time stacked bar (closed assignments only)
+  const closedAssigns = filteredAssignments.filter(a => !a.is_active && a.deadline);
+  const onTimeChartHtml = closedAssigns.length === 0 ? '' : `
+    <div class="stats-section-card">
+      <div class="stats-section-title">Đúng hạn / muộn / chưa nộp (bài đã đóng)</div>
+      <canvas id="chart-ontime" height="${Math.max(80, closedAssigns.length * 36)}"></canvas>
+    </div>`;
+
+  // Chart: student score trend (multi-line, per-student + skill filters)
+  const chronoAssigns = [...per_assignment].reverse(); // oldest first for initial render
+  const hasTrendData = per_student.some(st =>
+    st.submissions.filter(s => s.overall_score !== null).length >= 1
+  );
+  const trendChartHtml = !hasTrendData ? '' : `
+    <div class="stats-section-card">
+      <div class="stats-trend-header">
+        <div class="stats-section-title" style="margin-bottom:0">Xu hướng điểm từng học sinh</div>
+      </div>
+      <div class="stats-trend-filters">
+        <div class="stats-filter-group">
+          <span class="stats-filter-label">Kỹ năng:</span>
+          <div class="stats-filter-pills">
+            ${[['reading', 'Reading'], ['listening', 'Listening'], ['writing', 'Writing'], ['speaking', 'Speaking']].map(([v, l]) => `
+              <button class="stats-filter-pill trend-skill-pill${_statsTrendSkill === v ? ' active' : ''}"
+                data-skill="${v}" onclick="filterTrendSkill('${v}')">
+                ${l}
+              </button>`).join('')}
+          </div>
+        </div>
+      </div>
+      <div class="stats-filter-group" style="margin-bottom:12px">
+        <span class="stats-filter-label">Học sinh:</span>
+        <div class="stats-student-toggles" id="stats-trend-toggles" style="margin-bottom:0">
+          ${per_student.map((st, i) => `
+            <button class="stats-student-toggle active"
+              data-sid="${st.id}"
+              style="--sc:${studentPalette[i % studentPalette.length]}"
+              onclick="toggleTrendStudent('${st.id}')">
+              ${escapeHtml(st.name)}
+            </button>`).join('')}
+        </div>
+      </div>
+      <div id="trend-empty-msg" style="display:none;color:var(--gray-400);font-size:13px;padding:20px 0">
+        Không có dữ liệu cho kỹ năng này
+      </div>
+      <canvas id="chart-trend" height="120"></canvas>
+    </div>`;
+
+  // Filter bar with Refresh button
+  const filterHtml = `
+    <div class="stats-filter-bar">
+      <div class="stats-filter-group">
+        <span class="stats-filter-label">Kỹ năng:</span>
+        <div class="stats-filter-pills">
+          ${['', 'reading', 'listening', 'writing', 'speaking'].map(sk => `
+            <button class="stats-filter-pill${_statsSkillFilter === sk ? ' active' : ''}"
+              onclick="_statsSkillFilter='${sk}';applyStatsFilter()">
+              ${sk ? skillLabels[sk] : 'Tất cả'}
+            </button>`).join('')}
+        </div>
+      </div>
+      <div class="stats-filter-group">
+        <span class="stats-filter-label">Bài tập:</span>
+        <div class="stats-filter-pills">
+          ${[['', 'Tất cả'], ['active', 'Đang mở'], ['closed', 'Đã đóng']].map(([v, l]) => `
+            <button class="stats-filter-pill${_statsStatusFilter === v ? ' active' : ''}"
+              onclick="_statsStatusFilter='${v}';applyStatsFilter()">
+              ${l}
+            </button>`).join('')}
+        </div>
+      </div>
+      <button class="btn btn-sm btn-outline stats-refresh-btn" onclick="refreshStatsTab()" title="Tải lại dữ liệu thống kê">
+        ↻ Làm mới
+      </button>
+    </div>`;
+
+  // Per-student table with sortable headers
+  const colCount = !sf ? 8 : 5;
+  const studentTableHtml = `
+    <div class="stats-section-card">
+      <div class="stats-section-title">Tiến độ từng học sinh</div>
+      ${displayStudents.length === 0
+        ? '<div class="empty-state" style="padding:20px">Không có dữ liệu</div>'
+        : `<div class="table-wrap">
+          <table class="stats-table">
+            <thead><tr>
+              <th class="sortable" onclick="sortStudentTable('name')">Học sinh ${sortIcon('name')}</th>
+              <th class="sortable" onclick="sortStudentTable('submitted')">Đã nộp ${sortIcon('submitted')}</th>
+              <th class="sortable" onclick="sortStudentTable('avg_score')">Điểm TB ${sortIcon('avg_score')}</th>
+              ${!sf ? `
+                <th class="sortable" style="color:#3b82f6" onclick="sortStudentTable('avg_reading')">Reading ${sortIcon('avg_reading')}</th>
+                <th class="sortable" style="color:#f59e0b" onclick="sortStudentTable('avg_listening')">Listening ${sortIcon('avg_listening')}</th>
+                <th class="sortable" style="color:#8b5cf6" onclick="sortStudentTable('avg_writing')">Writing ${sortIcon('avg_writing')}</th>
+                <th class="sortable" style="color:#22c55e" onclick="sortStudentTable('avg_speaking')">Speaking ${sortIcon('avg_speaking')}</th>` : ''}
+              <th class="sortable" onclick="sortStudentTable('on_time_rate')">Đúng hạn ${sortIcon('on_time_rate')}</th>
+              <th></th>
+            </tr></thead>
+            <tbody>
+              ${displayStudents.map(st => {
+                const submittedPct = pct(st.submitted, st.total);
+                const ontimePct = st.on_time_rate !== null ? Math.round(st.on_time_rate * 100) : null;
+                return `<tr>
+                  <td><span class="student-avatar">${escapeHtml(st.name.charAt(0).toUpperCase())}</span> ${escapeHtml(st.name)}</td>
+                  <td>
+                    <div class="stats-mini-bar-wrap">
+                      <div class="stats-mini-bar" style="width:${submittedPct}%"></div>
+                    </div>
+                    <span class="stats-mini-label">${st.submitted}/${st.total}</span>
+                  </td>
+                  <td><span class="stats-score-badge">${scoreNum(st.avg_score)}</span></td>
+                  ${!sf ? `
+                    <td style="color:#3b82f6">${scoreNum(st.avg_reading)}</td>
+                    <td style="color:#f59e0b">${scoreNum(st.avg_listening)}</td>
+                    <td style="color:#8b5cf6">${scoreNum(st.avg_writing)}</td>
+                    <td style="color:#22c55e">${scoreNum(st.avg_speaking)}</td>` : ''}
+                  <td>${ontimePct !== null
+                    ? `<span class="stats-ontime-pill ${ontimePct >= 80 ? 'good' : ontimePct >= 50 ? 'mid' : 'bad'}">${ontimePct}%</span>`
+                    : '<span style="color:var(--gray-400)">—</span>'}</td>
+                  <td>
+                    <button class="btn btn-sm btn-outline" onclick="toggleStudentStatsRow('${st.id}')">Chi tiết</button>
+                  </td>
+                </tr>
+                <tr id="stats-row-${st.id}" style="display:none">
+                  <td colspan="${colCount}" style="padding:0">
+                    <div class="stats-expand-body">
+                      ${st.submissions.length === 0
+                        ? '<p style="color:var(--gray-400);padding:12px">Chưa nộp bài nào</p>'
+                        : `<table class="stats-sub-table">
+                            <thead><tr><th>Bài tập</th><th>Kỹ năng</th><th>Điểm</th><th>Ngày nộp</th><th>Đúng hạn</th></tr></thead>
+                            <tbody>${st.submissions
+                              .filter(s => !sf || s.skill === sf)
+                              .map(s => `<tr>
+                                <td>${escapeHtml(s.assignment_title)}</td>
+                                <td>${skillBadge(s.skill)}</td>
+                                <td><span class="stats-score-badge">${s.overall_score !== null ? Number(s.overall_score).toFixed(1) : '—'}</span></td>
+                                <td style="color:var(--gray-400);font-size:12px">${formatDate(s.submitted_at)}</td>
+                                <td>${s.on_time === null ? '—' : s.on_time ? '<span class="stats-ontime-pill good">Đúng hạn</span>' : '<span class="stats-ontime-pill bad">Muộn</span>'}</td>
+                              </tr>`).join('')}
+                            </tbody>
+                          </table>`}
+                    </div>
+                  </td>
+                </tr>`;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>`}
+    </div>`;
+
+  // Per-assignment table
+  const assignTableHtml = `
+    <div class="stats-section-card">
+      <div class="stats-section-title">Chi tiết từng bài tập</div>
+      ${filteredAssignments.length === 0
+        ? '<div class="empty-state" style="padding:20px">Không có bài tập phù hợp</div>'
+        : `<div class="table-wrap">
+          <table class="stats-table">
+            <thead><tr>
+              <th>Kỹ năng</th><th>Tên bài tập</th><th>Tỷ lệ nộp</th><th>Điểm TB</th>
+              <th>Đúng hạn</th><th>Muộn</th><th>Chưa nộp</th><th>Trạng thái</th>
+            </tr></thead>
+            <tbody>
+              ${filteredAssignments.map(a => {
+                const submittedPct = pct(a.submitted, a.total);
+                return `<tr>
+                  <td>${skillBadge(a.skill)}</td>
+                  <td style="font-weight:600">${escapeHtml(a.title)}</td>
+                  <td>
+                    <div class="stats-mini-bar-wrap">
+                      <div class="stats-mini-bar" style="width:${submittedPct}%"></div>
+                    </div>
+                    <span class="stats-mini-label">${a.submitted}/${a.total}</span>
+                  </td>
+                  <td><span class="stats-score-badge">${scoreNum(a.avg_score)}</span></td>
+                  <td>${!a.is_active && a.deadline ? `<span style="color:var(--success)">${a.on_time}</span>` : '—'}</td>
+                  <td>${!a.is_active && a.deadline ? `<span style="color:var(--accent)">${a.late}</span>` : '—'}</td>
+                  <td>${a.missing !== null ? `<span style="color:var(--danger)">${a.missing}</span>` : '—'}</td>
+                  <td>${a.is_active
+                    ? '<span class="badge badge-success">Đang mở</span>'
+                    : '<span class="badge badge-gray">Đã đóng</span>'}</td>
+                </tr>`;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>`}
+    </div>`;
+
+  container.innerHTML = `
+    ${filterHtml}
+    ${cardsHtml}
+    <div class="stats-charts-row">
+      ${skillScoreChartHtml}
+      ${scoreDistChartHtml}
+    </div>
+    ${trendChartHtml}
+    ${timelineChartHtml}
+    ${onTimeChartHtml}
+    ${skillCompHtml}
+    ${studentTableHtml}
+    ${assignTableHtml}`;
+
+  // Initialize all charts
+  requestAnimationFrame(() => {
+    // Chart 1: Skill score horizontal bar
+    const skillScoreCanvas = document.getElementById('chart-skill-score');
+    if (skillScoreCanvas) {
+      const skillsWithScore = ['reading','listening','writing','speaking'].filter(sk => score_by_skill[sk] !== null);
+      if (skillsWithScore.length > 0) {
+        const chart = new Chart(skillScoreCanvas.getContext('2d'), {
+          type: 'bar',
+          data: {
+            labels: skillsWithScore.map(sk => skillLabels[sk]),
+            datasets: [{
+              data: skillsWithScore.map(sk => Number(score_by_skill[sk]).toFixed(2)),
+              backgroundColor: skillsWithScore.map(sk => skillColors[sk] + 'cc'),
+              borderColor: skillsWithScore.map(sk => skillColors[sk]),
+              borderWidth: 1, borderRadius: 6,
+            }],
+          },
+          options: {
+            indexAxis: 'y', responsive: true,
+            plugins: { legend: { display: false } },
+            scales: {
+              x: { min: 0, max: 9, grid: { color: '#f3f4f6' }, ticks: { font: { size: 11 } } },
+              y: { ticks: { font: { size: 12 } } },
+            },
+          },
+        });
+        _statsCharts.push(chart);
+      } else {
+        skillScoreCanvas.insertAdjacentHTML('afterend', '<p style="color:var(--gray-400);font-size:13px;padding:20px 0">Chưa có dữ liệu điểm</p>');
+        skillScoreCanvas.remove();
+      }
+    }
+
+    // Chart 2: Score distribution — clickable bars
+    const distCanvas = document.getElementById('chart-score-dist');
+    if (distCanvas) {
+      const total = score_distribution.reduce((a, b) => a + b, 0);
+      if (total > 0) {
+        const chart = new Chart(distCanvas.getContext('2d'), {
+          type: 'bar',
+          data: {
+            labels: ['0 – 2','2 – 4','4 – 6','6 – 8','8 – 9'],
+            datasets: [{
+              label: 'Số bài',
+              data: score_distribution,
+              backgroundColor: ['#fca5a5','#fcd34d','#86efac','#67e8f9','#6ee7b7'],
+              hoverBackgroundColor: ['#f87171','#fbbf24','#4ade80','#22d3ee','#34d399'],
+              borderRadius: 6,
+            }],
+          },
+          options: {
+            responsive: true,
+            plugins: { legend: { display: false } },
+            scales: {
+              y: { beginAtZero: true, ticks: { stepSize: 1, font: { size: 11 } }, grid: { color: '#f3f4f6' } },
+              x: { ticks: { font: { size: 11 } } },
+            },
+            onClick: (_, elements) => {
+              if (elements.length) showHistogramStudents(elements[0].index);
+            },
+            onHover: (e, elements) => {
+              e.native.target.style.cursor = elements.length ? 'pointer' : 'default';
+            },
+          },
+        });
+        _statsCharts.push(chart);
+      } else {
+        distCanvas.insertAdjacentHTML('afterend', '<p style="color:var(--gray-400);font-size:13px;padding:20px 0">Chưa có bài nào được chấm điểm</p>');
+        distCanvas.remove();
+      }
+    }
+
+    // Chart 3: Student score trend (multi-line, per-student + skill filter)
+    const trendCanvas = document.getElementById('chart-trend');
+    if (trendCanvas) {
+      // Initial render uses _statsTrendSkill (default: '' = all skills)
+      const initAssigns = [...per_assignment].reverse().filter(a => !_statsTrendSkill || a.skill === _statsTrendSkill);
+      const trendLabels = initAssigns.map(a => a.title.length > 18 ? a.title.slice(0,16) + '…' : a.title);
+      const datasets = per_student.map((st, i) => {
+        const color = studentPalette[i % studentPalette.length];
+        return {
+          label: st.name,
+          _studentId: st.id,
+          data: initAssigns.map(a => {
+            const sub = st.submissions.find(s => s.assignment_id === a.id);
+            return (sub && sub.overall_score !== null) ? Number(sub.overall_score) : null;
+          }),
+          borderColor: color,
+          backgroundColor: color + '22',
+          borderWidth: 2,
+          pointRadius: 5,
+          pointHoverRadius: 7,
+          fill: false,
+          tension: 0.3,
+          spanGaps: true,
+        };
+      });
+
+      if (initAssigns.length < 2) {
+        trendCanvas.style.display = 'none';
+        const emptyEl = document.getElementById('trend-empty-msg');
+        if (emptyEl) emptyEl.style.display = '';
+      }
+
+      const chart = new Chart(trendCanvas.getContext('2d'), {
+        type: 'line',
+        data: { labels: trendLabels, datasets },
+        options: {
+          responsive: true,
+          interaction: { mode: 'index', intersect: false },
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              filter: item => item.raw !== null,
+              callbacks: {
+                title: items => items[0]?.label || '',
+                label: item => ` ${item.dataset.label}: ${item.raw !== null ? Number(item.raw).toFixed(1) : '—'}`,
+              },
+            },
+          },
+          scales: {
+            y: { min: 0, max: 9, ticks: { font: { size: 11 } }, grid: { color: '#f3f4f6' } },
+            x: { ticks: { font: { size: 10 }, maxRotation: 30 } },
+          },
+        },
+      });
+      _statsCharts.push(chart);
+    }
+
+    // Chart 4: Timeline line
+    const timelineCanvas = document.getElementById('chart-timeline');
+    if (timelineCanvas && timeline.length >= 2) {
+      const chart = new Chart(timelineCanvas.getContext('2d'), {
+        type: 'line',
+        data: {
+          labels: timeline.map(t => { const d = new Date(t.week); return `${d.getDate()}/${d.getMonth()+1}`; }),
+          datasets: [{
+            label: 'Lượt nộp',
+            data: timeline.map(t => t.count),
+            borderColor: '#0f766e', backgroundColor: '#0f766e22',
+            borderWidth: 2, pointRadius: 4, fill: true, tension: 0.3,
+          }],
+        },
+        options: {
+          responsive: true,
+          plugins: { legend: { display: false } },
+          scales: {
+            y: { beginAtZero: true, ticks: { stepSize: 1, font: { size: 11 } }, grid: { color: '#f3f4f6' } },
+            x: { ticks: { font: { size: 11 } } },
+          },
+        },
+      });
+      _statsCharts.push(chart);
+    }
+
+    // Chart 5: On-time stacked horizontal bar
+    const ontimeCanvas = document.getElementById('chart-ontime');
+    if (ontimeCanvas && closedAssigns.length > 0) {
+      const chart = new Chart(ontimeCanvas.getContext('2d'), {
+        type: 'bar',
+        data: {
+          labels: closedAssigns.map(a => a.title.length > 22 ? a.title.slice(0,20) + '…' : a.title),
+          datasets: [
+            { label: 'Đúng hạn', data: closedAssigns.map(a => a.on_time), backgroundColor: '#86efac', borderRadius: 4 },
+            { label: 'Nộp muộn', data: closedAssigns.map(a => a.late), backgroundColor: '#fcd34d', borderRadius: 4 },
+            { label: 'Chưa nộp', data: closedAssigns.map(a => a.missing || 0), backgroundColor: '#fca5a5', borderRadius: 4 },
+          ],
+        },
+        options: {
+          indexAxis: 'y', responsive: true,
+          plugins: { legend: { position: 'bottom', labels: { font: { size: 11 } } } },
+          scales: {
+            x: { stacked: true, ticks: { stepSize: 1, font: { size: 11 } }, grid: { color: '#f3f4f6' } },
+            y: { stacked: true, ticks: { font: { size: 11 } } },
+          },
+        },
+      });
+      _statsCharts.push(chart);
+    }
+  });
+}
+
+function toggleStudentStatsRow(studentId) {
+  const row = document.getElementById(`stats-row-${studentId}`);
+  if (!row) return;
+  row.style.display = row.style.display === 'none' ? '' : 'none';
+}
+window.toggleStudentStatsRow = toggleStudentStatsRow;
 
 function renderClassDetail(cls, students = []) {
   const assignRows = cls.assignments.length === 0
@@ -1111,33 +1806,9 @@ function renderClassDetail(cls, students = []) {
           </td>
         </tr>`).join('');
 
-  // T13 — stats by skill
-  const skillStats = ['reading','listening','writing','speaking'].map(skill => {
-    const list = cls.assignments.filter(a => a.skill === skill);
-    if (list.length === 0) return null;
-    const totalSubs = list.reduce((s, a) => s + (a.submission_count || 0), 0);
-    const maxPossible = list.length * (cls.student_count || 1);
-    const pct = Math.round(totalSubs / maxPossible * 100);
-    return { skill, count: list.length, pct };
-  }).filter(Boolean);
-
-  const statsHtml = skillStats.length === 0
-    ? `<div class="empty-state" style="padding:40px"><p>Chưa có dữ liệu thống kê</p></div>`
-    : `<div class="stats-skill-chart">
-        ${skillStats.map(s => `
-          <div class="stats-skill-row">
-            <div class="stats-skill-label">${skillBadge(s.skill)}</div>
-            <div class="stats-bar-wrap">
-              <div class="stats-bar-fill" style="width:${s.pct}%"></div>
-            </div>
-            <div class="stats-pct">${s.pct}% nộp (${s.count} bài tập)</div>
-          </div>`).join('')}
-      </div>
-      <div class="stats-summary">
-        <div class="stats-summary-item"><strong>${cls.assignments.length}</strong> bài tập tổng</div>
-        <div class="stats-summary-item"><strong>${students.length}</strong> học sinh</div>
-        <div class="stats-summary-item"><strong>${cls.assignments.reduce((s,a) => s+(a.submission_count||0), 0)}</strong> lượt nộp</div>
-      </div>`;
+  const statsHtml = `<div class="stats-loading-placeholder" id="stats-loading-placeholder">
+      <div class="spinner"></div><p style="margin-top:12px;color:var(--gray-400)">Đang tải thống kê...</p>
+    </div>`;
 
   const clsNameSafe = cls.class_name.replace(/'/g, "\\'");
 

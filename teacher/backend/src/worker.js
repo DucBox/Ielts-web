@@ -1693,6 +1693,196 @@ export default {
         }
       }
 
+      if ((p = matchPath('/classes/:id/analytics', path))) {
+        if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
+        if (method !== 'GET') return err('Method not allowed', 405);
+
+        const classId = p.id;
+        const [submissions, allAssignments, allStudents] = await Promise.all([
+          sql`
+            SELECT
+              sub.id, sub.student_id, sub.assignment_id,
+              sub.overall_score::float AS overall_score,
+              sub.submitted_at, sub.status,
+              q.skill, a.deadline, a.is_active, a.title AS assignment_title,
+              s.full_name AS student_name
+            FROM submissions sub
+            JOIN assignments a ON a.id = sub.assignment_id
+            JOIN question_pool q ON q.id = a.question_id
+            JOIN students s ON s.id = sub.student_id
+            WHERE a.class_id = ${classId}
+            ORDER BY sub.submitted_at ASC
+          `,
+          sql`
+            SELECT a.id, a.title, a.deadline, a.is_active, q.skill
+            FROM assignments a
+            JOIN question_pool q ON q.id = a.question_id
+            WHERE a.class_id = ${classId}
+            ORDER BY a.created_at DESC
+          `,
+          sql`
+            SELECT s.id, s.full_name
+            FROM students s
+            JOIN student_classes sc ON sc.student_id = s.id
+            WHERE sc.class_id = ${classId}
+            ORDER BY s.full_name ASC
+          `,
+        ]);
+
+        const totalStudents = allStudents.length;
+        const totalAssignments = allAssignments.length;
+        const activeAssignments = allAssignments.filter(a => a.is_active).length;
+        const closedAssignments = totalAssignments - activeAssignments;
+        const scoredSubs = submissions.filter(s => s.overall_score !== null);
+        const avg = arr => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null;
+        const avgScore = avg(scoredSubs.map(s => Number(s.overall_score)));
+        const maxPossible = totalAssignments * totalStudents;
+        const submissionRate = maxPossible > 0 ? Math.round(submissions.length / maxPossible * 100) : 0;
+
+        // Score distribution buckets: 0-2, 2-4, 4-6, 6-8, 8-10
+        const distribution = [0, 0, 0, 0, 0];
+        for (const sub of scoredSubs) {
+          const score = Number(sub.overall_score);
+          const idx = score >= 9 ? 4 : Math.min(4, Math.floor(score / 2));
+          distribution[idx]++;
+        }
+
+        // Average score and completion per skill
+        const skillKeys = ['reading', 'listening', 'writing', 'speaking'];
+        const scoreBySkill = {};
+        const completionBySkill = {};
+        for (const skill of skillKeys) {
+          const skillSubs = scoredSubs.filter(s => s.skill === skill);
+          scoreBySkill[skill] = avg(skillSubs.map(s => Number(s.overall_score)));
+          const skillAssigns = allAssignments.filter(a => a.skill === skill);
+          const allSkillSubs = submissions.filter(s => s.skill === skill);
+          const maxPoss = skillAssigns.length * totalStudents;
+          completionBySkill[skill] = {
+            count: skillAssigns.length,
+            submitted: allSkillSubs.length,
+            pct: maxPoss > 0 ? Math.round(allSkillSubs.length / maxPoss * 100) : 0,
+          };
+        }
+
+        // Timeline grouped by ISO week (Monday)
+        const timelineMap = {};
+        for (const sub of submissions) {
+          const date = new Date(sub.submitted_at);
+          const day = date.getUTCDay();
+          const diff = day === 0 ? -6 : 1 - day;
+          const monday = new Date(Date.UTC(
+            date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + diff,
+          ));
+          const key = monday.toISOString().slice(0, 10);
+          timelineMap[key] = (timelineMap[key] || 0) + 1;
+        }
+        const timeline = Object.entries(timelineMap)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .slice(-12)
+          .map(([week, count]) => ({ week, count }));
+
+        // Per-student aggregation
+        const studentMap = {};
+        for (const st of allStudents) {
+          studentMap[st.id] = {
+            id: st.id, name: st.full_name,
+            submitted: 0, total: totalAssignments,
+            scores: [],
+            bySkill: { reading: [], listening: [], writing: [], speaking: [] },
+            onTime: 0, late: 0, closedTotal: 0,
+            subs: [],
+          };
+        }
+        for (const sub of submissions) {
+          const st = studentMap[sub.student_id];
+          if (!st) continue;
+          st.submitted++;
+          const score = sub.overall_score !== null ? Number(sub.overall_score) : null;
+          if (score !== null) {
+            st.scores.push(score);
+            if (st.bySkill[sub.skill]) st.bySkill[sub.skill].push(score);
+          }
+          if (!sub.is_active && sub.deadline) {
+            st.closedTotal++;
+            if (new Date(sub.submitted_at) <= new Date(sub.deadline)) st.onTime++;
+            else st.late++;
+          }
+          st.subs.push({
+            assignment_id: sub.assignment_id,
+            assignment_title: sub.assignment_title,
+            skill: sub.skill,
+            overall_score: score,
+            submitted_at: sub.submitted_at,
+            is_active: sub.is_active,
+            deadline: sub.deadline,
+            on_time: sub.deadline ? new Date(sub.submitted_at) <= new Date(sub.deadline) : null,
+          });
+        }
+        const perStudent = Object.values(studentMap).map(st => ({
+          id: st.id, name: st.name,
+          submitted: st.submitted, total: st.total,
+          avg_score: avg(st.scores),
+          avg_reading: avg(st.bySkill.reading),
+          avg_listening: avg(st.bySkill.listening),
+          avg_writing: avg(st.bySkill.writing),
+          avg_speaking: avg(st.bySkill.speaking),
+          on_time: st.onTime, late: st.late, closed_total: st.closedTotal,
+          missing_closed: Math.max(0, closedAssignments - st.closedTotal),
+          submissions: st.subs,
+        }));
+
+        // Per-assignment aggregation
+        const assignMap = {};
+        for (const a of allAssignments) {
+          assignMap[a.id] = {
+            id: a.id, title: a.title, skill: a.skill,
+            deadline: a.deadline, is_active: a.is_active,
+            submitted: 0, total: totalStudents,
+            scores: [], onTime: 0, late: 0,
+          };
+        }
+        for (const sub of submissions) {
+          const a = assignMap[sub.assignment_id];
+          if (!a) continue;
+          a.submitted++;
+          if (sub.overall_score !== null) a.scores.push(Number(sub.overall_score));
+          if (!sub.is_active && sub.deadline) {
+            if (new Date(sub.submitted_at) <= new Date(sub.deadline)) a.onTime++;
+            else a.late++;
+          }
+        }
+        const perAssignment = allAssignments.map(a => {
+          const d = assignMap[a.id];
+          return {
+            id: d.id, title: d.title, skill: d.skill,
+            deadline: d.deadline, is_active: d.is_active,
+            submitted: d.submitted, total: d.total,
+            avg_score: avg(d.scores),
+            on_time: d.onTime, late: d.late,
+            missing: !d.is_active ? Math.max(0, d.total - d.submitted) : null,
+          };
+        });
+
+        return json({
+          overview: {
+            total_students: totalStudents,
+            total_assignments: totalAssignments,
+            active_assignments: activeAssignments,
+            closed_assignments: closedAssignments,
+            total_submissions: submissions.length,
+            submission_rate: submissionRate,
+            avg_score: avgScore,
+            scored_submissions: scoredSubs.length,
+          },
+          score_distribution: distribution,
+          score_by_skill: scoreBySkill,
+          completion_by_skill: completionBySkill,
+          timeline,
+          per_student: perStudent,
+          per_assignment: perAssignment,
+        });
+      }
+
       if ((p = matchPath('/classes/:id', path))) {
         if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
         if (method === 'GET') {

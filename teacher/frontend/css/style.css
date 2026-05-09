@@ -2249,17 +2249,142 @@ body.resizing-image {
 }
 
 /* ═══ STATS TAB ════════════════════════════════════════════════════════════ */
-.stats-skill-chart { margin-bottom: 24px; }
+
+.stats-loading-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 0;
+  color: var(--gray-400);
+}
+
+/* Filter bar */
+.stats-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: center;
+  padding: 12px 16px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 20px;
+}
+.stats-filter-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.stats-filter-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--gray-400);
+  white-space: nowrap;
+}
+.stats-filter-pills {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.stats-filter-pill {
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--gray-200);
+  background: none;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--gray-600);
+  cursor: pointer;
+  transition: all .15s;
+}
+.stats-filter-pill:hover { border-color: var(--primary); color: var(--primary); }
+.stats-filter-pill.active {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: #fff;
+}
+
+/* Overview cards grid */
+.stats-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  margin-bottom: 20px;
+}
+@media (max-width: 900px) { .stats-cards-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 480px) { .stats-cards-grid { grid-template-columns: 1fr; } }
+
+.stats-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+.stats-card-icon {
+  width: 44px; height: 44px;
+  border-radius: 10px;
+  font-size: 20px;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.stats-card-value {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text-strong);
+  line-height: 1.2;
+}
+.stats-card-label {
+  font-size: 11px;
+  color: var(--gray-400);
+  margin-top: 2px;
+}
+
+/* Charts row (two columns) */
+.stats-charts-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+@media (max-width: 768px) { .stats-charts-row { grid-template-columns: 1fr; } }
+
+/* Section card wrapper */
+.stats-section-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+  margin-bottom: 20px;
+  box-shadow: var(--shadow);
+}
+.stats-chart-card { min-height: 160px; }
+.stats-section-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-strong);
+  margin-bottom: 16px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
+/* Skill completion bars (reused + enhanced) */
+.stats-skill-chart { margin-bottom: 4px; }
 .stats-skill-row {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-bottom: 12px;
+  margin-bottom: 10px;
 }
 .stats-skill-label { min-width: 110px; }
 .stats-bar-wrap {
   flex: 1;
-  height: 12px;
+  height: 10px;
   background: var(--gray-200);
   border-radius: 99px;
   overflow: hidden;
@@ -2271,7 +2396,95 @@ body.resizing-image {
   transition: width .4s ease;
   min-width: 2px;
 }
-.stats-pct { font-size: 12px; color: var(--gray-400); min-width: 140px; }
+.stats-pct { font-size: 12px; color: var(--gray-600); min-width: 160px; }
+
+/* Mini inline progress bar in table */
+.stats-mini-bar-wrap {
+  display: inline-block;
+  width: 50px; height: 5px;
+  background: var(--gray-200);
+  border-radius: 99px;
+  overflow: hidden;
+  vertical-align: middle;
+  margin-right: 6px;
+}
+.stats-mini-bar {
+  display: block;
+  height: 100%;
+  background: var(--primary);
+  border-radius: 99px;
+}
+.stats-mini-label {
+  font-size: 12px;
+  color: var(--gray-600);
+  vertical-align: middle;
+}
+
+/* Score badge */
+.stats-score-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--primary-lt);
+  color: var(--primary-dk);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+/* On-time pill */
+.stats-ontime-pill {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.stats-ontime-pill.good { background: var(--success-lt); color: #15803d; }
+.stats-ontime-pill.mid  { background: #fef9c3; color: #a16207; }
+.stats-ontime-pill.bad  { background: var(--danger-lt); color: #b91c1c; }
+
+/* Stats tables */
+.stats-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.stats-table th {
+  text-align: left;
+  padding: 8px 10px;
+  background: var(--gray-50);
+  border-bottom: 1px solid var(--gray-200);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--gray-400);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  white-space: nowrap;
+}
+.stats-table td {
+  padding: 10px 10px;
+  border-bottom: 1px solid var(--gray-100);
+  vertical-align: middle;
+}
+.stats-table tr:last-child td { border-bottom: none; }
+.stats-table tr:hover td { background: var(--gray-50); }
+
+/* Expanded sub-table */
+.stats-expand-body {
+  padding: 8px 12px 8px 40px;
+  background: var(--gray-50);
+  border-top: 1px solid var(--gray-200);
+}
+.stats-sub-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.stats-sub-table th {
+  padding: 6px 8px;
+  text-align: left;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--gray-400);
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--gray-200);
+}
+.stats-sub-table td { padding: 7px 8px; border-bottom: 1px solid var(--gray-100); }
+.stats-sub-table tr:last-child td { border-bottom: none; }
+
+/* Legacy summary (kept for backward compat) */
 .stats-summary {
   display: flex;
   gap: 20px;
@@ -2280,10 +2493,95 @@ body.resizing-image {
   border-radius: var(--radius);
   border: 1px solid var(--gray-200);
 }
-.stats-summary-item {
-  font-size: 13px;
-  color: var(--gray-600);
+.stats-summary-item { font-size: 13px; color: var(--gray-600); }
+
+/* Refresh button in filter bar */
+.stats-refresh-btn {
+  margin-left: auto;
+  white-space: nowrap;
 }
+
+/* Sortable column headers */
+.stats-table th.sortable {
+  cursor: pointer;
+  user-select: none;
+}
+.stats-table th.sortable:hover { color: var(--primary); }
+.sort-icon {
+  font-size: 10px;
+  color: var(--gray-300);
+  margin-left: 2px;
+}
+.sort-icon.active { color: var(--primary); }
+
+/* Trend chart internal header + filters */
+.stats-trend-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.stats-trend-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--gray-100);
+}
+
+/* Student trend toggle buttons */
+.stats-student-toggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+.stats-student-toggle {
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  border: 2px solid var(--sc, #3b82f6);
+  background: none;
+  color: var(--sc, #3b82f6);
+  opacity: 0.35;
+  transition: opacity .15s, background .15s;
+}
+.stats-student-toggle.active {
+  background: var(--sc, #3b82f6);
+  color: #fff;
+  opacity: 1;
+}
+
+/* Histogram drill-down panel */
+.stats-hist-detail {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  font-size: 13px;
+}
+.stats-hist-detail-header {
+  padding: 10px 14px;
+  background: var(--gray-50);
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  color: var(--text-strong);
+}
+.stats-hist-detail-list {
+  max-height: 220px;
+  overflow-y: auto;
+}
+.stats-hist-detail-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--gray-100);
+}
+.stats-hist-detail-item:last-child { border-bottom: none; }
+.stats-hist-detail-item:hover { background: var(--gray-50); }
 
 /* ═══ QUESTION PREVIEW ═════════════════════════════════════════════════════ */
 .q-title-link {

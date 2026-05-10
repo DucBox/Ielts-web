@@ -448,10 +448,7 @@ async function deleteNotif(btn) {
   btn.disabled = true;
   try {
     const wasUnread = item.classList.contains('notif-item--unread');
-    await fetch(`${API_BASE}/student/notifications/${notifId}`, {
-      method: 'DELETE',
-      headers: api._authHeaders(),
-    });
+    await api.delete(`/student/notifications/${notifId}`);
     item.remove();
     const listEl = document.getElementById('notif-list');
     if (listEl && !listEl.querySelector('.notif-item')) {
@@ -467,10 +464,7 @@ async function markAllNotifsRead() {
   try {
     const classId = _selectedClass?.id;
     if (!classId) return;
-    await fetch(`${API_BASE}/student/notifications/read-all?class_id=${encodeURIComponent(classId)}`, {
-      method: 'PATCH',
-      headers: api._authHeaders(),
-    });
+    await api.patch(`/student/notifications/read-all?class_id=${encodeURIComponent(classId)}`, {});
     document.querySelectorAll('.notif-item--unread').forEach(el => {
       el.classList.remove('notif-item--unread');
       el.classList.add('notif-item--read');
@@ -484,10 +478,8 @@ async function refreshNotifBadge() {
   try {
     const classId = _selectedClass?.id;
     if (!classId) return 0;
-    const data = await fetch(
-      `${API_BASE}/student/notifications/count?class_id=${encodeURIComponent(classId)}`,
-      { headers: api._authHeaders() }
-    ).then(r => r.ok ? r.json() : { count: 0 });
+    const data = await api.get(`/student/notifications/count?class_id=${encodeURIComponent(classId)}`)
+      .catch(() => ({ count: 0 }));
     const badge = document.getElementById('notif-badge');
     if (!badge) return 0;
     const count = data.count || 0;
@@ -515,10 +507,8 @@ async function loadNotifPanel() {
   try {
     const classId = _selectedClass?.id;
     if (!classId) { listEl.innerHTML = '<div class="notif-empty">Vui lòng chọn lớp</div>'; return; }
-    const rows = await fetch(
-      `${API_BASE}/student/notifications?class_id=${encodeURIComponent(classId)}`,
-      { headers: api._authHeaders() }
-    ).then(r => r.ok ? r.json() : []);
+    const rows = await api.get(`/student/notifications?class_id=${encodeURIComponent(classId)}`)
+      .catch(() => []);
     listEl.innerHTML = rows.length ? rows.map(renderNotifItem).join('') : '<div class="notif-empty">Không có thông báo nào</div>';
   } catch {
     listEl.innerHTML = '<div class="notif-empty">Không thể tải thông báo</div>';

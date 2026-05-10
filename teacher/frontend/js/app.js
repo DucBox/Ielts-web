@@ -5567,17 +5567,15 @@ async function removeStudentFromClass(studentId, classId, btn) {
   if (!confirm('Xoá học sinh khỏi lớp này?\n\nTài khoản học sinh vẫn còn, chỉ rời khỏi lớp này.')) return;
   btnLoading(btn);
   try {
-    const res = await fetch(
-      `${api._base}/student-classes?student_id=${studentId}&class_id=${classId}`,
-      { method: 'DELETE' }
-    );
-    if (!res.ok) throw await res.json();
+    await api.delete(`/student-classes?student_id=${studentId}&class_id=${classId}`);
     toast('Đã xoá học sinh khỏi lớp');
     showClassDetail({ id: classId });
   } catch (e) {
     btnReset(btn);
     toast('Lỗi: ' + (e.error || e.message), 'error');
+    return;
   }
+  btnReset(btn);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -5975,14 +5973,18 @@ function showLocationConfirmPopup(result, rangeOrAnchor) {
       <button class="lcp-confirm" id="lcp-confirm">✓ Xác nhận</button>
     </div>`;
 
-  // Position below selection, clamped to viewport
-  const spaceBelow = window.innerHeight - rect.bottom;
-  const top = spaceBelow >= 110 ? rect.bottom + 8 : rect.top - 118;
-  const left = Math.min(Math.max(previewRect.left + 4, rect.left), window.innerWidth - 376);
-  popup.style.top  = Math.max(8, top) + 'px';
-  popup.style.left = Math.max(8, left) + 'px';
-
   document.body.appendChild(popup);
+  const popupWidth = popup.offsetWidth || 320;
+  const popupHeight = popup.offsetHeight || 118;
+
+  // Position below selection, clamped to real popup size and viewport width.
+  const spaceBelow = window.innerHeight - rect.bottom;
+  const top = spaceBelow >= popupHeight + 12 ? rect.bottom + 8 : rect.top - popupHeight - 8;
+  const maxLeft = Math.max(8, window.innerWidth - popupWidth - 8);
+  const left = Math.min(Math.max(previewRect.left + 4, rect.left), maxLeft);
+  popup.style.top  = `${Math.max(8, top)}px`;
+  popup.style.left = `${Math.max(8, left)}px`;
+
   document.getElementById('lcp-confirm').onclick = () => commitLocationSelection();
   document.getElementById('lcp-cancel').onclick  = () => {
     removeLocationPopup();

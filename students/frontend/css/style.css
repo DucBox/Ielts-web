@@ -770,18 +770,22 @@ body {
   grid-template-columns: 1fr 1fr;
   gap: 0;
   height: calc(100vh - var(--header-h) - 53px);
+  height: calc(100dvh - var(--header-h) - 53px);
+  min-height: 0;
 }
 
 .content-pane {
   overflow-y: auto;
   padding: 24px;
   border-right: 1px solid var(--gray-200);
+  min-height: 0;
 }
 
 .answer-pane {
   overflow-y: auto;
   padding: 24px;
   background: var(--gray-50);
+  min-height: 0;
 }
 
 /* Single column layout for writing/speaking */
@@ -1237,12 +1241,15 @@ body {
   background: #fff;
   border-radius: var(--radius);
   box-shadow: var(--shadow);
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
 }
 
 .result-table {
   width: 100%;
   border-collapse: collapse;
+  min-width: 560px;
 }
 
 .result-table th {
@@ -3710,6 +3717,14 @@ mark.student-note::after {
   .skill-modal-row-score { min-width: 58px; }
 }
 
+@media (max-width: 560px) {
+  .skill-cards-grid,
+  .home-chart-grid,
+  .profile-chart-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* ═══ MOBILE NAV DRAWER ══════════════════════════════════════════════════════ */
 .hamburger-btn {
   display: none;
@@ -3896,6 +3911,10 @@ mark.student-note::after {
 
   /* History table horizontal scroll */
   .history-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+  .result-table {
+    min-width: 500px;
+  }
 
   /* Container tighter padding */
   .container, .container-wide { padding: 16px 12px; }

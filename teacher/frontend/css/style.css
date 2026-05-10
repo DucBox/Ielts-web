@@ -892,8 +892,9 @@ tbody tr:hover { background: var(--bg-surface-alt); }
   border-radius: 10px;
   box-shadow: 0 8px 28px rgba(0,0,0,.18);
   padding: 12px 14px;
-  max-width: 360px;
-  min-width: 200px;
+  width: min(360px, calc(100vw - 24px));
+  max-width: calc(100vw - 24px);
+  min-width: min(200px, calc(100vw - 24px));
   animation: lcp-in .15s ease;
 }
 @keyframes lcp-in {
@@ -1725,10 +1726,27 @@ body.resizing-image {
   position: sticky;
   top: 20px;
   max-height: calc(100vh - 80px);
+  max-height: calc(100dvh - 80px);
   overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 0;
+}
+
+@media (max-width: 1024px) {
+  .grading-layout {
+    grid-template-columns: minmax(0, 1fr) minmax(300px, 340px);
+  }
+}
+
+@media (max-width: 900px) {
+  .grading-layout {
+    grid-template-columns: 1fr;
+  }
+  .grading-sidebar {
+    position: static;
+    max-height: none;
+  }
 }
 
 .grading-panel-label {

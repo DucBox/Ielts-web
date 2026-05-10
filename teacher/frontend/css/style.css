@@ -3142,8 +3142,8 @@ tr[draggable="true"]:active { cursor: grabbing; }
   /* Backdrop visible when sidebar open */
   .sidebar-backdrop { display: block; }
 
-  /* Main takes full width */
-  .main { margin-left: 0 !important; }
+  /* Main takes full width — clip horizontal overflow to prevent page scroll */
+  .main { margin-left: 0 !important; overflow-x: hidden; }
   #app { padding: 70px 16px 24px; } /* 70px leaves room for hamburger */
 
   /* Show hamburger button */
@@ -3168,13 +3168,21 @@ tr[draggable="true"]:active { cursor: grabbing; }
     overflow-y: auto;
   }
 
-  /* Table overflow */
-  .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  /* Table overflow — max-width ensures wrapper stays within .main */
+  .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; max-width: 100%; }
   .table-wrap table { min-width: 560px; }
 
   /* Page header: stack on mobile */
   .page-header { flex-wrap: wrap; gap: 10px; }
   .page-title { font-size: 18px; }
+
+  /* Class detail header: stack vertically on mobile */
+  .detail-header { flex-direction: column; align-items: flex-start; gap: 12px; }
+  .detail-header > .btn { align-self: stretch; text-align: center; justify-content: center; }
+  .detail-header-meta { flex-wrap: wrap; gap: 8px; }
+
+  /* Tab bar: allow horizontal scroll instead of overflow */
+  .tab-bar { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 }
 
 /* ═══ RESPONSIVE — 480px (phone) ════════════════════════════════════════════ */

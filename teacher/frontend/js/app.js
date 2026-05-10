@@ -1853,7 +1853,7 @@ function renderClassDetail(cls, students = []) {
           <button class="assign-skill-pill" data-skill="speaking" onclick="filterAssignments(null, 'speaking')">🎤 Speaking</button>
         </div>
       </div>` : ''}
-      <div class="table-wrap">
+      <div class="table-wrap assign-table-wrap">
         <table>
           <thead><tr>
             <th>Kỹ năng</th><th>Tên bài tập</th><th>Đề</th>

@@ -3210,78 +3210,14 @@ tr[draggable="true"]:active { cursor: grabbing; }
   .ann-popup { width: min(320px, calc(100vw - 24px)) !important; }
 }
 
-/* ═══ ASSIGN TABLE → CARD LAYOUT on phone ════════════════════════════════════ */
+/* ═══ VOCAB ADD ROW → STACK on mobile ════════════════════════════════════════ */
 @media (max-width: 640px) {
-  .assign-table-wrap {
-    overflow: visible;
-    background: none;
-    border: none;
-    box-shadow: none;
+  .vocab-add-row {
+    flex-direction: column;
+    align-items: stretch;
   }
-  .assign-table-wrap table,
-  .assign-table-wrap tbody { display: block; }
-  .assign-table-wrap thead { display: none; }
-  .assign-table-wrap tbody tr {
-    display: grid;
-    grid-template-columns: auto 1fr;
-    gap: 6px 10px;
-    background: var(--card-bg);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    box-shadow: var(--shadow);
-    padding: 12px 14px;
-    margin-bottom: 10px;
-  }
-  /* skill badge */
-  .assign-table-wrap tbody td:nth-child(1) {
-    grid-column: 1; grid-row: 1;
-    display: flex; align-items: center;
-    padding: 0; border: none;
-  }
-  /* title */
-  .assign-table-wrap tbody td:nth-child(2) {
-    grid-column: 2; grid-row: 1;
-    display: flex; align-items: center;
-    padding: 0; border: none;
-    font-size: 14px;
-  }
-  /* đề */
-  .assign-table-wrap tbody td:nth-child(3) {
-    grid-column: 1 / -1; grid-row: 2;
-    padding: 0; border: none;
-    font-size: 12px; color: var(--text-muted);
-    display: flex; align-items: center; gap: 4px;
-  }
-  .assign-table-wrap tbody td:nth-child(3)::before {
-    content: "Đề:";
-    font-weight: 600; flex-shrink: 0;
-  }
-  /* deadline */
-  .assign-table-wrap tbody td:nth-child(4) {
-    grid-column: 1 / -1; grid-row: 3;
-    padding: 0; border: none;
-    font-size: 13px;
-    display: flex; align-items: center; gap: 4px;
-  }
-  .assign-table-wrap tbody td:nth-child(4)::before {
-    content: "📅";
-    flex-shrink: 0;
-  }
-  /* toggle */
-  .assign-table-wrap tbody td:nth-child(5) {
-    grid-column: 1; grid-row: 4;
-    padding: 0; border: none;
-    display: flex; align-items: center;
-  }
-  /* actions */
-  .assign-table-wrap tbody td:nth-child(6) {
-    grid-column: 2; grid-row: 4;
-    padding: 0; border: none;
-    display: flex; align-items: center; justify-content: flex-end;
-  }
-  .assign-table-wrap tbody td:nth-child(6) .td-actions {
-    flex-wrap: wrap; justify-content: flex-end; gap: 4px;
-  }
+  .vocab-add-row .form-input { width: 100%; flex: none; min-height: 44px; font-size: 16px; }
+  .vocab-add-row .btn { width: 100%; justify-content: center; min-height: 44px; }
 }
 
 /* ─── Dark mode adjustments for mobile hamburger ─── */

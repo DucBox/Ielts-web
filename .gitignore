@@ -17,6 +17,11 @@ teacher/backend/.wrangler/
 
 # Node
 **/node_modules/
+package-lock.json
+
+# Playwright
+playwright-report/
+test-results/
 
 # OS
 .DS_Store

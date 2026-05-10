@@ -426,6 +426,15 @@ body {
   display: none;
 }
 .login-error.show { display: block; }
+.login-secondary-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin: -6px 0 14px;
+}
+.login-forgot-btn {
+  width: auto;
+  padding-inline: 14px;
+}
 
 /* ═══ FORM ELEMENTS ══════════════════════════════════════════════════════════ */
 .form-group { margin-bottom: 18px; }
@@ -569,6 +578,36 @@ body {
 .toast-success { background: #1a1a2e; color: #fff; }
 .toast-error   { background: var(--danger); color: #fff; }
 .toast-info    { background: var(--primary); color: #fff; }
+.toast-warning {
+  background: var(--warning-lt);
+  color: #92400e;
+  border: 1px solid rgba(217, 119, 6, 0.28);
+}
+.toast-sticky { max-width: 360px; }
+.toast-warning-title {
+  font-size: 14px;
+  font-weight: 800;
+  margin-bottom: 4px;
+}
+.toast-warning-copy {
+  font-size: 13px;
+  line-height: 1.45;
+}
+.toast-action-btn {
+  margin-top: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(146, 64, 14, 0.2);
+  background: rgba(255,255,255,0.65);
+  color: #92400e;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
 
 @keyframes slideIn {
   from { opacity: 0; transform: translateY(-10px); }
@@ -3876,46 +3915,56 @@ mark.student-note::after {
   border-bottom: 0;
 }
 .pi-account-box {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
+  display: block;
   padding-bottom: 16px;
   margin-bottom: 16px;
   border-bottom: 1px solid var(--gray-200);
-  flex-wrap: wrap;
+}
+.pi-account-grid {
+  display: grid;
+  grid-template-columns: minmax(240px, 0.95fr) minmax(360px, 1.35fr);
+  gap: 16px;
+  align-items: stretch;
+}
+.pi-account-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--sidebar-bg, #f8fafc);
+}
+.pi-account-panel-actions {
+  margin-top: auto;
 }
 .pi-account-username {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 700;
   color: var(--gray-700);
-  margin-top: 4px;
 }
-.pi-account-email-row {
-  margin-top: 10px;
+.pi-account-email-edit-row {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
+  align-items: flex-start;
+  gap: 10px;
+}
+.pi-account-email-input {
+  flex: 1;
+  min-width: 240px;
+}
+.pi-account-email-input:disabled {
+  background: var(--bg-subtle);
+  color: var(--text-muted, var(--gray-500));
+}
+.pi-account-email-actions {
+  display: flex;
+  flex-direction: column;
   gap: 8px;
 }
-.pi-account-email-label {
-  display: inline-flex;
-  align-items: center;
-  min-height: 24px;
-  padding: 0 10px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--primary) 10%, transparent);
-  color: var(--primary-dk);
-  font-size: 12px;
-  font-weight: 700;
-}
-.pi-account-email {
-  font-size: 13px;
-  color: var(--text-muted, var(--gray-500));
-  word-break: break-word;
-}
 .pi-account-btn {
+  width: fit-content;
   white-space: nowrap;
 }
 .pi-empty {
@@ -4000,6 +4049,16 @@ select.pi-input { height: 42px; cursor: pointer; }
   margin-top: 20px;
   display: flex;
   justify-content: flex-end;
+}
+
+@media (max-width: 900px) {
+  .pi-account-grid {
+    grid-template-columns: 1fr;
+  }
+  .pi-account-email-actions {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
 }
 
 /* ─── Listening Script Section (result page) ─────────────────────────────── */
@@ -4222,6 +4281,20 @@ select.pi-input { height: 42px; cursor: pointer; }
 [data-theme="dark"] .profile-target-select,
 [data-theme="dark"] .pi-input {
   color-scheme: dark;
+}
+[data-theme="dark"] .toast-warning {
+  background: #3b2a12;
+  color: #fde68a;
+  border-color: rgba(245, 158, 11, .35);
+}
+[data-theme="dark"] .toast-action-btn {
+  background: rgba(15, 23, 42, .45);
+  color: #fde68a;
+  border-color: rgba(245, 158, 11, .24);
+}
+[data-theme="dark"] .pi-account-email-input:disabled {
+  background: rgba(15, 23, 42, .4);
+  color: #cbd5e1;
 }
 
 [data-theme="dark"] .cal-cell,

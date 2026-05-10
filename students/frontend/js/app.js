@@ -12,6 +12,24 @@ function toast(msg, type = 'success') {
   setTimeout(() => el.remove(), 3500);
 }
 
+function upsertStickyToast(id, html, type = 'info') {
+  const container = $('#toast-container');
+  if (!container) return null;
+  let el = container.querySelector(`.toast[data-toast-id="${id}"]`);
+  if (!el) {
+    el = document.createElement('div');
+    el.dataset.toastId = id;
+    container.appendChild(el);
+  }
+  el.className = `toast toast-${type} toast-sticky`;
+  el.innerHTML = html;
+  return el;
+}
+
+function removeStickyToast(id) {
+  document.querySelector(`.toast[data-toast-id="${id}"]`)?.remove();
+}
+
 function setLoading(msg = 'Đang tải...') {
   $('#app').innerHTML = `
     <div class="loading-screen">
@@ -175,9 +193,56 @@ const SKILL_ICONS  = { reading: '📖', listening: '🎧', writing: '✍️', sp
 const SKILL_LABELS = { reading: 'Reading', listening: 'Listening', writing: 'Writing', speaking: 'Speaking' };
 const SKILL_ORDER  = ['reading', 'listening', 'writing', 'speaking'];
 const CHART_RANGE_OPTIONS = [3, 7, 30, 90, 365];
+const MISSING_EMAIL_TOAST_ID = 'student-missing-email';
 
 function skillBadge(skill) {
   return `<span class="badge badge-${skill}">${SKILL_ICONS[skill] || '?'} ${SKILL_LABELS[skill] || skill}</span>`;
+}
+
+function normalizeStudentEmailValue(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function isValidStudentEmail(value) {
+  return /^[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}$/i.test(String(value || '').trim());
+}
+
+function getNotificationEmailField(profileData = window._cachedProfileData) {
+  return (profileData?.fields || []).find(field => field.field_key === 'notification_email') || null;
+}
+
+function getStudentNotificationEmail(profileData = window._cachedProfileData) {
+  const notificationField = getNotificationEmailField(profileData);
+  const candidates = [
+    _student?.email,
+    profileData?.student?.email,
+    notificationField ? profileData?.answers?.[notificationField.id] : '',
+  ];
+  for (const value of candidates) {
+    const normalized = normalizeStudentEmailValue(value);
+    if (normalized) return normalized;
+  }
+  return '';
+}
+
+function studentNeedsNotificationEmail(profileData = window._cachedProfileData) {
+  return Boolean(_student) && !getStudentNotificationEmail(profileData);
+}
+
+function buildMissingEmailToastHtml() {
+  return `
+    <div class="toast-warning-title">⚠️ Bạn chưa cập nhật Gmail</div>
+    <div class="toast-warning-copy">Hãy vào hồ sơ để thêm Gmail nhận mật khẩu mới và email thông báo từ hệ thống.</div>
+    <button type="button" class="toast-action-btn" onclick="navigate('/profile')">Đi tới hồ sơ</button>
+  `;
+}
+
+function syncMissingEmailUI(profileData = window._cachedProfileData) {
+  if (studentNeedsNotificationEmail(profileData)) {
+    upsertStickyToast(MISSING_EMAIL_TOAST_ID, buildMissingEmailToastHtml(), 'warning');
+  } else {
+    removeStickyToast(MISSING_EMAIL_TOAST_ID);
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -189,6 +254,7 @@ function skillBadge(skill) {
 let _student = null;
 let _selectedClass = null;
 let _assignmentSkillFilter = '';
+let _studentProfileSummaryPromise = null;
 
 // Highlight mode state
 let _highlightMode  = false;
@@ -491,9 +557,17 @@ async function syncNotifUIAfterSubmit() {
 }
 
 function startNotifPolling() {
-  if (_notifPollTimer) return;
-  refreshNotifBadge().then(maybeShowNotifToast);
-  _notifPollTimer = setInterval(refreshNotifBadge, 30000);
+  if (_notifPollTimer) {
+    syncMissingEmailUI();
+    return;
+  }
+  refreshNotifBadge().then(count => {
+    maybeShowNotifToast(count);
+    syncMissingEmailUI();
+  });
+  _notifPollTimer = setInterval(() => {
+    refreshNotifBadge().then(() => syncMissingEmailUI());
+  }, 30000);
 }
 
 function stopNotifPolling() {
@@ -999,13 +1073,52 @@ function loadAuth() {
   } catch {}
 }
 
+function persistStudentState() {
+  if (!_student) return;
+  localStorage.setItem('ielts_student', JSON.stringify(_student));
+}
+
+function updateStudentState(patch = {}) {
+  if (!_student) return;
+  _student = { ..._student, ...patch };
+  persistStudentState();
+  syncMissingEmailUI();
+}
+
+async function syncStudentProfileSummary(force = false) {
+  if (!_student || !api._token) {
+    syncMissingEmailUI();
+    return null;
+  }
+  if (!force && _student.email !== undefined) {
+    syncMissingEmailUI();
+    return window._cachedProfileData || null;
+  }
+  if (!force && _studentProfileSummaryPromise) return _studentProfileSummaryPromise;
+
+  _studentProfileSummaryPromise = api.get('/student/profile-answers')
+    .then(profileData => {
+      window._cachedProfileData = profileData || { student: null, fields: [], answers: {} };
+      updateStudentState({ email: getStudentNotificationEmail(profileData) || null });
+      return profileData;
+    })
+    .catch(() => null)
+    .finally(() => {
+      _studentProfileSummaryPromise = null;
+      syncMissingEmailUI();
+    });
+
+  return _studentProfileSummaryPromise;
+}
+
 function saveAuth(student, token) {
   _student = student;
-  localStorage.setItem('ielts_student', JSON.stringify(student));
+  persistStudentState();
   if (token) {
     api._token = token;
     localStorage.setItem('ielts_token', token);
   }
+  syncMissingEmailUI();
 }
 
 function selectClass(cls) {
@@ -1019,16 +1132,21 @@ function clearAuth() {
   api._token = null;
   api.clearCache?.();
   _myVocabCache = null;
+  window._cachedProfileData = null;
+  _studentProfileSummaryPromise = null;
   localStorage.removeItem('ielts_student');
   localStorage.removeItem('ielts_class');
   localStorage.removeItem('ielts_token');
+  removeStickyToast(MISSING_EMAIL_TOAST_ID);
 }
 
 function updateHeader() {
   const header = $('#app-header');
   if (!header) return;
+  const hash = window.location.hash.slice(1) || '/home';
+  const hideHeaderOnClassSelect = hash === '/select-class';
 
-  if (_student) {
+  if (_student && !hideHeaderOnClassSelect) {
     header.classList.remove('hidden');
     $('#header-student-name').textContent = _student.full_name;
     $('#header-class-name').textContent   = _selectedClass?.class_name ?? '';
@@ -1042,7 +1160,6 @@ function updateHeader() {
     }
 
     // Sync active state on mobile nav links
-    const hash = window.location.hash.slice(1) || '/home';
     document.querySelectorAll('.mobile-nav-link[data-mobile-nav]').forEach(link => {
       const key = link.dataset.mobileNav;
       const active = hash.startsWith('/' + key) || (key === 'home' && hash === '/home');
@@ -1052,6 +1169,9 @@ function updateHeader() {
     header.classList.add('hidden');
     $('#app').classList.remove('with-header');
     stopNotifPolling();
+    closeMobileNav();
+    closeNotifPanel();
+    removeStickyToast(MISSING_EMAIL_TOAST_ID);
   }
 }
 
@@ -1097,6 +1217,57 @@ function openChangePasswordModal() {
     </div>
   `);
   setTimeout(() => $('#cp-old-password')?.focus(), 50);
+}
+
+function openForgotPasswordModal() {
+  openModal('Quên mật khẩu', `
+    <div class="form-group">
+      <label class="form-label">Username</label>
+      <input id="forgot-password-username" class="form-input"
+        placeholder="Nhập username học sinh"
+        autocomplete="username"
+        onkeydown="if(event.key==='Enter') submitForgotPassword(document.getElementById('forgot-password-btn'))" />
+      <div class="form-hint">Mật khẩu mới sẽ được tạo ngẫu nhiên và gửi tới Gmail đang lưu trong hồ sơ.</div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-outline" onclick="closeModal()">Hủy</button>
+      <button class="btn btn-primary" id="forgot-password-btn" onclick="submitForgotPassword(this)">Gửi mật khẩu mới</button>
+    </div>
+  `);
+  const presetUsername = $('#login-username')?.value?.trim();
+  if (presetUsername) {
+    const input = $('#forgot-password-username');
+    if (input) input.value = presetUsername;
+  }
+  setTimeout(() => $('#forgot-password-username')?.focus(), 50);
+}
+
+async function submitForgotPassword(btn) {
+  const username = $('#forgot-password-username')?.value?.trim()
+    || $('#login-username')?.value?.trim()
+    || '';
+  if (!username) {
+    toast('Vui lòng nhập username để gửi mật khẩu mới.', 'error');
+    return;
+  }
+
+  const ok = await confirmSubmit({
+    title: 'Xác nhận quên mật khẩu',
+    message: `Hệ thống sẽ tạo mật khẩu mới và gửi tới Gmail đã lưu cho username <strong>${escapeHtml(username)}</strong>.`,
+    confirmText: 'Gửi mật khẩu mới',
+    cancelText: 'Hủy',
+  });
+  if (!ok) return;
+
+  btnLoading(btn);
+  try {
+    const response = await api.post('/auth/forgot-password', { username });
+    closeModal();
+    toast(response.message || 'Mật khẩu mới đã được gửi qua Gmail.', 'success');
+  } catch (e) {
+    btnReset(btn);
+    toast(e.error || 'Không thể gửi mật khẩu mới lúc này.', 'error');
+  }
 }
 
 async function submitChangePassword(btn) {
@@ -1295,6 +1466,12 @@ function showLogin() {
           </div>
         </div>
 
+        <div class="login-secondary-actions">
+          <button type="button" class="btn btn-outline btn-sm login-forgot-btn" onclick="openForgotPasswordModal()">
+            Quên mật khẩu
+          </button>
+        </div>
+
         <button id="login-btn" class="btn btn-primary" onclick="submitLogin(this)">
           Đăng nhập
         </button>
@@ -1320,6 +1497,7 @@ async function submitLogin(btn) {
   try {
     const { student, token } = await api.post('/auth/login', { username, password });
     saveAuth(student, token);
+    syncMissingEmailUI();
 
     if (!student.classes || student.classes.length === 0) {
       // No class — show a message (class select will handle it)
@@ -1401,7 +1579,10 @@ function showClassSelect() {
 function chooseClass(classId, className) {
   selectClass({ id: classId, class_name: className });
   navigate('/home');
-  refreshNotifBadge().then(maybeShowNotifToast);
+  refreshNotifBadge().then(count => {
+    maybeShowNotifToast(count);
+    syncMissingEmailUI();
+  });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2208,6 +2389,7 @@ async function showProfile() {
     window._cachedAssignments = assignments;
     window._cachedProfileData = profileData;
     window._cachedVocabSessions = vocabSessions;
+    updateStudentState({ email: getStudentNotificationEmail(profileData) || null });
     renderProfile(assignments, profileData);
   } catch (e) {
     toast('Lỗi: ' + (e.error || e.message), 'error');
@@ -2670,6 +2852,7 @@ selectCalDay = function(key) {
 renderProfile = function(assignments, profileData) {
   profileData = profileData || window._cachedProfileData || { fields: [], answers: {} };
   const notificationEmailField = (profileData.fields || []).find(f => f.field_key === 'notification_email');
+  const editableProfileFields = (profileData.fields || []).filter(f => f.field_key !== 'notification_email');
   const displayEmail = (_student && typeof _student.email === 'string' && _student.email.trim())
     || (profileData.student && typeof profileData.student.email === 'string' && profileData.student.email.trim())
     || (notificationEmailField ? String(profileData.answers?.[notificationEmailField.id] || '').trim() : '');
@@ -2748,31 +2931,49 @@ renderProfile = function(assignments, profileData) {
 
       <section id="profile-info" class="profile-anchor-section">
       <div class="profile-section-title">📋 Thông tin cá nhân</div>
-      <div class="pi-card${profileData.fields.length === 0 ? ' pi-card--compact' : ''}">
+      <div class="pi-card${editableProfileFields.length === 0 ? ' pi-card--compact' : ''}">
         <div class="pi-account-box">
-          <div>
-            <div class="pi-label">Username đăng nhập</div>
-            <div class="pi-account-username">${escapeHtml(_student.username || '—')}</div>
-            <div class="pi-account-email-row">
-              <span class="pi-account-email-label">Gmail</span>
-              <span class="pi-account-email">${displayEmail ? escapeHtml(displayEmail) : 'Chưa cập nhật'}</span>
+          <div class="pi-account-grid">
+            <div class="pi-account-panel">
+              <div class="pi-label">Username đăng nhập</div>
+              <div class="pi-account-username">${escapeHtml(_student.username || '—')}</div>
+              <div class="pi-account-panel-actions">
+                <button type="button" class="btn btn-outline btn-sm pi-account-btn" onclick="openChangePasswordModal()">🔐 Đổi mật khẩu</button>
+              </div>
+            </div>
+            <div class="pi-account-panel pi-account-panel--email">
+              <label class="pi-label" for="profile-email-input">Gmail nhận thông báo</label>
+              <div class="pi-account-email-edit-row">
+                <input id="profile-email-input" class="form-input pi-account-email-input" type="email"
+                  value="${escapeHtml(displayEmail)}"
+                  placeholder="name@example.com"
+                  autocomplete="email"
+                  disabled />
+                <div class="pi-account-email-actions">
+                  <button type="button" class="btn btn-outline btn-sm" id="profile-email-edit-btn" onclick="enableNotificationEmailEdit()">
+                    ${displayEmail ? 'Đổi Gmail' : 'Cập nhật Gmail'}
+                  </button>
+                  <button type="button" class="btn btn-primary btn-sm hidden" id="profile-email-save-btn" onclick="submitNotificationEmailUpdate(this)">Lưu Gmail</button>
+                  <button type="button" class="btn btn-outline btn-sm hidden" id="profile-email-cancel-btn" onclick="cancelNotificationEmailEdit()">Hủy</button>
+                </div>
+              </div>
+              <div class="form-hint">Gmail này sẽ nhận mật khẩu mới khi quên mật khẩu và email thông báo từ hệ thống.</div>
             </div>
           </div>
-          <button type="button" class="btn btn-outline pi-account-btn" onclick="openChangePasswordModal()">🔐 Đổi mật khẩu</button>
         </div>
-        ${profileData.fields.length === 0
+        ${editableProfileFields.length === 0
           ? ''
           : `<details class="pi-details">
               <summary class="pi-details-summary">
                 <span>
                   <span class="pi-details-title">Thông tin chi tiết</span>
-                  <span class="pi-details-sub">${profileData.fields.length} mục hồ sơ</span>
+                  <span class="pi-details-sub">${editableProfileFields.length} mục hồ sơ</span>
                 </span>
                 <span class="pi-details-arrow">⌄</span>
               </summary>
               <div class="pi-details-body">
                 <div class="pi-fields" id="pi-fields">
-                  ${profileData.fields.map(f => {
+                  ${editableProfileFields.map(f => {
                     const val = profileData.answers[f.id] || '';
                     const inputId = `pi-field-${f.id}`;
                     let inputEl;
@@ -2858,7 +3059,91 @@ renderProfile = function(assignments, profileData) {
       renderProfile(assignments, window._cachedProfileData);
     });
   });
+
+  syncMissingEmailUI(profileData);
 };
+
+function enableNotificationEmailEdit() {
+  const input = document.getElementById('profile-email-input');
+  const editBtn = document.getElementById('profile-email-edit-btn');
+  const saveBtn = document.getElementById('profile-email-save-btn');
+  const cancelBtn = document.getElementById('profile-email-cancel-btn');
+  if (!input || !editBtn || !saveBtn || !cancelBtn) return;
+  input.disabled = false;
+  input.focus();
+  input.select();
+  editBtn.classList.add('hidden');
+  saveBtn.classList.remove('hidden');
+  cancelBtn.classList.remove('hidden');
+}
+
+function cancelNotificationEmailEdit() {
+  const input = document.getElementById('profile-email-input');
+  const editBtn = document.getElementById('profile-email-edit-btn');
+  const saveBtn = document.getElementById('profile-email-save-btn');
+  const cancelBtn = document.getElementById('profile-email-cancel-btn');
+  if (!input || !editBtn || !saveBtn || !cancelBtn) return;
+  input.value = getStudentNotificationEmail() || '';
+  input.disabled = true;
+  editBtn.classList.remove('hidden');
+  saveBtn.classList.add('hidden');
+  cancelBtn.classList.add('hidden');
+}
+
+async function submitNotificationEmailUpdate(btn) {
+  const notificationField = getNotificationEmailField();
+  if (!notificationField) {
+    toast('Hiện chưa tìm thấy trường Gmail trong hồ sơ học sinh.', 'error');
+    return;
+  }
+
+  const input = document.getElementById('profile-email-input');
+  if (!input) return;
+  const rawValue = input.value.trim();
+  const normalizedEmail = normalizeStudentEmailValue(rawValue);
+
+  if (rawValue && !isValidStudentEmail(normalizedEmail)) {
+    toast('Gmail không hợp lệ. Vui lòng kiểm tra lại.', 'error');
+    input.focus();
+    return;
+  }
+
+  const ok = await confirmSubmit({
+    title: normalizedEmail ? 'Xác nhận cập nhật Gmail' : 'Xác nhận xóa Gmail',
+    message: normalizedEmail
+      ? `Sau khi xác nhận, Gmail <strong>${escapeHtml(normalizedEmail)}</strong> sẽ được dùng để nhận mật khẩu mới và email thông báo.`
+      : 'Sau khi xác nhận, tài khoản sẽ không còn Gmail nhận thông báo cho tới khi bạn cập nhật lại.',
+    confirmText: normalizedEmail ? 'Cập nhật Gmail' : 'Xóa Gmail',
+    cancelText: 'Hủy',
+  });
+  if (!ok) return;
+
+  btnLoading(btn);
+  try {
+    await api.patch('/student/profile-answers', {
+      answers: { [notificationField.id]: normalizedEmail },
+    });
+
+    if (!window._cachedProfileData) {
+      window._cachedProfileData = { student: null, fields: [], answers: {} };
+    }
+    if (!window._cachedProfileData.student) {
+      window._cachedProfileData.student = {};
+    }
+    window._cachedProfileData.answers = {
+      ...(window._cachedProfileData.answers || {}),
+      [notificationField.id]: normalizedEmail,
+    };
+    window._cachedProfileData.student.email = normalizedEmail || null;
+
+    updateStudentState({ email: normalizedEmail || null });
+    toast(normalizedEmail ? 'Đã cập nhật Gmail thành công!' : 'Đã xóa Gmail khỏi hồ sơ.', 'success');
+    renderProfile(window._cachedAssignments || [], window._cachedProfileData);
+  } catch (e) {
+    btnReset(btn);
+    toast(e.error || 'Không thể cập nhật Gmail lúc này.', 'error');
+  }
+}
 
 async function saveProfileAnswers(btn) {
   const inputs = document.querySelectorAll('.pi-input');
@@ -2871,6 +3156,7 @@ async function saveProfileAnswers(btn) {
     await api.patch('/student/profile-answers', { answers });
     // Update cache
     if (window._cachedProfileData) window._cachedProfileData.answers = { ...window._cachedProfileData.answers, ...answers };
+    syncMissingEmailUI(window._cachedProfileData);
     toast('Đã lưu thông tin cá nhân!');
   } catch (e) {
     toast('Lỗi: ' + (e.error || e.message), 'error');
@@ -5364,3 +5650,4 @@ window.addEventListener('auth:expired', () => {
 window.addEventListener('pagehide', flushAutoSave);
 
 router();
+syncStudentProfileSummary();

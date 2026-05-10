@@ -703,6 +703,17 @@ function normalizeStudentEmail(value) {
   return /^[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}$/i.test(email) ? email : false;
 }
 
+function maskEmailForDisplay(value) {
+  const normalized = normalizeStudentEmail(value);
+  if (!normalized) return '';
+  const [localPart, domain = ''] = normalized.split('@');
+  if (!localPart || !domain) return normalized;
+  const safePrefix = localPart.slice(0, Math.min(2, localPart.length));
+  const safeSuffix = localPart.length > 2 ? localPart.slice(-2) : '';
+  const middle = localPart.length > 4 ? '....' : '..';
+  return `${safePrefix}${middle}${safeSuffix}@${domain}`;
+}
+
 function formatDateTimeInTimezone(value, timeZone) {
   if (!value) return '';
   try {
@@ -744,6 +755,23 @@ function buildEmailHtml({ headline, intro, rows = [], outro = '' }) {
 function buildEmailText({ headline, intro, rows = [], outro = '' }) {
   const lines = rows.map(({ label, value }) => `${label}: ${value}`);
   return [headline, '', intro, '', ...lines, ...(outro ? ['', outro] : [])].join('\n');
+}
+
+function buildStudentPasswordResetEmailPayload(student, nextPassword) {
+  const studentName = String(student?.full_name || student?.username || 'bạn').trim();
+  const username = String(student?.username || '').trim();
+  const headline = 'Mật khẩu mới cho tài khoản học sinh';
+  const intro = `Xin chào ${studentName}, hệ thống vừa tạo mật khẩu mới theo yêu cầu quên mật khẩu của bạn.`;
+  const rows = [
+    { label: 'Username', value: username || 'Không có dữ liệu' },
+    { label: 'Mật khẩu mới', value: nextPassword },
+  ];
+  const outro = 'Bạn hãy đăng nhập lại và đổi sang mật khẩu riêng của mình ngay sau khi vào hệ thống.';
+  return {
+    subject: 'Mật khẩu mới cho tài khoản English Student',
+    html: buildEmailHtml({ headline, intro, rows, outro }),
+    text: buildEmailText({ headline, intro, rows, outro }),
+  };
 }
 
 async function sendResendEmail(env, { to, subject, html, text, idempotencyKey }) {
@@ -1556,7 +1584,7 @@ export default {
           return err('username và password là bắt buộc');
 
         const [student] = await sql`
-          SELECT id, full_name, username, password_hash
+          SELECT id, full_name, username, password_hash, email
           FROM students
           WHERE username = ${body.username}
         `;
@@ -1586,6 +1614,69 @@ export default {
 
         const { password_hash: _ph, ...studentSafe } = student;
         return json({ student: { ...studentSafe, classes }, token });
+      }
+
+      if (path === '/auth/forgot-password' && method === 'POST') {
+        const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+        if (await checkRateLimit(env.KV, `student-forgot-password:${ip}`, 5, 300))
+          return err('Bạn đã yêu cầu quá nhiều lần. Vui lòng thử lại sau ít phút.', 429);
+
+        const body = await request.json().catch(() => null);
+        const username = String(body?.username || '').trim();
+        if (!username) return err('username là bắt buộc', 400);
+
+        const [student] = await sql`
+          SELECT id, full_name, username, password_hash, email
+          FROM students
+          WHERE username = ${username}
+        `;
+        if (!student) return err('Không tìm thấy tài khoản học sinh với username này.', 404);
+
+        const email = normalizeStudentEmail(student.email);
+        if (!email) {
+          return err('Tài khoản này chưa có Gmail trong hồ sơ để nhận mật khẩu mới.', 400);
+        }
+
+        const nextPassword = generateStudentPassword();
+        const nextPasswordHash = await hashPassword(nextPassword);
+        const payload = buildStudentPasswordResetEmailPayload(student, nextPassword);
+
+        await sql`
+          UPDATE students
+          SET password_hash = ${nextPasswordHash}
+          WHERE id = ${student.id}
+        `;
+
+        try {
+          await sendResendEmail(env, {
+            to: email,
+            subject: payload.subject,
+            html: payload.html,
+            text: payload.text,
+            idempotencyKey: `student-forgot-password:${student.id}:${Date.now()}`,
+          });
+        } catch (sendError) {
+          await sql`
+            UPDATE students
+            SET password_hash = ${student.password_hash}
+            WHERE id = ${student.id}
+          `.catch(restoreError => {
+            console.error('[forgot-password] rollback failed', {
+              studentId: student.id,
+              restoreError: String(restoreError?.message || restoreError || 'unknown_restore_error'),
+            });
+          });
+          return err(
+            String(sendError?.message || 'Không thể gửi email mật khẩu mới lúc này. Vui lòng thử lại sau.'),
+            502,
+          );
+        }
+
+        return json({
+          ok: true,
+          email,
+          message: `Mật khẩu mới đã được gửi tới ${maskEmailForDisplay(email)}.`,
+        });
       }
 
       // ── Teacher Auth ───────────────────────────────────────────────────────
@@ -3232,11 +3323,16 @@ export default {
         const studentId = String(claims.student_id);
 
         if (method === 'GET') {
+          const [student] = await sql`
+            SELECT id, full_name, username, email
+            FROM students
+            WHERE id = ${studentId}
+          `;
           const fields = await sql`SELECT * FROM profile_fields ORDER BY display_order ASC, created_at ASC`.catch(() => []);
           const answers = await sql`SELECT field_id, value FROM student_profile_answers WHERE student_id = ${studentId}`.catch(() => []);
           const answerMap = {};
           for (const a of answers) answerMap[a.field_id] = a.value;
-          return json({ fields, answers: answerMap });
+          return json({ student: student || null, fields, answers: answerMap });
         }
 
         if (method === 'PATCH') {

@@ -798,10 +798,12 @@ body {
   border-right: none;
   border-bottom: 1px solid var(--gray-200);
   max-height: 40vh;
+  max-height: 40dvh;
 }
 
 .assignment-content.single-col .answer-pane {
   min-height: 50vh;
+  min-height: 50dvh;
 }
 
 /* Reading/Listening full text */

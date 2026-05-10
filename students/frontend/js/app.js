@@ -1974,8 +1974,10 @@ function moveProgressTooltip(event) {
   const height = tooltip.offsetHeight || 120;
   let left = event.clientX + pad;
   let top = event.clientY + pad;
-  if (left + width > window.innerWidth - 12) left = event.clientX - width - pad;
-  if (top + height > window.innerHeight - 12) top = event.clientY - height - pad;
+  const vw = window.visualViewport?.width ?? window.innerWidth;
+  const vh = window.visualViewport?.height ?? window.innerHeight;
+  if (left + width > vw - 12) left = event.clientX - width - pad;
+  if (top + height > vh - 12) top = event.clientY - height - pad;
   tooltip.style.left = `${Math.max(12, left)}px`;
   tooltip.style.top = `${Math.max(12, top)}px`;
 }

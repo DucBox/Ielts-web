@@ -6,7 +6,7 @@ function $(sel) { return document.querySelector(sel); }
 
 function toggleSidebar() {
   const sidebar = document.getElementById('sidebar');
-  if (window.innerWidth <= 768) {
+  if ((window.visualViewport?.width ?? window.innerWidth) <= 768) {
     // On mobile: use overlay mode
     openMobileSidebar();
     return;
@@ -2715,8 +2715,10 @@ function showAnnotationPopup(start, end, selectedText, rect) {
   document.body.appendChild(popup);
 
   // Position below selection, clamp to viewport width
+  const annVw = window.visualViewport?.width ?? window.innerWidth;
+  const annPopupW = popup.offsetWidth || 320;
   const top  = rect.bottom + window.scrollY + 10;
-  const left = Math.min(rect.left + window.scrollX, window.innerWidth - 360);
+  const left = Math.min(rect.left + window.scrollX, annVw - annPopupW - 8);
   popup.style.top  = top + 'px';
   popup.style.left = Math.max(8, left) + 'px';
 
@@ -5978,9 +5980,11 @@ function showLocationConfirmPopup(result, rangeOrAnchor) {
   const popupHeight = popup.offsetHeight || 118;
 
   // Position below selection, clamped to real popup size and viewport width.
-  const spaceBelow = window.innerHeight - rect.bottom;
+  const lcpVw = window.visualViewport?.width ?? window.innerWidth;
+  const lcpVh = window.visualViewport?.height ?? window.innerHeight;
+  const spaceBelow = lcpVh - rect.bottom;
   const top = spaceBelow >= popupHeight + 12 ? rect.bottom + 8 : rect.top - popupHeight - 8;
-  const maxLeft = Math.max(8, window.innerWidth - popupWidth - 8);
+  const maxLeft = Math.max(8, lcpVw - popupWidth - 8);
   const left = Math.min(Math.max(previewRect.left + 4, rect.left), maxLeft);
   popup.style.top  = `${Math.max(8, top)}px`;
   popup.style.left = `${Math.max(8, left)}px`;

@@ -3688,7 +3688,7 @@ function renderListening(a) {
     <div class="assignment-page">
       <div class="assignment-toolbar">
         <button class="btn-back" onclick="navigate('/assignments')">← Quay lại</button>
-        <div class="assignment-toolbar-title">${skillBadge(a.skill)} ${escapeHtml(a.title)}</div>
+        <div class="assignment-toolbar-title">${skillBadge(a.skill)} ${escapeHtml(a.title)}${a.mode === 'practice' ? '<span class="mode-badge mode-badge--practice">🎧 Luyện tập</span>' : '<span class="mode-badge mode-badge--exam">📝 Kiểm tra</span>'}</div>
         <button class="btn btn-primary btn-sm" id="submit-btn"
           onclick="submitAnswers('${a.id}', ${qCount}, 'listening', this)">Nộp bài</button>
       </div>

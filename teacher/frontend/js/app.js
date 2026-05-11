@@ -1138,7 +1138,7 @@ function rebuildTrendChart() {
   const emptyEl = document.getElementById('trend-empty-msg');
   const canvasEl = document.getElementById('chart-trend');
 
-  if (chronoAssigns.length < 2) {
+  if (chronoAssigns.length < 1) {
     if (canvasEl) canvasEl.style.display = 'none';
     if (emptyEl) emptyEl.style.display = '';
     return;
@@ -1634,7 +1634,7 @@ function renderStatsTab(container, data) {
         };
       });
 
-      if (initAssigns.length < 2) {
+      if (initAssigns.length < 1) {
         trendCanvas.style.display = 'none';
         const emptyEl = document.getElementById('trend-empty-msg');
         if (emptyEl) emptyEl.style.display = '';

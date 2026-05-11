@@ -1805,7 +1805,7 @@ export default {
             ORDER BY sub.submitted_at ASC
           `,
           sql`
-            SELECT a.id, a.title, a.deadline, a.is_active, q.skill
+            SELECT a.id, a.title, a.deadline, a.is_active, a.mode, q.skill
             FROM assignments a
             JOIN question_pool q ON q.id = a.question_id
             WHERE a.class_id = ${classId}
@@ -1945,7 +1945,7 @@ export default {
         const perAssignment = allAssignments.map(a => {
           const d = assignMap[a.id];
           return {
-            id: d.id, title: d.title, skill: d.skill,
+            id: d.id, title: d.title, skill: d.skill, mode: a.mode,
             deadline: d.deadline, is_active: d.is_active,
             submitted: d.submitted, total: d.total,
             avg_score: avg(d.scores),

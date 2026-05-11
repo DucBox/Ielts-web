@@ -1017,6 +1017,7 @@ async function showClassDetail({ id }) {
     _statsData = null;
     _statsSkillFilter = '';
     _statsStatusFilter = '';
+    _statsModeFilter = '';
     destroyStatsCharts();
     renderClassDetail(cls, students);
   } catch (e) {
@@ -1041,6 +1042,7 @@ let _statsCharts = [];
 let _statsData = null;
 let _statsSkillFilter = '';
 let _statsStatusFilter = '';
+let _statsModeFilter = '';
 let _statsSortCol = '';
 let _statsSortDir = 'desc';
 let _statsAllScoredSubs = []; // flat list of all scored submissions with student_name
@@ -1069,6 +1071,7 @@ async function loadStatsTab(classId) {
     _statsData = await api.get(`/classes/${classId}/analytics`);
     _statsSkillFilter = '';
     _statsStatusFilter = '';
+    _statsModeFilter = '';
     _statsSortCol = '';
     _statsSortDir = 'desc';
     // Default to first skill that has assignments
@@ -1133,7 +1136,11 @@ function rebuildTrendChart() {
   const skill = _statsTrendSkill;
 
   // Assignments in chronological order, filtered by selected skill
-  const chronoAssigns = [...per_assignment].reverse().filter(a => !skill || a.skill === skill);
+  const chronoAssigns = [...per_assignment].reverse().filter(a => {
+    if (skill && a.skill !== skill) return false;
+    if (_statsModeFilter && a.mode !== _statsModeFilter) return false;
+    return true;
+  });
 
   const emptyEl = document.getElementById('trend-empty-msg');
   const canvasEl = document.getElementById('chart-trend');
@@ -1197,41 +1204,88 @@ window.showHistogramStudents = showHistogramStudents;
 
 function renderStatsTab(container, data) {
   destroyStatsCharts();
-  const { overview, score_distribution, score_by_skill, completion_by_skill, timeline, per_student, per_assignment } = data;
+  const { timeline, per_student, per_assignment } = data;
 
   const sf = _statsSkillFilter;
   const stf = _statsStatusFilter;
+  const mf = _statsModeFilter;
 
-  // Build flat list of all scored submissions (used for histogram click)
-  _statsAllScoredSubs = [];
-  per_student.forEach(st => {
-    st.submissions.forEach(s => {
-      if (s.overall_score !== null) {
-        _statsAllScoredSubs.push({ ...s, student_name: st.name });
-      }
-    });
-  });
-
+  // Filter assignments by all active filters
   const filteredAssignments = per_assignment.filter(a => {
     if (sf && a.skill !== sf) return false;
     if (stf === 'active' && !a.is_active) return false;
     if (stf === 'closed' && a.is_active) return false;
+    if (mf && a.mode !== mf) return false;
     return true;
   });
+  const filteredAssignmentIds = new Set(filteredAssignments.map(a => a.id));
 
-  // Build student rows with computed on_time_rate for sorting
-  let displayStudents = (sf
-    ? per_student.map(st => ({
-        ...st,
-        avg_score: st[`avg_${sf}`],
-        submitted: st.submissions.filter(s => s.skill === sf).length,
-        total: per_assignment.filter(a => a.skill === sf).length,
-      }))
-    : per_student
-  ).map(st => ({
-    ...st,
-    on_time_rate: st.closed_total > 0 ? st.on_time / st.closed_total : null,
-  }));
+  // Recompute all stats from filtered data
+  const avg = arr => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null;
+  const totalStudents = per_student.length;
+  const totalAssignments = filteredAssignments.length;
+  const activeAssignments = filteredAssignments.filter(a => a.is_active).length;
+  const closedAssignmentsCount = totalAssignments - activeAssignments;
+
+  const allFilteredSubs = [];
+  per_student.forEach(st => {
+    st.submissions.forEach(s => {
+      if (filteredAssignmentIds.has(s.assignment_id)) {
+        allFilteredSubs.push({ ...s, student_name: st.name });
+      }
+    });
+  });
+  const filteredScoredSubs = allFilteredSubs.filter(s => s.overall_score !== null);
+  _statsAllScoredSubs = filteredScoredSubs;
+
+  const avgScore = avg(filteredScoredSubs.map(s => Number(s.overall_score)));
+  const maxPossible = totalAssignments * totalStudents;
+  const submissionRate = maxPossible > 0 ? Math.round(allFilteredSubs.length / maxPossible * 100) : 0;
+
+  const distribution = [0, 0, 0, 0, 0];
+  for (const sub of filteredScoredSubs) {
+    const score = Number(sub.overall_score);
+    const idx = score >= 9 ? 4 : Math.min(4, Math.floor(score / 2));
+    distribution[idx]++;
+  }
+
+  const skillKeys = ['reading', 'listening', 'writing', 'speaking'];
+  const scoreBySkill = {};
+  const completionBySkill = {};
+  for (const skill of skillKeys) {
+    const skillSubs = filteredScoredSubs.filter(s => s.skill === skill);
+    scoreBySkill[skill] = avg(skillSubs.map(s => Number(s.overall_score)));
+    const skillAssigns = filteredAssignments.filter(a => a.skill === skill);
+    const allSkillSubs = allFilteredSubs.filter(s => s.skill === skill);
+    const maxPoss = skillAssigns.length * totalStudents;
+    completionBySkill[skill] = {
+      count: skillAssigns.length,
+      submitted: allSkillSubs.length,
+      pct: maxPoss > 0 ? Math.round(allSkillSubs.length / maxPoss * 100) : 0,
+    };
+  }
+
+  // Build per-student display rows (recomputed from filtered submissions)
+  let displayStudents = per_student.map(st => {
+    const stSubs = st.submissions.filter(s => filteredAssignmentIds.has(s.assignment_id));
+    const stScored = stSubs.filter(s => s.overall_score !== null);
+    const skillAvg = skill => avg(stScored.filter(s => s.skill === skill).map(s => Number(s.overall_score)));
+    const closedSubs = stSubs.filter(s => !s.is_active && s.deadline);
+    const onTimeCount = closedSubs.filter(s => s.on_time).length;
+    return {
+      ...st,
+      submitted: stSubs.length,
+      total: totalAssignments,
+      avg_score: sf ? skillAvg(sf) : avg(stScored.map(s => Number(s.overall_score))),
+      avg_reading: skillAvg('reading'),
+      avg_listening: skillAvg('listening'),
+      avg_writing: skillAvg('writing'),
+      avg_speaking: skillAvg('speaking'),
+      on_time: onTimeCount,
+      closed_total: closedSubs.length,
+      on_time_rate: closedSubs.length > 0 ? onTimeCount / closedSubs.length : null,
+    };
+  });
 
   // Apply sort
   if (_statsSortCol) {
@@ -1263,29 +1317,29 @@ function renderStatsTab(container, data) {
       <div class="stats-card">
         <div class="stats-card-icon" style="background:#e0f2fe;color:#0284c7">👥</div>
         <div class="stats-card-body">
-          <div class="stats-card-value">${overview.total_students}</div>
+          <div class="stats-card-value">${totalStudents}</div>
           <div class="stats-card-label">Học sinh</div>
         </div>
       </div>
       <div class="stats-card">
         <div class="stats-card-icon" style="background:#dcfce7;color:#16a34a">📋</div>
         <div class="stats-card-body">
-          <div class="stats-card-value">${overview.total_assignments}</div>
-          <div class="stats-card-label">${overview.active_assignments} đang mở · ${overview.closed_assignments} đã đóng</div>
+          <div class="stats-card-value">${totalAssignments}</div>
+          <div class="stats-card-label">${activeAssignments} đang mở · ${closedAssignmentsCount} đã đóng</div>
         </div>
       </div>
       <div class="stats-card">
         <div class="stats-card-icon" style="background:#fef9c3;color:#ca8a04">📊</div>
         <div class="stats-card-body">
-          <div class="stats-card-value">${overview.submission_rate}%</div>
-          <div class="stats-card-label">${overview.total_submissions} / ${overview.total_assignments * overview.total_students} lượt nộp</div>
+          <div class="stats-card-value">${submissionRate}%</div>
+          <div class="stats-card-label">${allFilteredSubs.length} / ${maxPossible} lượt nộp</div>
         </div>
       </div>
       <div class="stats-card">
         <div class="stats-card-icon" style="background:var(--primary-lt);color:var(--primary)">🎯</div>
         <div class="stats-card-body">
-          <div class="stats-card-value">${overview.avg_score !== null ? Number(overview.avg_score).toFixed(2) : '—'}</div>
-          <div class="stats-card-label">Điểm TB lớp (${overview.scored_submissions} bài đã chấm)</div>
+          <div class="stats-card-value">${avgScore !== null ? Number(avgScore).toFixed(2) : '—'}</div>
+          <div class="stats-card-label">Điểm TB lớp (${filteredScoredSubs.length} bài đã chấm)</div>
         </div>
       </div>
     </div>`;
@@ -1296,14 +1350,14 @@ function renderStatsTab(container, data) {
       <div class="stats-section-title">Tỷ lệ nộp bài theo kỹ năng</div>
       <div class="stats-skill-chart">
         ${['reading','listening','writing','speaking'].map(skill => {
-          const c = completion_by_skill[skill];
+          const c = completionBySkill[skill];
           if (!c || c.count === 0) return '';
           return `<div class="stats-skill-row">
             <div class="stats-skill-label">${skillBadge(skill)}</div>
             <div class="stats-bar-wrap">
               <div class="stats-bar-fill" style="width:${c.pct}%;background:${skillColors[skill]}"></div>
             </div>
-            <div class="stats-pct">${c.pct}% &nbsp;<span style="color:var(--gray-400)">(${c.submitted}/${c.count * overview.total_students} nộp)</span></div>
+            <div class="stats-pct">${c.pct}% &nbsp;<span style="color:var(--gray-400)">(${c.submitted}/${c.count * totalStudents} nộp)</span></div>
           </div>`;
         }).join('')}
       </div>
@@ -1320,7 +1374,7 @@ function renderStatsTab(container, data) {
   const scoreDistChartHtml = `
     <div class="stats-section-card stats-chart-card">
       <div class="stats-section-title">
-        Phân bổ điểm (${overview.scored_submissions} bài chấm)
+        Phân bổ điểm (${filteredScoredSubs.length} bài chấm)
         <span style="font-size:11px;font-weight:400;color:var(--gray-400);margin-left:6px">Click vào cột để xem chi tiết</span>
       </div>
       <canvas id="chart-score-dist" height="200" style="cursor:pointer"></canvas>
@@ -1343,10 +1397,7 @@ function renderStatsTab(container, data) {
     </div>`;
 
   // Chart: student score trend (multi-line, per-student + skill filters)
-  const chronoAssigns = [...per_assignment].reverse(); // oldest first for initial render
-  const hasTrendData = per_student.some(st =>
-    st.submissions.filter(s => s.overall_score !== null).length >= 1
-  );
+  const hasTrendData = filteredScoredSubs.length >= 1;
   const trendChartHtml = !hasTrendData ? '' : `
     <div class="stats-section-card">
       <div class="stats-trend-header">
@@ -1401,6 +1452,16 @@ function renderStatsTab(container, data) {
           ${[['', 'Tất cả'], ['active', 'Đang mở'], ['closed', 'Đã đóng']].map(([v, l]) => `
             <button class="stats-filter-pill${_statsStatusFilter === v ? ' active' : ''}"
               onclick="_statsStatusFilter='${v}';applyStatsFilter()">
+              ${l}
+            </button>`).join('')}
+        </div>
+      </div>
+      <div class="stats-filter-group">
+        <span class="stats-filter-label">Chế độ:</span>
+        <div class="stats-filter-pills">
+          ${[['', 'Tất cả'], ['exam', '📝 Kiểm tra'], ['practice', '🎧 Luyện tập']].map(([v, l]) => `
+            <button class="stats-filter-pill${_statsModeFilter === v ? ' active' : ''}"
+              onclick="_statsModeFilter='${v}';applyStatsFilter()">
               ${l}
             </button>`).join('')}
         </div>
@@ -1464,7 +1525,7 @@ function renderStatsTab(container, data) {
                         : `<table class="stats-sub-table">
                             <thead><tr><th>Bài tập</th><th>Kỹ năng</th><th>Điểm</th><th>Ngày nộp</th><th>Đúng hạn</th></tr></thead>
                             <tbody>${st.submissions
-                              .filter(s => !sf || s.skill === sf)
+                              .filter(s => filteredAssignmentIds.has(s.assignment_id))
                               .map(s => `<tr>
                                 <td>${escapeHtml(s.assignment_title)}</td>
                                 <td>${skillBadge(s.skill)}</td>
@@ -1492,7 +1553,7 @@ function renderStatsTab(container, data) {
         : `<div class="table-wrap">
           <table class="stats-table">
             <thead><tr>
-              <th>Kỹ năng</th><th>Tên bài tập</th><th>Tỷ lệ nộp</th><th>Điểm TB</th>
+              <th>Kỹ năng</th><th>Tên bài tập</th><th>Chế độ</th><th>Tỷ lệ nộp</th><th>Điểm TB</th>
               <th>Đúng hạn</th><th>Muộn</th><th>Chưa nộp</th><th>Trạng thái</th>
             </tr></thead>
             <tbody>
@@ -1501,6 +1562,7 @@ function renderStatsTab(container, data) {
                 return `<tr>
                   <td>${skillBadge(a.skill)}</td>
                   <td style="font-weight:600">${escapeHtml(a.title)}</td>
+                  <td>${a.mode === 'practice' ? '<span class="stats-mode-chip practice">🎧 Luyện tập</span>' : '<span class="stats-mode-chip exam">📝 Kiểm tra</span>'}</td>
                   <td>
                     <div class="stats-mini-bar-wrap">
                       <div class="stats-mini-bar" style="width:${submittedPct}%"></div>
@@ -1540,14 +1602,14 @@ function renderStatsTab(container, data) {
     // Chart 1: Skill score horizontal bar
     const skillScoreCanvas = document.getElementById('chart-skill-score');
     if (skillScoreCanvas) {
-      const skillsWithScore = ['reading','listening','writing','speaking'].filter(sk => score_by_skill[sk] !== null);
+      const skillsWithScore = ['reading','listening','writing','speaking'].filter(sk => scoreBySkill[sk] !== null);
       if (skillsWithScore.length > 0) {
         const chart = new Chart(skillScoreCanvas.getContext('2d'), {
           type: 'bar',
           data: {
             labels: skillsWithScore.map(sk => skillLabels[sk]),
             datasets: [{
-              data: skillsWithScore.map(sk => Number(score_by_skill[sk]).toFixed(2)),
+              data: skillsWithScore.map(sk => Number(scoreBySkill[sk]).toFixed(2)),
               backgroundColor: skillsWithScore.map(sk => skillColors[sk] + 'cc'),
               borderColor: skillsWithScore.map(sk => skillColors[sk]),
               borderWidth: 1, borderRadius: 6,
@@ -1572,7 +1634,7 @@ function renderStatsTab(container, data) {
     // Chart 2: Score distribution — clickable bars
     const distCanvas = document.getElementById('chart-score-dist');
     if (distCanvas) {
-      const total = score_distribution.reduce((a, b) => a + b, 0);
+      const total = distribution.reduce((a, b) => a + b, 0);
       if (total > 0) {
         const chart = new Chart(distCanvas.getContext('2d'), {
           type: 'bar',
@@ -1580,7 +1642,7 @@ function renderStatsTab(container, data) {
             labels: ['0 – 2','2 – 4','4 – 6','6 – 8','8 – 9'],
             datasets: [{
               label: 'Số bài',
-              data: score_distribution,
+              data: distribution,
               backgroundColor: ['#fca5a5','#fcd34d','#86efac','#67e8f9','#6ee7b7'],
               hoverBackgroundColor: ['#f87171','#fbbf24','#4ade80','#22d3ee','#34d399'],
               borderRadius: 6,
@@ -1612,7 +1674,11 @@ function renderStatsTab(container, data) {
     const trendCanvas = document.getElementById('chart-trend');
     if (trendCanvas) {
       // Initial render uses _statsTrendSkill (default: '' = all skills)
-      const initAssigns = [...per_assignment].reverse().filter(a => !_statsTrendSkill || a.skill === _statsTrendSkill);
+      const initAssigns = [...per_assignment].reverse().filter(a => {
+        if (_statsTrendSkill && a.skill !== _statsTrendSkill) return false;
+        if (_statsModeFilter && a.mode !== _statsModeFilter) return false;
+        return true;
+      });
       const trendLabels = initAssigns.map(a => a.title.length > 18 ? a.title.slice(0,16) + '…' : a.title);
       const datasets = per_student.map((st, i) => {
         const color = studentPalette[i % studentPalette.length];

@@ -2475,6 +2475,9 @@ body.resizing-image {
 .stats-ontime-pill.good { background: var(--success-lt); color: #15803d; }
 .stats-ontime-pill.mid  { background: #fef9c3; color: #a16207; }
 .stats-ontime-pill.bad  { background: var(--danger-lt); color: #b91c1c; }
+.stats-mode-chip { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+.stats-mode-chip.exam { background: #fef3c7; color: #92400e; }
+.stats-mode-chip.practice { background: #ede9fe; color: #5b21b6; }
 
 /* Stats tables */
 .stats-table { width: 100%; border-collapse: collapse; font-size: 13px; }

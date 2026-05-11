@@ -2611,10 +2611,11 @@ export default {
           const body = await request.json();
           if (!body.class_id || !body.question_id || !body.title)
             return err('class_id, question_id, title là bắt buộc');
+          const assignMode = body.mode === 'practice' ? 'practice' : 'exam';
           const [question] = await sql`SELECT skill FROM question_pool WHERE id = ${body.question_id}`;
           const [row] = await sql`
-            INSERT INTO assignments (class_id, question_id, title, deadline, is_active)
-            VALUES (${body.class_id}, ${body.question_id}, ${body.title}, ${body.deadline ?? null}, true)
+            INSERT INTO assignments (class_id, question_id, title, deadline, is_active, mode)
+            VALUES (${body.class_id}, ${body.question_id}, ${body.title}, ${body.deadline ?? null}, true, ${assignMode})
             RETURNING *
           `;
           // Notify all students in the class about the new assignment
@@ -2703,7 +2704,7 @@ export default {
 
         await autoCloseExpired(sql, { assignmentId: p.id });
         const [assignment] = await sql`
-          SELECT a.id, a.title, a.deadline, a.is_active,
+          SELECT a.id, a.title, a.deadline, a.is_active, a.mode,
             q.skill, q.title AS question_title, q.content_text, q.content_blocks, q.content_url, q.content_urls,
             jsonb_array_length(q.questions_data) AS question_count
           FROM assignments a

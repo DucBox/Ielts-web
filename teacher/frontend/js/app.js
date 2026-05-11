@@ -2986,6 +2986,31 @@ async function openAssignModal(classId, className, preSelectedId = null) {
       <input id="assign-deadline" class="form-input" type="datetime-local" />
       <div class="form-hint">Để trống nếu không có hạn</div>
     </div>
+    <div class="form-group">
+      <label class="form-label">Chế độ bài tập <span class="form-hint-inline">(chỉ áp dụng cho Listening)</span></label>
+      <div class="assign-mode-options">
+        <label class="assign-mode-option">
+          <input type="radio" name="assign-mode" value="exam" checked />
+          <span class="assign-mode-label">
+            <span class="assign-mode-icon">📝</span>
+            <span>
+              <strong>Kiểm tra</strong>
+              <span class="assign-mode-desc">Audio phát 1 lần liên tục, không tua/pause</span>
+            </span>
+          </span>
+        </label>
+        <label class="assign-mode-option">
+          <input type="radio" name="assign-mode" value="practice" />
+          <span class="assign-mode-label">
+            <span class="assign-mode-icon">🎧</span>
+            <span>
+              <strong>Luyện tập</strong>
+              <span class="assign-mode-desc">Cho phép tua, pause, nghe lại thoải mái</span>
+            </span>
+          </span>
+        </label>
+      </div>
+    </div>
     <div class="modal-footer">
       <button class="btn btn-outline" onclick="closeModal()">Hủy</button>
       <button class="btn btn-primary" onclick="submitAssign(this)">Giao bài</button>
@@ -3101,6 +3126,8 @@ async function submitAssign(btn) {
   const title = $('#assign-title')?.value.trim();
   const deadlineRaw = $('#assign-deadline')?.value;
   const deadline = deadlineRaw ? new Date(deadlineRaw).toISOString() : null;
+  const modeEl = document.querySelector('input[name="assign-mode"]:checked');
+  const mode = modeEl?.value === 'practice' ? 'practice' : 'exam';
 
   if (!title) { toast('Vui lòng nhập tên bài tập', 'error'); return; }
   if (!_selectedQuestionId) { toast('Vui lòng chọn một đề từ kho', 'error'); return; }
@@ -3112,6 +3139,7 @@ async function submitAssign(btn) {
       question_id: _selectedQuestionId,
       title,
       deadline:    deadline || null,
+      mode,
     });
     closeModal();
     toast('Giao bài thành công! 🎉');

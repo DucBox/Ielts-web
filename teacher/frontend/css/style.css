@@ -374,6 +374,16 @@ tbody tr:hover { background: var(--bg-surface-alt); }
   margin-bottom: 6px;
 }
 .form-hint { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+.form-hint-inline { font-size: 11px; color: var(--text-muted); font-weight: 400; }
+
+.assign-mode-options { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+.assign-mode-option { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; }
+.assign-mode-option input[type="radio"] { margin-top: 3px; accent-color: var(--primary); flex-shrink: 0; }
+.assign-mode-label { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; flex: 1; transition: border-color 0.15s, background 0.15s; }
+.assign-mode-option:has(input:checked) .assign-mode-label { border-color: var(--primary); background: var(--primary-lt); }
+.assign-mode-icon { font-size: 18px; flex-shrink: 0; margin-top: 1px; }
+.assign-mode-label strong { display: block; font-size: 13px; margin-bottom: 2px; }
+.assign-mode-desc { font-size: 11px; color: var(--text-muted); }
 
 .form-input,
 .form-select,

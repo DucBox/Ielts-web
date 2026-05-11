@@ -3694,7 +3694,7 @@ function renderListening(a) {
       </div>
       <div class="assignment-content">
         <div class="content-pane">
-          ${renderLockedListeningAudioHtml(a)}
+          ${a.mode === 'practice' ? renderListeningAudioHtml(a) : renderLockedListeningAudioHtml(a)}
           <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:16px">
             <div class="section-title" style="margin-bottom:0">Câu hỏi</div>
             ${buildHighlightToolbar()}
@@ -3712,7 +3712,7 @@ function renderListening(a) {
     </div>`;
 
   restoreAnswerDraft(a.id, qCount);
-  setupLockedListeningAudio();
+  if (a.mode !== 'practice') setupLockedListeningAudio();
   bindReadingTextInteractions();
   updateNavigatorState();
   startAutoSave(() => persistAnswerDraft(a.id, qCount));

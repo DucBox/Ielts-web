@@ -67,7 +67,8 @@ CREATE TABLE IF NOT EXISTS assignments (
   deadline TIMESTAMPTZ,
   is_active BOOLEAN DEFAULT TRUE,
   created_at TIMESTAMPTZ DEFAULT NOW(),
-  last_auto_closed_at TIMESTAMPTZ
+  last_auto_closed_at TIMESTAMPTZ,
+  mode TEXT NOT NULL DEFAULT 'exam'
 );
 
 CREATE TABLE IF NOT EXISTS submissions (

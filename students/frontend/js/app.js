@@ -199,6 +199,12 @@ function skillBadge(skill) {
   return `<span class="badge badge-${skill}">${SKILL_ICONS[skill] || '?'} ${SKILL_LABELS[skill] || skill}</span>`;
 }
 
+function modeBadgeHtml(mode) {
+  return mode === 'practice'
+    ? '<span class="mode-badge mode-badge--practice">🎧 Luyện tập</span>'
+    : '<span class="mode-badge mode-badge--exam">📝 Kiểm tra</span>';
+}
+
 function normalizeStudentEmailValue(value) {
   return String(value || '').trim().toLowerCase();
 }
@@ -3641,6 +3647,7 @@ function renderReading(a) {
       <div class="assignment-toolbar">
         <button class="btn-back" onclick="navigate('/assignments')">← Quay lại</button>
         <div class="assignment-toolbar-title">${skillBadge(a.skill)} ${escapeHtml(a.title)}</div>
+        ${modeBadgeHtml(a.mode)}
         <button class="btn btn-primary btn-sm" id="submit-btn"
           onclick="submitAnswers('${a.id}', ${qCount}, 'reading', this)">Nộp bài</button>
       </div>
@@ -3688,7 +3695,8 @@ function renderListening(a) {
     <div class="assignment-page">
       <div class="assignment-toolbar">
         <button class="btn-back" onclick="navigate('/assignments')">← Quay lại</button>
-        <div class="assignment-toolbar-title">${skillBadge(a.skill)} ${escapeHtml(a.title)}${a.mode === 'practice' ? '<span class="mode-badge mode-badge--practice">🎧 Luyện tập</span>' : '<span class="mode-badge mode-badge--exam">📝 Kiểm tra</span>'}</div>
+        <div class="assignment-toolbar-title">${skillBadge(a.skill)} ${escapeHtml(a.title)}</div>
+        ${modeBadgeHtml(a.mode)}
         <button class="btn btn-primary btn-sm" id="submit-btn"
           onclick="submitAnswers('${a.id}', ${qCount}, 'listening', this)">Nộp bài</button>
       </div>
@@ -3868,6 +3876,7 @@ function renderWriting(a) {
       <div class="assignment-toolbar">
         <button class="btn-back" onclick="navigate('/assignments')">← Quay lại</button>
         <div class="assignment-toolbar-title">${skillBadge(a.skill)} ${escapeHtml(a.title)}</div>
+        ${modeBadgeHtml(a.mode)}
         <button class="btn btn-primary btn-sm" id="submit-btn"
           onclick="submitWriting('${a.id}', this)">Nộp bài</button>
       </div>
@@ -3986,6 +3995,7 @@ function renderSpeaking(a) {
       <div class="assignment-toolbar">
         <button class="btn-back" onclick="navigate('/assignments')">← Quay lại</button>
         <div class="assignment-toolbar-title">${skillBadge(a.skill)} ${escapeHtml(a.title)}</div>
+        ${modeBadgeHtml(a.mode)}
         <button class="btn btn-primary btn-sm" id="submit-btn"
           onclick="submitSpeaking('${a.id}', this)" disabled>Nộp bài</button>
       </div>

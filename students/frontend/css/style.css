@@ -766,9 +766,6 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  display: flex;
-  align-items: center;
-  gap: 8px;
 }
 .mode-badge {
   display: inline-flex;

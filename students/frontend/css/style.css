@@ -800,17 +800,9 @@ body {
 }
 
 .answer-pane {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  background: var(--gray-50);
-  min-height: 0;
-  overflow: hidden;
-}
-.answer-scroll {
-  flex: 1;
   overflow-y: auto;
   padding: 24px;
+  background: var(--gray-50);
   min-height: 0;
 }
 
@@ -830,10 +822,6 @@ body {
 .assignment-content.single-col .answer-pane {
   min-height: 50vh;
   min-height: 50dvh;
-  overflow: visible;
-}
-.assignment-content.single-col .answer-scroll {
-  overflow: visible;
 }
 
 /* Reading/Listening full text */
@@ -1562,6 +1550,10 @@ body {
   }
   .assignment-toolbar {
     padding: 10px 16px;
+  }
+  .q-navigator {
+    top: calc(var(--header-h) + 53px - 24px);
+    margin: -24px -24px 14px -24px;
   }
   .container { padding: 20px 16px; }
   .login-card { padding: 28px 20px; }
@@ -2503,9 +2495,13 @@ body {
 /* B1.4 — Question navigator panel */
 .q-navigator {
   background: #fff;
-  border-top: 1px solid var(--gray-200);
+  border-bottom: 1px solid var(--gray-200);
+  border-radius: 0;
   padding: 12px 24px;
-  flex-shrink: 0;
+  margin: -24px -24px 14px -24px;
+  position: sticky;
+  top: -24px;
+  z-index: 10;
 }
 .q-nav-title {
   font-size: 11px;

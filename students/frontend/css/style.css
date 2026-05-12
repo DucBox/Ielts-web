@@ -1552,7 +1552,7 @@ body {
     padding: 10px 16px;
   }
   .q-navigator {
-    top: calc(var(--header-h) + 53px);
+    top: calc(var(--header-h) + 53px - 24px);
     margin: -24px -24px 14px -24px;
   }
   .container { padding: 20px 16px; }
@@ -2500,7 +2500,7 @@ body {
   padding: 12px 24px;
   margin: -24px -24px 14px -24px;
   position: sticky;
-  top: 0;
+  top: -24px;
   z-index: 10;
 }
 .q-nav-title {

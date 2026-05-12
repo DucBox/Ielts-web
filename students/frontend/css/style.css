@@ -539,6 +539,8 @@ body {
   padding: 6px 0;
   margin-bottom: 16px;
   transition: color .15s;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 .btn-back:hover { color: var(--primary); }
 
@@ -1549,6 +1551,10 @@ body {
   .assignment-toolbar {
     padding: 10px 16px;
   }
+  .q-navigator {
+    top: calc(var(--header-h) + 53px);
+    margin: -24px -24px 14px -24px;
+  }
   .container { padding: 20px 16px; }
   .login-card { padding: 28px 20px; }
   .result-stats { gap: 16px; }
@@ -2473,6 +2479,8 @@ body {
   border-radius: var(--radius-pill, 99px);
   padding: 4px 12px;
   margin-right: 10px;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 .save-indicator {
   font-size: 11px;
@@ -2487,12 +2495,13 @@ body {
 /* B1.4 — Question navigator panel */
 .q-navigator {
   background: #fff;
-  border: 1px solid var(--gray-200);
-  border-radius: var(--radius);
-  padding: 12px;
-  margin-bottom: 14px;
+  border-bottom: 1px solid var(--gray-200);
+  border-radius: 0;
+  padding: 12px 24px;
+  margin: -24px -24px 14px -24px;
   position: sticky;
-  top: 12px;
+  top: 0;
+  z-index: 10;
 }
 .q-nav-title {
   font-size: 11px;
@@ -2503,13 +2512,14 @@ body {
   font-weight: 700;
 }
 .q-nav-grid {
-  display: grid;
-  grid-template-columns: repeat(10, 1fr);
-  gap: 3px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
 }
 .q-nav-btn {
-  width: 100%;
-  aspect-ratio: 1 / 1;
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
   border-radius: 4px;
   border: 1px solid var(--gray-200);
   background: #fff;

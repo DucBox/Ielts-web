@@ -749,6 +749,8 @@ body {
   padding-top: var(--header-h);
 }
 
+.assignment-toolbar .btn-back { margin-bottom: 0; }
+
 .assignment-toolbar {
   background: #fff;
   border-bottom: 1px solid var(--gray-200);

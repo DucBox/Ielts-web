@@ -800,9 +800,16 @@ body {
 }
 
 .answer-pane {
+  display: flex;
+  flex-direction: column;
+  background: var(--gray-50);
+  min-height: 0;
+  overflow: hidden;
+}
+.answer-scroll {
+  flex: 1;
   overflow-y: auto;
   padding: 24px;
-  background: var(--gray-50);
   min-height: 0;
 }
 
@@ -822,6 +829,10 @@ body {
 .assignment-content.single-col .answer-pane {
   min-height: 50vh;
   min-height: 50dvh;
+  overflow: visible;
+}
+.assignment-content.single-col .answer-scroll {
+  overflow: visible;
 }
 
 /* Reading/Listening full text */
@@ -2491,10 +2502,9 @@ body {
 /* B1.4 — Question navigator panel */
 .q-navigator {
   background: #fff;
-  border: 1px solid var(--gray-200);
-  border-radius: var(--radius);
-  padding: 12px;
-  margin-top: 14px;
+  border-top: 1px solid var(--gray-200);
+  padding: 12px 24px;
+  flex-shrink: 0;
 }
 .q-nav-title {
   font-size: 11px;

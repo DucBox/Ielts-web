@@ -3664,11 +3664,13 @@ function renderReading(a) {
           <div class="reading-text" id="reading-text">${renderQuestionContentHTML(a.content_blocks, a.content_text || '')}</div>
         </div>
         <div class="answer-pane">
-          ${buildNotePanel(a.id)}
-          <div class="section-title">Điền đáp án</div>
-          ${qCount === 0
-            ? `<div style="color:var(--gray-400);font-size:13px">Bài tập không có câu hỏi.</div>`
-            : `<div class="answer-grid">${answerRows}</div>`}
+          <div class="answer-scroll">
+            ${buildNotePanel(a.id)}
+            <div class="section-title">Điền đáp án</div>
+            ${qCount === 0
+              ? `<div style="color:var(--gray-400);font-size:13px">Bài tập không có câu hỏi.</div>`
+              : `<div class="answer-grid">${answerRows}</div>`}
+          </div>
           ${buildQuestionNavigator(qCount)}
         </div>
       </div>
@@ -3715,11 +3717,13 @@ function renderListening(a) {
           <div class="reading-text" id="reading-text">${renderQuestionContentHTML(a.content_blocks, a.content_text || '')}</div>
         </div>
         <div class="answer-pane">
-          ${buildNotePanel(a.id)}
-          <div class="section-title">Điền đáp án</div>
-          ${qCount === 0
-            ? `<div style="color:var(--gray-400);font-size:13px">Bài tập không có câu hỏi.</div>`
-            : `<div class="answer-grid">${answerRows}</div>`}
+          <div class="answer-scroll">
+            ${buildNotePanel(a.id)}
+            <div class="section-title">Điền đáp án</div>
+            ${qCount === 0
+              ? `<div style="color:var(--gray-400);font-size:13px">Bài tập không có câu hỏi.</div>`
+              : `<div class="answer-grid">${answerRows}</div>`}
+          </div>
           ${buildQuestionNavigator(qCount)}
         </div>
       </div>

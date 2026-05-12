@@ -1552,8 +1552,8 @@ body {
     padding: 10px 16px;
   }
   .q-navigator {
-    top: calc(var(--header-h) + 53px - 24px);
-    margin: -24px -24px 14px -24px;
+    bottom: -24px;
+    margin: 14px -24px -24px -24px;
   }
   .container { padding: 20px 16px; }
   .login-card { padding: 28px 20px; }
@@ -2495,12 +2495,12 @@ body {
 /* B1.4 — Question navigator panel */
 .q-navigator {
   background: #fff;
-  border-bottom: 1px solid var(--gray-200);
+  border-top: 1px solid var(--gray-200);
   border-radius: 0;
   padding: 12px 24px;
-  margin: -24px -24px 14px -24px;
+  margin: 14px -24px -24px -24px;
   position: sticky;
-  top: -24px;
+  bottom: -24px;
   z-index: 10;
 }
 .q-nav-title {

@@ -672,23 +672,10 @@ function jumpToQuestion(qNo) {
   inp.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
-function buildQuestionNavigator(qCount, assignmentId) {
-  if (!qCount) return '';
-  let cells = '';
-  for (let i = 1; i <= qCount; i++) {
-    cells += `<button class="q-nav-btn" data-nav-q="${i}" onclick="jumpToQuestion(${i})">${i}</button>`;
-  }
+function buildNotePanel(assignmentId) {
   const noteKey = `note_${assignmentId}`;
   const savedNote = (() => { try { return localStorage.getItem(noteKey) || ''; } catch { return ''; } })();
   return `
-    <div class="q-navigator">
-      <div class="q-nav-title">Điều hướng câu hỏi</div>
-      <div class="q-nav-grid">${cells}</div>
-      <div class="q-nav-legend">
-        <span><span class="q-nav-dot answered"></span> đã trả lời</span>
-        <span><span class="q-nav-dot flagged"></span> đánh dấu</span>
-      </div>
-    </div>
     <div class="note-panel">
       <button class="note-panel-toggle" onclick="toggleNotePanel(this)" type="button">
         📝 Ghi chú <span class="note-panel-arrow">▼</span>
@@ -697,6 +684,23 @@ function buildQuestionNavigator(qCount, assignmentId) {
         <textarea class="note-panel-textarea" id="note-area-${assignmentId}"
           placeholder="Ghi chú của bạn..."
           oninput="saveNotePanel('${assignmentId}')">${escapeHtml(savedNote)}</textarea>
+      </div>
+    </div>`;
+}
+
+function buildQuestionNavigator(qCount) {
+  if (!qCount) return '';
+  let cells = '';
+  for (let i = 1; i <= qCount; i++) {
+    cells += `<button class="q-nav-btn" data-nav-q="${i}" onclick="jumpToQuestion(${i})">${i}</button>`;
+  }
+  return `
+    <div class="q-navigator">
+      <div class="q-nav-title">Điều hướng câu hỏi</div>
+      <div class="q-nav-grid">${cells}</div>
+      <div class="q-nav-legend">
+        <span><span class="q-nav-dot answered"></span> đã trả lời</span>
+        <span><span class="q-nav-dot flagged"></span> đánh dấu</span>
       </div>
     </div>`;
 }
@@ -3660,11 +3664,12 @@ function renderReading(a) {
           <div class="reading-text" id="reading-text">${renderQuestionContentHTML(a.content_blocks, a.content_text || '')}</div>
         </div>
         <div class="answer-pane">
-          ${buildQuestionNavigator(qCount, a.id)}
+          ${buildNotePanel(a.id)}
           <div class="section-title">Điền đáp án</div>
           ${qCount === 0
             ? `<div style="color:var(--gray-400);font-size:13px">Bài tập không có câu hỏi.</div>`
             : `<div class="answer-grid">${answerRows}</div>`}
+          ${buildQuestionNavigator(qCount)}
         </div>
       </div>
     </div>`;
@@ -3710,11 +3715,12 @@ function renderListening(a) {
           <div class="reading-text" id="reading-text">${renderQuestionContentHTML(a.content_blocks, a.content_text || '')}</div>
         </div>
         <div class="answer-pane">
-          ${buildQuestionNavigator(qCount, a.id)}
+          ${buildNotePanel(a.id)}
           <div class="section-title">Điền đáp án</div>
           ${qCount === 0
             ? `<div style="color:var(--gray-400);font-size:13px">Bài tập không có câu hỏi.</div>`
             : `<div class="answer-grid">${answerRows}</div>`}
+          ${buildQuestionNavigator(qCount)}
         </div>
       </div>
     </div>`;

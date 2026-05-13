@@ -4140,6 +4140,22 @@ function renderContentComposer() {
   if (!host) return;
   host.innerHTML = buildEditorDocumentHtml(_contentBlocks);
   host.onkeydown = (e) => {
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      const sel = window.getSelection();
+      if (!sel?.rangeCount) return;
+      const range = sel.getRangeAt(0);
+      range.deleteContents();
+      const tab = document.createTextNode('    ');
+      range.insertNode(tab);
+      const after = document.createRange();
+      after.setStartAfter(tab);
+      after.collapse(true);
+      sel.removeAllRanges();
+      sel.addRange(after);
+      syncContentBlocksFromEditor();
+      return;
+    }
     if (e.key !== 'Enter') return;
     const selNode = window.getSelection()?.getRangeAt(0)?.commonAncestorContainer;
     const selEl = selNode?.nodeType === 3 ? selNode.parentElement : selNode;

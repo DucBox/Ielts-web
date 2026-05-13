@@ -1326,19 +1326,23 @@ function switchClass() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 const routes = {
-  '/login':          showLogin,
-  '/select-class':   showClassSelect,
-  '/home':           showHome,
-  '/assignments':    showAssignments,
-  '/assignment/:id': showAssignment,
-  '/result/:id':     showResult,
-  '/history':        showHistory,
-  '/calendar':       showCalendar,
-  '/vocab-games':    showVocabGames,
-  '/vocab-game/:id': showVocabGame,
-  '/practice/:id':   showPractice,
-  '/profile':        showProfile,
-  '/my-vocab':       showMyVocab,
+  '/login':                     showLogin,
+  '/select-class':              showClassSelect,
+  '/home':                      showHome,
+  '/assignments':               showAssignments,
+  '/assignment/:id':            showAssignment,
+  '/result/:id':                showResult,
+  '/history':                   showHistory,
+  '/calendar':                  showCalendar,
+  '/vocab-games':               showVocabGames,
+  '/vocab-game/:id':            showVocabGame,
+  '/practice/:id':              showPractice,
+  '/profile':                   showProfile,
+  '/my-vocab':                  showMyVocab,
+  '/shared-pool':               showSharedPool,
+  '/shared-pool/:id':           showSharedQuestion,
+  '/shared-attempt/:id':        showSharedAttemptResult,
+  '/shared-practice/:id':       showSharedPractice,
 };
 
 function navigate(hash) {
@@ -4242,6 +4246,15 @@ function setSpeakingSubmitStatus(state, pct = 0, etaSec = null) {
 }
 
 async function requestSpeakingUploadTarget(assignmentId, file) {
+  if (_speakingIsShared) {
+    return api.post('/uploads/audio/presign', {
+      scope: 'student-shared-speaking',
+      pool_id: assignmentId,
+      file_name: file.name,
+      content_type: file.type || 'application/octet-stream',
+      size: file.size,
+    });
+  }
   return api.post('/uploads/audio/presign', {
     scope: 'student-speaking',
     assignment_id: assignmentId,
@@ -5644,6 +5657,922 @@ function locatePracticeText(searchText, metaRaw = '') {
   toast('Không tìm thấy đoạn tham chiếu.', 'warning');
 }
 window.locatePracticeText = locatePracticeText;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SHARED POOL — STUDENT
+// ═══════════════════════════════════════════════════════════════════════════
+
+let _sharedCtx = null;           // { poolId, poolQ, mode }
+let _sharedCountdownInterval = null;
+let _sharedSecsLeft = 0;
+let _speakingIsShared = false;   // flag so requestSpeakingUploadTarget uses pool scope
+let _sharedSkillFilter = 'all';
+let _sharedSearchQuery = '';
+
+// ── List ──────────────────────────────────────────────────────────────────
+async function showSharedPool() {
+  setLoading('Đang tải kho đề luyện tập...');
+  try {
+    const list = await api.get('/student/shared-pool');
+    _renderSharedPoolList(list);
+  } catch (e) {
+    toast('Lỗi tải kho đề: ' + (e.error || e.message), 'error');
+    navigate('/home');
+  }
+}
+
+function _renderSharedPoolList(list) {
+  _sharedSearchQuery = '';
+  const skills = ['all', 'reading', 'listening', 'writing', 'speaking'];
+  const skillLabel = { all: 'Tất cả', reading: 'Reading', listening: 'Listening', writing: 'Writing', speaking: 'Speaking' };
+
+  const filtered = list.filter(q => {
+    const matchSkill = _sharedSkillFilter === 'all' || q.skill === _sharedSkillFilter;
+    const matchSearch = !_sharedSearchQuery || q.title.toLowerCase().includes(_sharedSearchQuery) ||
+      (q.tags || []).some(t => t.toLowerCase().includes(_sharedSearchQuery));
+    return matchSkill && matchSearch;
+  });
+
+  const tabs = skills.map(s => `
+    <button class="tab-btn${_sharedSkillFilter === s ? ' active' : ''}" onclick="setSharedSkillFilter('${s}',${JSON.stringify(list)})">${skillLabel[s]}</button>
+  `).join('');
+
+  const cards = filtered.length === 0
+    ? `<div class="empty-hint">Không có đề nào${_sharedSkillFilter !== 'all' ? ' cho kỹ năng này' : ''}.</div>`
+    : filtered.map(q => {
+        const tagsHtml = (q.tags || []).map(t => `<span class="tag-chip">${escapeHtml(t)}</span>`).join('');
+        const hasScore = q.real_test_count > 0 && q.best_score != null;
+        const statsHtml = q.real_test_count > 0
+          ? `<div class="shared-card-stats">
+               <span>🎯 ${q.real_test_count} lần thi</span>
+               ${hasScore ? `<span>🏆 Best: ${q.best_score}</span>` : ''}
+             </div>`
+          : `<div class="shared-card-stats" style="color:var(--gray-400)">Chưa thi lần nào</div>`;
+        return `
+        <div class="shared-card" onclick="navigate('/shared-pool/${q.id}')">
+          <div class="shared-card-top">
+            ${skillBadge(q.skill)}
+            ${q.time_limit_minutes ? `<span class="shared-card-timer">⏱ ${q.time_limit_minutes} phút</span>` : ''}
+          </div>
+          <div class="shared-card-title">${escapeHtml(q.title)}</div>
+          ${tagsHtml ? `<div class="shared-card-tags">${tagsHtml}</div>` : ''}
+          ${statsHtml}
+        </div>`;
+      }).join('');
+
+  $('#app').innerHTML = `
+    <div class="container">
+      <div class="page-header">
+        <h2>🎯 Kho đề luyện tập</h2>
+      </div>
+      <div class="shared-pool-toolbar">
+        <div class="tab-row">${tabs}</div>
+        <input class="form-input shared-pool-search" id="shared-pool-search" type="search"
+          placeholder="Tìm kiếm tên, tag..."
+          oninput="filterSharedPool(${JSON.stringify(list)})" />
+      </div>
+      <div class="shared-pool-grid" id="shared-pool-grid">${cards}</div>
+    </div>`;
+}
+
+function setSharedSkillFilter(s, list) {
+  _sharedSkillFilter = s;
+  const searchEl = $('#shared-pool-search');
+  _sharedSearchQuery = searchEl ? searchEl.value.toLowerCase().trim() : '';
+  _renderSharedPoolList(list);
+}
+
+function filterSharedPool(list) {
+  const searchEl = $('#shared-pool-search');
+  _sharedSearchQuery = searchEl ? searchEl.value.toLowerCase().trim() : '';
+  const skills = ['all', 'reading', 'listening', 'writing', 'speaking'];
+  const skillLabel = { all: 'Tất cả', reading: 'Reading', listening: 'Listening', writing: 'Writing', speaking: 'Speaking' };
+  const filtered = list.filter(q => {
+    const matchSkill = _sharedSkillFilter === 'all' || q.skill === _sharedSkillFilter;
+    const matchSearch = !_sharedSearchQuery || q.title.toLowerCase().includes(_sharedSearchQuery) ||
+      (q.tags || []).some(t => t.toLowerCase().includes(_sharedSearchQuery));
+    return matchSkill && matchSearch;
+  });
+  const grid = $('#shared-pool-grid');
+  if (!grid) return;
+  if (filtered.length === 0) {
+    grid.innerHTML = `<div class="empty-hint">Không tìm thấy đề nào.</div>`;
+    return;
+  }
+  grid.innerHTML = filtered.map(q => {
+    const tagsHtml = (q.tags || []).map(t => `<span class="tag-chip">${escapeHtml(t)}</span>`).join('');
+    const hasScore = q.real_test_count > 0 && q.best_score != null;
+    const statsHtml = q.real_test_count > 0
+      ? `<div class="shared-card-stats"><span>🎯 ${q.real_test_count} lần thi</span>${hasScore ? `<span>🏆 Best: ${q.best_score}</span>` : ''}</div>`
+      : `<div class="shared-card-stats" style="color:var(--gray-400)">Chưa thi lần nào</div>`;
+    return `
+    <div class="shared-card" onclick="navigate('/shared-pool/${q.id}')">
+      <div class="shared-card-top">${skillBadge(q.skill)}${q.time_limit_minutes ? `<span class="shared-card-timer">⏱ ${q.time_limit_minutes} phút</span>` : ''}</div>
+      <div class="shared-card-title">${escapeHtml(q.title)}</div>
+      ${tagsHtml ? `<div class="shared-card-tags">${tagsHtml}</div>` : ''}
+      ${statsHtml}
+    </div>`;
+  }).join('');
+}
+window.setSharedSkillFilter = setSharedSkillFilter;
+window.filterSharedPool = filterSharedPool;
+
+// ── Detail / mode selection ───────────────────────────────────────────────
+async function showSharedQuestion({ id }) {
+  setLoading('Đang tải đề...');
+  try {
+    const [q, history] = await Promise.all([
+      api.get(`/student/shared-pool/${id}`),
+      api.get(`/student/shared-pool/${id}/attempts`),
+    ]);
+    _renderSharedDetail(q, history);
+  } catch (e) {
+    toast('Lỗi tải đề: ' + (e.error || e.message), 'error');
+    navigate('/shared-pool');
+  }
+}
+
+function _renderSharedDetail(q, history) {
+  const tagsHtml = (q.tags || []).map(t => `<span class="tag-chip">${escapeHtml(t)}</span>`).join('');
+  const realTestHistory = history.filter(h => h.mode === 'real_test');
+  const canRealTest = !!q.time_limit_minutes;
+
+  const historyRows = history.length === 0
+    ? `<div class="empty-hint" style="padding:12px 0">Chưa có lần thử nào.</div>`
+    : history.slice(0, 5).map(h => `
+        <div class="shared-history-row" onclick="navigate('/shared-attempt/${h.id}')">
+          <span class="shared-history-mode">${h.mode === 'real_test' ? '🎯 Thi thật' : '📝 Luyện tập'}</span>
+          <span class="shared-history-score">${h.overall_score != null ? h.overall_score : (h.has_feedback ? 'Đã chấm AI' : '⏳')}</span>
+          <span class="shared-history-date">${formatDateTime(h.submitted_at)}</span>
+        </div>`).join('');
+
+  const moreBtn = history.length > 5
+    ? `<button class="btn btn-outline btn-sm" style="margin-top:8px" onclick="showSharedAllHistory('${q.id}')">Xem tất cả (${history.length})</button>`
+    : '';
+
+  $('#app').innerHTML = `
+    <div class="container">
+      <button class="btn-back" onclick="navigate('/shared-pool')">← Kho đề</button>
+      <div class="shared-detail-header">
+        <div class="shared-detail-badges">
+          ${skillBadge(q.skill)}
+          ${q.time_limit_minutes ? `<span class="shared-card-timer">⏱ ${q.time_limit_minutes} phút</span>` : '<span class="tag-chip" style="background:var(--gray-100);color:var(--gray-500)">Không giới hạn thời gian</span>'}
+        </div>
+        <h2 class="shared-detail-title">${escapeHtml(q.title)}</h2>
+        ${tagsHtml ? `<div class="shared-card-tags">${tagsHtml}</div>` : ''}
+      </div>
+
+      <div class="shared-mode-cards">
+        <div class="shared-mode-card shared-mode-practice" onclick="startSharedAttempt('${q.id}', 'practice')">
+          <div class="shared-mode-icon">📝</div>
+          <div class="shared-mode-title">Luyện tập</div>
+          <div class="shared-mode-desc">Tự do · Audio nghe thoải mái · Xem điểm ngay · Không ghi vào hồ sơ</div>
+        </div>
+        ${canRealTest ? `
+        <div class="shared-mode-card shared-mode-real" onclick="startSharedAttempt('${q.id}', 'real_test')">
+          <div class="shared-mode-icon">🎯</div>
+          <div class="shared-mode-title">Thi thật</div>
+          <div class="shared-mode-desc">Đếm ngược ${q.time_limit_minutes} phút · Audio khóa · Kết quả ghi vào hồ sơ</div>
+        </div>` : ''}
+      </div>
+
+      <div class="shared-history-section">
+        <div class="section-label">📋 Lịch sử làm bài</div>
+        ${historyRows}
+        ${moreBtn}
+      </div>
+    </div>`;
+}
+
+async function showSharedAllHistory(poolId) {
+  try {
+    const history = await api.get(`/student/shared-pool/${poolId}/attempts`);
+    const rows = history.length === 0
+      ? `<div style="color:var(--gray-400);padding:16px 0">Chưa có lần thử nào.</div>`
+      : history.map(h => `
+          <div class="shared-history-row" style="cursor:pointer" onclick="closeModal();navigate('/shared-attempt/${h.id}')">
+            <span class="shared-history-mode">${h.mode === 'real_test' ? '🎯 Thi thật' : '📝 Luyện tập'}</span>
+            <span class="shared-history-score">${h.overall_score != null ? h.overall_score : (h.has_feedback ? 'Đã chấm AI' : '⏳')}</span>
+            <span class="shared-history-date">${formatDateTime(h.submitted_at)}</span>
+          </div>`).join('');
+    openModal('Lịch sử làm bài', `<div class="shared-history-modal">${rows}</div>`);
+  } catch (e) {
+    toast('Lỗi tải lịch sử: ' + (e.error || e.message), 'error');
+  }
+}
+window.showSharedAllHistory = showSharedAllHistory;
+
+// ── Start attempt ─────────────────────────────────────────────────────────
+async function startSharedAttempt(poolId, mode) {
+  setLoading('Đang tải đề...');
+  try {
+    const q = await api.get(`/student/shared-pool/${poolId}`);
+    _sharedCtx = { poolId, poolQ: q, mode };
+    _speakingIsShared = q.skill === 'speaking';
+    stopSharedCountdownTimer();
+
+    if (q.skill === 'reading')   renderSharedReading(q, mode);
+    else if (q.skill === 'listening') renderSharedListening(q, mode);
+    else if (q.skill === 'writing')   renderSharedWriting(q, mode);
+    else if (q.skill === 'speaking')  renderSharedSpeaking(q, mode);
+    else { toast('Kỹ năng không hợp lệ', 'error'); navigate('/shared-pool'); }
+
+    if (mode === 'real_test' && q.time_limit_minutes) {
+      startSharedCountdownTimer(q.time_limit_minutes);
+    }
+  } catch (e) {
+    toast('Lỗi tải đề: ' + (e.error || e.message), 'error');
+    navigate(`/shared-pool/${poolId}`);
+  }
+}
+window.startSharedAttempt = startSharedAttempt;
+
+// ── Countdown timer ───────────────────────────────────────────────────────
+function startSharedCountdownTimer(minutes) {
+  stopSharedCountdownTimer();
+  _sharedSecsLeft = minutes * 60;
+  _updateSharedTimerDisplay();
+  _sharedCountdownInterval = setInterval(() => {
+    _sharedSecsLeft--;
+    _updateSharedTimerDisplay();
+    if (_sharedSecsLeft <= 0) {
+      stopSharedCountdownTimer();
+      autoSubmitSharedAttempt();
+    }
+  }, 1000);
+}
+
+function stopSharedCountdownTimer() {
+  if (_sharedCountdownInterval) {
+    clearInterval(_sharedCountdownInterval);
+    _sharedCountdownInterval = null;
+  }
+}
+
+function _updateSharedTimerDisplay() {
+  const el = $('#shared-countdown');
+  if (!el) return;
+  const mins = Math.floor(_sharedSecsLeft / 60);
+  const secs = _sharedSecsLeft % 60;
+  const txt = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  el.textContent = txt;
+  el.classList.toggle('timer-urgent', _sharedSecsLeft <= 60);
+}
+
+function _sharedTimerHtml(mode, timeLimitMinutes) {
+  if (mode !== 'real_test' || !timeLimitMinutes) return '';
+  return `<div class="shared-timer-wrap"><span class="shared-timer-label">⏱</span><span class="shared-countdown" id="shared-countdown">--:--</span></div>`;
+}
+
+// ── Render: Reading ───────────────────────────────────────────────────────
+function renderSharedReading(q, mode) {
+  const qCount = (q.questions_data || []).length;
+  let answerRows = '';
+  for (let i = 0; i < qCount; i++) {
+    const qItem = q.questions_data[i];
+    answerRows += `
+      <div class="answer-row">
+        <span class="q-label">Q${qItem.q_no}</span>
+        <input class="answer-input" id="sans-${qItem.q_no}" type="text" placeholder="Đáp án câu ${qItem.q_no}" />
+      </div>`;
+  }
+  const modeBanner = mode === 'practice'
+    ? `<div class="shared-practice-banner">📝 Luyện tập — kết quả không ghi vào hồ sơ</div>`
+    : `<div class="shared-realtest-banner">🎯 Thi thật — Thời gian có hạn, không được dừng</div>`;
+
+  $('#app').innerHTML = `
+    <div class="assignment-page">
+      <div class="assignment-toolbar">
+        <button class="btn-back" onclick="confirmLeaveShared()">← Quay lại</button>
+        <div class="assignment-toolbar-title">${skillBadge(q.skill)} ${escapeHtml(q.title)}</div>
+        ${_sharedTimerHtml(mode, q.time_limit_minutes)}
+        <button class="btn btn-primary btn-sm" id="submit-btn" onclick="submitSharedReadingListening(this)">Nộp bài</button>
+      </div>
+      ${modeBanner}
+      <div class="assignment-content">
+        <div class="content-pane" id="shared-reading-text-wrap">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:16px">
+            <div class="section-title" style="margin-bottom:0">Bài đọc &amp; Câu hỏi</div>
+            ${buildHighlightToolbar()}
+          </div>
+          <div class="reading-text" id="reading-text">${renderQuestionContentHTML(q.content_blocks, q.content_text || '')}</div>
+        </div>
+        <div class="answer-pane">
+          <div class="section-title">Điền đáp án</div>
+          ${qCount === 0
+            ? `<div style="color:var(--gray-400);font-size:13px">Bài không có câu hỏi.</div>`
+            : `<div class="answer-grid">${answerRows}</div>`}
+        </div>
+      </div>
+    </div>`;
+
+  bindReadingTextInteractions();
+  if (mode === 'real_test' && q.time_limit_minutes) _updateSharedTimerDisplay();
+}
+
+// ── Render: Listening ─────────────────────────────────────────────────────
+function renderSharedListening(q, mode) {
+  const qCount = (q.questions_data || []).length;
+  let answerRows = '';
+  for (let i = 0; i < qCount; i++) {
+    const qItem = q.questions_data[i];
+    answerRows += `
+      <div class="answer-row">
+        <span class="q-label">Q${qItem.q_no}</span>
+        <input class="answer-input" id="sans-${qItem.q_no}" type="text" placeholder="Đáp án câu ${qItem.q_no}" />
+      </div>`;
+  }
+  const audioHtml = mode === 'practice'
+    ? renderListeningAudioHtml(q)
+    : renderLockedListeningAudioHtml(q);
+  const modeBanner = mode === 'practice'
+    ? `<div class="shared-practice-banner">📝 Luyện tập — kết quả không ghi vào hồ sơ</div>`
+    : `<div class="shared-realtest-banner">🎯 Thi thật — Thời gian có hạn, không được dừng</div>`;
+
+  $('#app').innerHTML = `
+    <div class="assignment-page">
+      <div class="assignment-toolbar">
+        <button class="btn-back" onclick="confirmLeaveShared()">← Quay lại</button>
+        <div class="assignment-toolbar-title">${skillBadge(q.skill)} ${escapeHtml(q.title)}</div>
+        ${_sharedTimerHtml(mode, q.time_limit_minutes)}
+        <button class="btn btn-primary btn-sm" id="submit-btn" onclick="submitSharedReadingListening(this)">Nộp bài</button>
+      </div>
+      ${modeBanner}
+      <div class="assignment-content">
+        <div class="content-pane">
+          ${audioHtml}
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:16px">
+            <div class="section-title" style="margin-bottom:0">Câu hỏi</div>
+            ${buildHighlightToolbar()}
+          </div>
+          <div class="reading-text" id="reading-text">${renderQuestionContentHTML(q.content_blocks, q.content_text || '')}</div>
+        </div>
+        <div class="answer-pane">
+          <div class="section-title">Điền đáp án</div>
+          ${qCount === 0
+            ? `<div style="color:var(--gray-400);font-size:13px">Bài không có câu hỏi.</div>`
+            : `<div class="answer-grid">${answerRows}</div>`}
+        </div>
+      </div>
+    </div>`;
+
+  if (mode !== 'practice') setupLockedListeningAudio();
+  bindReadingTextInteractions();
+  if (mode === 'real_test' && q.time_limit_minutes) _updateSharedTimerDisplay();
+}
+
+// ── Render: Writing ───────────────────────────────────────────────────────
+function renderSharedWriting(q, mode) {
+  const modeBanner = mode === 'practice'
+    ? `<div class="shared-practice-banner">📝 Luyện tập — kết quả không ghi vào hồ sơ</div>`
+    : `<div class="shared-realtest-banner">🎯 Thi thật — Thời gian có hạn, không được dừng</div>`;
+
+  $('#app').innerHTML = `
+    <div class="assignment-page">
+      <div class="assignment-toolbar">
+        <button class="btn-back" onclick="confirmLeaveShared()">← Quay lại</button>
+        <div class="assignment-toolbar-title">${skillBadge(q.skill)} ${escapeHtml(q.title)}</div>
+        ${_sharedTimerHtml(mode, q.time_limit_minutes)}
+        <button class="btn btn-primary btn-sm" id="submit-btn" onclick="submitSharedWriting(this)">Nộp bài</button>
+      </div>
+      ${modeBanner}
+      <div class="assignment-content">
+        <div class="content-pane">
+          <div class="section-title">Đề bài</div>
+          <div class="writing-prompt-body">${renderQuestionContentHTML(q.content_blocks, q.content_text || 'Không có đề bài.')}</div>
+        </div>
+        <div class="answer-pane writing-answer-pane">
+          <div class="section-title">Bài làm của bạn</div>
+          <textarea id="writing-answer" class="writing-textarea"
+            placeholder="Viết bài của bạn vào đây..."
+            oninput="updateWordCount(this)"></textarea>
+          <div id="word-count" class="word-count word-count-extended">
+            <span data-stat="words">0 từ</span>
+            <span data-stat="chars">0 ký tự</span>
+            <span data-stat="sentences">0 câu</span>
+            <span data-stat="paragraphs">0 đoạn</span>
+          </div>
+          <div class="form-hint">Task 1: ~150 từ — Task 2: ~250 từ</div>
+        </div>
+      </div>
+    </div>`;
+
+  if (mode === 'real_test' && q.time_limit_minutes) _updateSharedTimerDisplay();
+}
+
+// ── Render: Speaking ──────────────────────────────────────────────────────
+function renderSharedSpeaking(q, mode) {
+  _speakingSlots = [_newSpeakingSlot()];
+  _speakingRecordIdx = -1;
+  _speakingAssignId = q.id;
+  _speakingIsShared = true;
+  _mediaRecorder = null; _audioChunks = []; _recordedBlob = null; _uploadedFile = null;
+
+  const modeBanner = mode === 'practice'
+    ? `<div class="shared-practice-banner">📝 Luyện tập — kết quả không ghi vào hồ sơ</div>`
+    : `<div class="shared-realtest-banner">🎯 Thi thật — Thời gian có hạn, không được dừng</div>`;
+
+  $('#app').innerHTML = `
+    <div class="assignment-page">
+      <div class="assignment-toolbar">
+        <button class="btn-back" onclick="confirmLeaveShared()">← Quay lại</button>
+        <div class="assignment-toolbar-title">${skillBadge(q.skill)} ${escapeHtml(q.title)}</div>
+        ${_sharedTimerHtml(mode, q.time_limit_minutes)}
+        <button class="btn btn-primary btn-sm" id="submit-btn" onclick="submitSharedSpeaking(this)" disabled>Nộp bài</button>
+      </div>
+      ${modeBanner}
+      <div class="assignment-content single-col">
+        <div class="content-pane">
+          <div class="section-title">Câu hỏi / Cue Card</div>
+          <div class="cue-card">${renderQuestionContentHTML(q.content_blocks, q.content_text || '')}</div>
+        </div>
+        <div class="answer-pane">
+          <div class="section-title">Bài nói của bạn</div>
+          <div id="recording-indicator" style="display:none;padding:10px 14px;background:#fef2f2;border:1px solid #fecaca;border-radius:10px;margin-bottom:10px">
+            <canvas id="waveform-canvas" class="waveform-canvas" width="600" height="60"></canvas>
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-top:6px">
+              <div id="record-timer" class="record-timer" style="font-size:18px">0:00</div>
+              <button class="record-btn recording-active" style="padding:6px 18px;font-size:13px" onclick="stopSlotRecording()">⏹ Dừng thu âm</button>
+            </div>
+          </div>
+          <div id="speaking-slot-list"></div>
+          <button class="btn btn-outline btn-sm" style="margin-top:8px" onclick="addSpeakingSlot()">+ Thêm phần</button>
+          <div id="audio-submit-status" class="audio-submit-status hidden" style="margin-top:12px"></div>
+        </div>
+      </div>
+    </div>`;
+
+  _renderSpeakingSlots();
+  if (mode === 'real_test' && q.time_limit_minutes) _updateSharedTimerDisplay();
+}
+
+// ── Confirm leave ─────────────────────────────────────────────────────────
+async function confirmLeaveShared() {
+  const ctx = _sharedCtx;
+  if (!ctx) { navigate('/shared-pool'); return; }
+  const ok = await confirmSubmit({
+    title: 'Thoát bài?',
+    message: 'Tiến trình làm bài sẽ không được lưu. Bạn có chắc muốn thoát?',
+    confirmText: 'Thoát',
+    cancelText: 'Tiếp tục làm',
+  });
+  if (ok) {
+    stopSharedCountdownTimer();
+    _sharedCtx = null;
+    _speakingIsShared = false;
+    navigate(`/shared-pool/${ctx.poolId}`);
+  }
+}
+window.confirmLeaveShared = confirmLeaveShared;
+
+// ── Auto-submit on timer expiry ───────────────────────────────────────────
+async function autoSubmitSharedAttempt() {
+  const ctx = _sharedCtx;
+  if (!ctx) return;
+  const { poolQ, mode } = ctx;
+  toast('⏰ Hết giờ! Đang tự động nộp bài...', 'warning');
+  const btn = $('#submit-btn');
+  if (btn) btn.disabled = true;
+
+  if (poolQ.skill === 'reading' || poolQ.skill === 'listening') {
+    await submitSharedReadingListening(null, true);
+  } else if (poolQ.skill === 'writing') {
+    await submitSharedWriting(null, true);
+  } else if (poolQ.skill === 'speaking') {
+    await submitSharedSpeaking(null, true);
+  }
+}
+
+// ── Submit: Reading / Listening ───────────────────────────────────────────
+async function submitSharedReadingListening(btn, isAuto = false) {
+  const ctx = _sharedCtx;
+  if (!ctx) return;
+  const { poolQ, poolId, mode } = ctx;
+  const qData = poolQ.questions_data || [];
+  const answers = qData.map(q => ({ q_no: q.q_no, answer: ($(`#sans-${q.q_no}`)?.value || '').trim() }));
+  const answered = answers.filter(a => a.answer).length;
+
+  if (!isAuto) {
+    const ok = await confirmSubmit({
+      title: 'Xác nhận nộp bài',
+      message: `<ul class="submit-confirm-stats">
+        <li>✅ Đã trả lời: <b>${answered} / ${qData.length}</b></li>
+        ${answered < qData.length ? `<li>❌ Còn <b>${qData.length - answered}</b> câu chưa làm</li>` : ''}
+      </ul>
+      <div style="margin-top:8px;color:var(--gray-600);font-size:13px">Sau khi nộp bạn không thể chỉnh sửa.</div>`,
+    });
+    if (!ok) return;
+  }
+
+  if (btn) btnLoading(btn);
+  stopSharedCountdownTimer();
+  try {
+    const attempt = await api.post(`/student/shared-pool/${poolId}/attempts`, { mode, student_answers: answers });
+    _sharedCtx = null;
+    toast('Nộp bài thành công! 🎉');
+    navigate(`/shared-attempt/${attempt.id}`);
+  } catch (e) {
+    if (btn) btnReset(btn);
+    else { const b = $('#submit-btn'); if (b) { b.disabled = false; } }
+    toast('Lỗi nộp bài: ' + (e.error || e.message), 'error');
+  }
+}
+window.submitSharedReadingListening = submitSharedReadingListening;
+
+// ── Submit: Writing ───────────────────────────────────────────────────────
+async function submitSharedWriting(btn, isAuto = false) {
+  const ctx = _sharedCtx;
+  if (!ctx) return;
+  const { poolQ, poolId, mode } = ctx;
+  const content = ($('#writing-answer')?.value || '').trim();
+
+  if (!isAuto) {
+    if (!content) { toast('Vui lòng viết bài trước khi nộp', 'error'); return; }
+    const wc = countWords(content);
+    const ok = await confirmSubmit({
+      title: 'Xác nhận nộp bài Writing',
+      message: `<ul class="submit-confirm-stats"><li>📝 Số từ: <b>${wc}</b>${wc < 150 ? ' <span style="color:var(--danger)">⚠ Dưới mức tối thiểu</span>' : ''}</li></ul>
+      <div style="margin-top:8px;color:var(--gray-600);font-size:13px">Sau khi nộp bạn không thể chỉnh sửa.</div>`,
+    });
+    if (!ok) return;
+  }
+
+  if (btn) btnLoading(btn);
+  stopSharedCountdownTimer();
+  try {
+    const attempt = await api.post(`/student/shared-pool/${poolId}/attempts`, { mode, writing_content: content || '' });
+    _sharedCtx = null;
+    toast('Nộp bài thành công! 🎉');
+    navigate(`/shared-attempt/${attempt.id}`);
+  } catch (e) {
+    if (btn) btnReset(btn);
+    else { const b = $('#submit-btn'); if (b) b.disabled = false; }
+    toast('Lỗi nộp bài: ' + (e.error || e.message), 'error');
+  }
+}
+window.submitSharedWriting = submitSharedWriting;
+
+// ── Submit: Speaking ──────────────────────────────────────────────────────
+async function submitSharedSpeaking(btn, isAuto = false) {
+  const ctx = _sharedCtx;
+  if (!ctx) return;
+  const { poolId, mode } = ctx;
+  const doneSlots = _speakingSlots.filter(s => s.status === 'done');
+
+  if (!isAuto) {
+    if (doneSlots.length === 0) { toast('Vui lòng thu âm hoặc upload ít nhất 1 file', 'error'); return; }
+    const ok = await confirmSubmit({
+      title: 'Xác nhận nộp bài Speaking',
+      message: `<div>Bạn đã sẵn sàng nộp bài thu âm?</div>
+        <div style="margin-top:8px;color:var(--gray-600);font-size:13px">Sau khi nộp bạn không thể thu âm lại.</div>`,
+    });
+    if (!ok) return;
+  }
+
+  if (btn) btnLoading(btn);
+  stopSharedCountdownTimer();
+  try {
+    const audioUploadKeys = doneSlots.map(s => ({ key: s.key, name: s.displayName || s.name }));
+    setSpeakingSubmitStatus('processing');
+    const attempt = await api.post(`/student/shared-pool/${poolId}/attempts`, { mode, audio_upload_keys: audioUploadKeys });
+    setSpeakingSubmitStatus(null);
+    _sharedCtx = null;
+    _speakingIsShared = false;
+    toast('Nộp bài thành công! 🎉');
+    navigate(`/shared-attempt/${attempt.id}`);
+  } catch (e) {
+    setSpeakingSubmitStatus(null);
+    if (btn) btnReset(btn);
+    else { const b = $('#submit-btn'); if (b) b.disabled = false; }
+    toast('Lỗi nộp bài: ' + (e.error || e.message), 'error');
+  }
+}
+window.submitSharedSpeaking = submitSharedSpeaking;
+
+// ── Result page ───────────────────────────────────────────────────────────
+async function showSharedAttemptResult({ id }) {
+  setLoading('Đang tải kết quả...');
+  try {
+    const sub = await api.get(`/student/shared-attempts/${id}`);
+    _renderSharedAttemptResult(sub);
+  } catch (e) {
+    toast('Lỗi tải kết quả: ' + (e.error || e.message), 'error');
+    navigate('/shared-pool');
+  }
+}
+
+function _renderSharedAttemptResult(sub) {
+  const skill = sub.skill;
+  if (skill === 'reading' || skill === 'listening') _renderSharedGradedResult(sub);
+  else if (skill === 'writing')  _renderSharedWritingResult(sub);
+  else if (skill === 'speaking') _renderSharedSpeakingResult(sub);
+}
+
+function _renderSharedGradedResult(sub) {
+  const questionsData  = sub.questions_data || [];
+  const studentAnswers = sub.student_answers || [];
+  let correctCount = 0;
+  const rows = questionsData.map(q => {
+    const sa      = studentAnswers.find(a => a.q_no === q.q_no);
+    const given   = (sa?.answer || '').trim();
+    const correct = q.answers.some(a => a.toLowerCase().trim() === given.toLowerCase());
+    if (correct) correctCount++;
+    return `
+      <tr>
+        <td style="font-weight:700;color:var(--gray-400)">Q${q.q_no}</td>
+        <td>${escapeHtml(given) || '<em style="color:var(--gray-400)">Bỏ trống</em>'}</td>
+        <td>${escapeHtml(q.answers.join(' / '))}</td>
+        <td class="${correct ? 'result-correct' : 'result-wrong'}">${correct ? '✓' : '✗'}</td>
+      </tr>`;
+  }).join('');
+
+  const total = questionsData.length;
+  const score = sub.overall_score ?? (total > 0 ? Math.round(correctCount / total * 9 * 10) / 10 : 0);
+  const modeLabel = sub.mode === 'real_test' ? '🎯 Thi thật' : '📝 Luyện tập';
+  const wrongQNos = questionsData
+    .filter(q => { const sa = studentAnswers.find(a => a.q_no === q.q_no); const g = (sa?.answer || '').trim().toLowerCase(); return !q.answers.some(a => a.toLowerCase().trim() === g); })
+    .map(q => q.q_no);
+
+  $('#app').innerHTML = `
+    <div class="container">
+      <button class="btn-back" onclick="navigate('/shared-pool/${sub.shared_pool_id}')">← Kho đề</button>
+      <div class="result-header">
+        <div>${skillBadge(sub.skill)} <span style="font-size:12px;color:var(--gray-400)">${modeLabel}</span></div>
+        <div style="font-size:13px;color:var(--gray-400);margin-top:4px">${escapeHtml(sub.title || '')}</div>
+        <div class="result-score-big">${score} <span style="font-size:18px;color:var(--gray-400)">/9.0</span></div>
+        <div style="font-size:13px;color:var(--gray-400)">${correctCount}/${total} câu đúng</div>
+      </div>
+      ${wrongQNos.length > 0 ? `
+      <div style="margin:12px 0;text-align:center">
+        <button class="btn btn-outline btn-sm" onclick="navigate('/shared-practice/${sub.shared_pool_id}?attempt_id=${sub.id}')">🔄 Làm lại câu sai (${wrongQNos.length} câu)</button>
+      </div>` : ''}
+      <table class="result-table">
+        <thead><tr><th>Câu</th><th>Đáp án của bạn</th><th>Đáp án đúng</th><th>Kết quả</th></tr></thead>
+        <tbody>${rows || '<tr><td colspan="4" style="text-align:center;color:var(--gray-400)">Không có câu hỏi</td></tr>'}</tbody>
+      </table>
+    </div>`;
+}
+
+function _renderSharedWritingResult(sub) {
+  const feedback = sub.ai_feedback;
+  const isGraded = sub.overall_score != null || (feedback?.annotations?.length > 0) || feedback?.overall;
+  const modeLabel = sub.mode === 'real_test' ? '🎯 Thi thật' : '📝 Luyện tập';
+  const wordCount = countWords(sub.writing_content || '');
+
+  if (!isGraded) {
+    $('#app').innerHTML = `
+      <div class="container">
+        <button class="btn-back" onclick="navigate('/shared-pool/${sub.shared_pool_id}')">← Kho đề</button>
+        <div class="result-header">
+          <div>${skillBadge(sub.skill)} <span style="font-size:12px;color:var(--gray-400)">${modeLabel}</span></div>
+          <div style="font-size:13px;color:var(--gray-400);margin-top:4px">${escapeHtml(sub.title || '')}</div>
+          <div style="margin-top:16px"><div style="font-size:32px">✍️</div>
+            <div style="font-weight:700;font-size:15px;margin-top:8px">Đã nộp bài</div>
+            <div style="font-size:13px;color:var(--gray-400);margin-top:4px">${wordCount} từ</div>
+          </div>
+        </div>
+        <div class="pending-feedback">
+          <div class="pending-feedback-icon">⏳</div>
+          <div class="pending-feedback-text"><h4>Đang chấm AI...</h4><p>AI đang xử lý bài làm của bạn. Vui lòng tải lại sau.</p></div>
+        </div>
+        <div class="section-label">Bài làm của bạn</div>
+        <div class="submitted-content">${escapeHtml(sub.writing_content || '')}</div>
+      </div>`;
+    return;
+  }
+
+  const annotations = (feedback?.annotations || []).sort((a, b) => a.start - b.start);
+  const overall = feedback?.overall || '';
+  const score = sub.overall_score ?? feedback?.score;
+  const overallBlock = overall ? `<div class="section-label">Nhận xét tổng thể</div><div class="feedback-overall">${escapeHtml(overall)}</div>` : '';
+  const annSidebar = annotations.length === 0
+    ? `<div style="color:var(--gray-400);font-size:13px;text-align:center;padding-top:48px">Không có nhận xét theo đoạn</div>`
+    : `<div class="section-label">Nhận xét theo đoạn</div>
+       <div class="feedback-annotations">
+         ${annotations.map((ann, i) => `
+           <div class="feedback-ann-card feedback-ann-clickable" onclick="scrollToFeedbackMark(${i})">
+             <div class="feedback-ann-header">
+               <span class="feedback-ann-number">${i + 1}</span>
+               <span class="feedback-ann-quote">"${escapeHtml(ann.text.slice(0, 80))}${ann.text.length > 80 ? '…' : ''}"</span>
+             </div>
+             <div class="feedback-ann-comment">${escapeHtml(ann.comment)}</div>
+           </div>`).join('')}
+       </div>`;
+
+  $('#app').innerHTML = `
+    <div class="assignment-page">
+      <div class="assignment-toolbar">
+        <button class="btn-back" onclick="navigate('/shared-pool/${sub.shared_pool_id}')">← Kho đề</button>
+        <div class="assignment-toolbar-title">${skillBadge(sub.skill)} ${escapeHtml(sub.title || '')} <small style="color:var(--gray-400)">${modeLabel}</small></div>
+        <div class="score-chip"><span class="score-chip-val">${score ?? '—'}</span><span class="score-chip-label">/9.0</span></div>
+      </div>
+      <div class="assignment-content">
+        <div class="content-pane" id="feedback-content-pane">
+          ${overallBlock}
+          <div class="section-label"${overall ? ' style="margin-top:20px"' : ''}>Bài làm của bạn
+            ${annotations.length > 0 ? '<span class="feedback-hint">Bôi vàng = nhận xét · Bấm số để xem</span>' : ''}
+          </div>
+          <div class="submitted-content feedback-essay">${buildAnnotatedHtml(sub.writing_content || '', annotations)}</div>
+          <div style="font-size:12px;color:var(--gray-400);margin-top:8px;text-align:right">${wordCount} từ</div>
+        </div>
+        <div class="answer-pane">${annSidebar}</div>
+      </div>
+    </div>`;
+}
+
+function _renderSharedSpeakingResult(sub) {
+  const feedback = sub.ai_feedback;
+  const isGraded = sub.overall_score != null || (feedback?.annotations?.length > 0) || feedback?.overall;
+  const modeLabel = sub.mode === 'real_test' ? '🎯 Thi thật' : '📝 Luyện tập';
+  const audioUrls = sub.speaking_audio_urls || [];
+
+  if (!isGraded) {
+    const audioHtml = audioUrls.map((a, i) => `
+      <div style="margin-bottom:8px">
+        ${audioUrls.length > 1 ? `<div style="font-size:12px;color:var(--gray-400);margin-bottom:4px">${escapeHtml(a.name || ('Phần ' + (i+1)))}</div>` : ''}
+        <audio controls src="${escapeHtml(a.url || '')}" style="width:100%"></audio>
+      </div>`).join('');
+    $('#app').innerHTML = `
+      <div class="container">
+        <button class="btn-back" onclick="navigate('/shared-pool/${sub.shared_pool_id}')">← Kho đề</button>
+        <div class="result-header">
+          <div>${skillBadge(sub.skill)} <span style="font-size:12px;color:var(--gray-400)">${modeLabel}</span></div>
+          <div style="font-size:13px;color:var(--gray-400);margin-top:4px">${escapeHtml(sub.title || '')}</div>
+          <div style="margin-top:16px"><div style="font-size:32px">🎤</div>
+            <div style="font-weight:700;font-size:15px;margin-top:8px">Đã nộp bài</div>
+          </div>
+        </div>
+        <div class="pending-feedback">
+          <div class="pending-feedback-icon">⏳</div>
+          <div class="pending-feedback-text"><h4>Đang chấm AI...</h4><p>AI đang xử lý bài thu âm của bạn. Vui lòng tải lại sau.</p></div>
+        </div>
+        ${audioHtml ? `<div class="section-label">Bài thu âm của bạn</div><div class="submitted-content" style="padding:16px">${audioHtml}</div>` : ''}
+      </div>`;
+    return;
+  }
+
+  const annotations = (feedback?.annotations || []).sort((a, b) => a.start - b.start);
+  const overall = feedback?.overall || '';
+  const score = sub.overall_score ?? feedback?.score;
+  const overallBlock = overall ? `<div class="section-label">Nhận xét tổng thể</div><div class="feedback-overall">${escapeHtml(overall)}</div>` : '';
+  const annSidebar = annotations.length === 0
+    ? `<div style="color:var(--gray-400);font-size:13px;text-align:center;padding-top:48px">Không có nhận xét theo đoạn</div>`
+    : `<div class="section-label">Nhận xét theo đoạn</div>
+       <div class="feedback-annotations">
+         ${annotations.map((ann, i) => `
+           <div class="feedback-ann-card feedback-ann-clickable" onclick="scrollToFeedbackMark(${i})">
+             <div class="feedback-ann-header">
+               <span class="feedback-ann-number">${i + 1}</span>
+               <span class="feedback-ann-quote">"${escapeHtml(ann.text.slice(0, 80))}${ann.text.length > 80 ? '…' : ''}"</span>
+             </div>
+             <div class="feedback-ann-comment">${escapeHtml(ann.comment)}</div>
+           </div>`).join('')}
+       </div>`;
+
+  const audioHtml = audioUrls.map((a, i) => `
+    <div style="margin-bottom:8px">
+      ${audioUrls.length > 1 ? `<div style="font-size:12px;color:var(--gray-400);margin-bottom:4px">${escapeHtml(a.name || ('Phần ' + (i+1)))}</div>` : ''}
+      <audio controls src="${escapeHtml(a.url || '')}" style="width:100%;height:36px"></audio>
+    </div>`).join('');
+
+  $('#app').innerHTML = `
+    <div class="assignment-page">
+      <div class="assignment-toolbar">
+        <button class="btn-back" onclick="navigate('/shared-pool/${sub.shared_pool_id}')">← Kho đề</button>
+        <div class="assignment-toolbar-title">${skillBadge(sub.skill)} ${escapeHtml(sub.title || '')} <small style="color:var(--gray-400)">${modeLabel}</small></div>
+        <div class="score-chip"><span class="score-chip-val">${score ?? '—'}</span><span class="score-chip-label">/9.0</span></div>
+      </div>
+      <div class="assignment-content">
+        <div class="content-pane" id="feedback-content-pane">
+          ${overallBlock}
+          ${audioHtml ? `<div class="section-label"${overall ? ' style="margin-top:20px"' : ''}>Audio ghi âm của bạn</div><div style="margin-bottom:16px">${audioHtml}</div>` : ''}
+          <div class="section-label">Transcript (AI Generated)
+            ${annotations.length > 0 ? '<span class="feedback-hint">Bôi vàng = nhận xét · Bấm số để xem</span>' : ''}
+          </div>
+          <div class="submitted-content feedback-essay">${buildAnnotatedHtml(sub.speaking_script || '', annotations)}</div>
+        </div>
+        <div class="answer-pane">${annSidebar}</div>
+      </div>
+    </div>`;
+}
+
+// ── Retry wrong answers ───────────────────────────────────────────────────
+async function showSharedPractice({ id: rawId }) {
+  setLoading('Đang tải...');
+  const qIdx = rawId.indexOf('?');
+  const poolId   = qIdx >= 0 ? rawId.slice(0, qIdx) : rawId;
+  const params   = new URLSearchParams(qIdx >= 0 ? rawId.slice(qIdx + 1) : '');
+  const attemptId = params.get('attempt_id');
+
+  try {
+    const [poolQ, attempt] = await Promise.all([
+      api.get(`/student/shared-pool/${poolId}`),
+      attemptId ? api.get(`/student/shared-attempts/${attemptId}`) : Promise.resolve(null),
+    ]);
+
+    if (poolQ.skill !== 'reading' && poolQ.skill !== 'listening') {
+      toast('Chế độ luyện tập chỉ hỗ trợ Reading và Listening.', 'warning');
+      navigate(attemptId ? `/shared-attempt/${attemptId}` : `/shared-pool/${poolId}`);
+      return;
+    }
+
+    const origAnswers = attempt?.student_answers || [];
+    let questionsToShow = poolQ.questions_data || [];
+    if (attempt) {
+      questionsToShow = questionsToShow.filter(q => {
+        const sa = origAnswers.find(a => a.q_no === q.q_no);
+        const given = (sa?.answer || '').trim().toLowerCase();
+        return !q.answers?.some(a => a.toLowerCase().trim() === given);
+      });
+    }
+    if (questionsToShow.length === 0) {
+      toast('Không có câu sai nào để làm lại! 🎉', 'success');
+      navigate(attemptId ? `/shared-attempt/${attemptId}` : `/shared-pool/${poolId}`);
+      return;
+    }
+
+    let answerRows = '';
+    for (const q of questionsToShow) {
+      answerRows += `
+        <div class="answer-row">
+          <span class="q-label">Q${q.q_no}</span>
+          <input class="answer-input" id="sprac-${q.q_no}" type="text" placeholder="Đáp án câu ${q.q_no}" />
+        </div>`;
+    }
+    const backHref = attemptId ? `/shared-attempt/${attemptId}` : `/shared-pool/${poolId}`;
+
+    $('#app').innerHTML = `
+      <div class="assignment-page">
+        <div class="assignment-toolbar">
+          <button class="btn-back" onclick="navigate('${backHref}')">← Kết quả</button>
+          <div class="assignment-toolbar-title">${skillBadge(poolQ.skill)} ${escapeHtml(poolQ.title)} — Làm lại câu sai (${questionsToShow.length} câu)</div>
+          <button class="btn btn-primary btn-sm" id="submit-btn"
+            onclick="submitSharedPractice(${JSON.stringify(questionsToShow.map(q => q.q_no))}, '${backHref}', this)">Kiểm tra</button>
+        </div>
+        <div style="background:#fef3c7;border-bottom:1px solid #fbbf24;padding:8px 16px;font-size:12px;color:#92400e;display:flex;align-items:center;gap:6px">
+          🔄 Luyện tập — kết quả <strong>không ghi điểm</strong> vào hồ sơ
+        </div>
+        <div class="assignment-content">
+          <div class="content-pane" id="practice-content-pane">
+            ${poolQ.skill === 'listening' ? renderListeningAudioHtml(poolQ) : ''}
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:16px">
+              <div class="section-title" style="margin-bottom:0">${poolQ.skill === 'listening' ? 'Câu hỏi' : 'Bài đọc &amp; Câu hỏi'}</div>
+              ${buildHighlightToolbar()}
+            </div>
+            <div class="reading-text" id="practice-reading-text">${renderQuestionContentHTML(poolQ.content_blocks, poolQ.content_text || '')}</div>
+          </div>
+          <div class="answer-pane">
+            <div style="font-size:12px;color:var(--gray-400);margin-bottom:12px">Điền đáp án cho ${questionsToShow.length} câu và bấm <strong>Kiểm tra</strong>.</div>
+            <div class="answer-grid">${answerRows}</div>
+          </div>
+        </div>
+      </div>`;
+
+    bindReadingTextInteractions('practice-reading-text');
+  } catch (e) {
+    toast('Lỗi tải bài: ' + (e.error || e.message), 'error');
+    navigate('/shared-pool');
+  }
+}
+
+async function submitSharedPractice(qNos, backHref, btn) {
+  const poolQ = _sharedCtx?.poolQ;
+  const questionsToShow = poolQ
+    ? poolQ.questions_data.filter(q => qNos.includes(q.q_no))
+    : qNos.map(n => ({ q_no: n, answers: [] }));
+
+  const answers = qNos.map(n => ({ q_no: n, answer: ($(`#sprac-${n}`)?.value || '').trim() }));
+  btnLoading(btn);
+
+  let correctCount = 0;
+  const rows = qNos.map(n => {
+    const q = questionsToShow.find(q => q.q_no === n) || { q_no: n, answers: [] };
+    const given = (answers.find(a => a.q_no === n)?.answer || '').trim();
+    const correct = (q.answers || []).some(a => a.toLowerCase().trim() === given.toLowerCase());
+    if (correct) correctCount++;
+    return `
+      <tr>
+        <td style="font-weight:700;color:var(--gray-400)">Q${n}</td>
+        <td>${escapeHtml(given) || '<em style="color:var(--gray-400)">Bỏ trống</em>'}</td>
+        <td>${escapeHtml((q.answers || []).join(' / '))}</td>
+        <td class="${correct ? 'result-correct' : 'result-wrong'}">${correct ? '✓' : '✗'}</td>
+      </tr>`;
+  }).join('');
+
+  const modal = `
+    <div style="margin-bottom:12px;font-size:15px;font-weight:600">Kết quả: ${correctCount}/${qNos.length} câu đúng</div>
+    <table class="result-table">
+      <thead><tr><th>Câu</th><th>Đáp án của bạn</th><th>Đáp án đúng</th><th>Kết quả</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <div style="margin-top:16px;text-align:right">
+      <button class="btn btn-outline btn-sm" onclick="closeModal();navigate('${backHref}')">← Quay lại kết quả</button>
+    </div>`;
+
+  btnReset(btn);
+  openModal('Kết quả luyện tập', modal);
+}
+window.submitSharedPractice = submitSharedPractice;
 
 loadAuth();
 pruneStudentDrafts();

@@ -1497,6 +1497,47 @@ function normalizeAiFeedbackPayload(feedback) {
   };
 }
 
+// ─── Shared pool AI helper ───────────────────────────────────────────────────
+async function callAiFeedback(skill, contentText, studentContent, env) {
+  if (!env.OPENAI_API_KEY) throw Object.assign(new Error('Chưa cấu hình OPENAI_API_KEY'), { statusCode: 500 });
+  const prompt = skill === 'writing'
+    ? buildWritingPrompt(contentText, studentContent)
+    : buildSpeakingPrompt(contentText, studentContent);
+  const responsesUrl = getOpenAIEndpoint(env, '/v1/responses', 'responses');
+  const aiRes = await fetch(responsesUrl, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${getOpenAIAuthToken(env, responsesUrl, 'responses')}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: 'gpt-5-mini',
+      text: { format: { type: 'json_schema', name: 'ielts_ai_feedback', strict: true, schema: AI_FEEDBACK_RESPONSE_SCHEMA } },
+      input: [
+        { role: 'developer', content: IELTS_SYSTEM_PROMPT },
+        { role: 'user',      content: prompt },
+      ],
+    }),
+  });
+  if (!aiRes.ok) {
+    const text = await aiRes.text();
+    console.error('Shared pool AI error:', JSON.stringify({ endpoint: responsesUrl, error: parseOpenAIError(text) }));
+    throw Object.assign(new Error('Lỗi khi gọi AI'), { statusCode: 502 });
+  }
+  const aiData  = await aiRes.json();
+  const rawText = extractOutputText(aiData);
+  const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+  const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : rawText);
+  return normalizeAiFeedbackPayload(parsed);
+}
+
+function buildSharedSpeakingKey(poolId, studentId, fileName) {
+  return `shared-speaking/${poolId}/${studentId}-${crypto.randomUUID()}-${sanitizeFileName(fileName, 'audio')}`;
+}
+function isExpectedSharedSpeakingKey(key, poolId, studentId) {
+  return String(key || '').startsWith(`shared-speaking/${poolId}/${studentId}-`);
+}
+
 // ─── Assignment auto-close ────────────────────────────────────────────────────
 // Closes assignments whose deadline has passed, but only once per deadline value.
 // `last_auto_closed_at >= deadline` means the system has already auto-closed for
@@ -2278,6 +2319,14 @@ export default {
           if (!assignmentId || !studentId) return err('assignment_id và student_id là bắt buộc', 400);
           maxBytes = 50 * 1024 * 1024;
           key = buildStudentSpeakingKey(assignmentId, studentId, fileName);
+        } else if (scope === 'student-shared-speaking') {
+          const claims = await requireStudentAuth(request, env);
+          if (!claims) return err('Unauthorized', 401);
+          const poolId   = String(body?.pool_id   || '').trim();
+          const studentId = String(claims.student_id);
+          if (!poolId || !studentId) return err('pool_id là bắt buộc', 400);
+          maxBytes = 50 * 1024 * 1024;
+          key = buildSharedSpeakingKey(poolId, studentId, fileName);
         } else {
           return err('Upload scope không hợp lệ', 400);
         }
@@ -3451,6 +3500,288 @@ export default {
           INSERT INTO vocab_sessions (student_id) VALUES (${claims.student_id})
         `;
         return json({ ok: true });
+      }
+
+      // ── Shared Pool — Teacher endpoints ──────────────────────────────────────
+
+      if (path === '/shared-pool') {
+        if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
+        if (method === 'GET') {
+          const rows = await sql`
+            SELECT sp.id, sp.skill, sp.title, sp.tags, sp.time_limit_minutes, sp.created_at,
+                   COUNT(sa.id)::int AS attempt_count
+            FROM shared_pool sp
+            LEFT JOIN shared_attempts sa ON sa.shared_pool_id = sp.id
+            GROUP BY sp.id
+            ORDER BY sp.created_at DESC
+          `;
+          return json(rows);
+        }
+        if (method === 'POST') {
+          const ct = request.headers.get('Content-Type') || '';
+          let title, skill, content_text = '', questions_data = [], content_url = null, content_blocks = [];
+          let uploadedR2Key = null, vocabulary = [], script = null, tags = [], time_limit_minutes = null;
+          let contentUrls = [];
+
+          if (ct.includes('multipart/form-data')) {
+            const form = await request.formData();
+            title        = form.get('title');
+            skill        = form.get('skill');
+            content_text = form.get('content_text') || '';
+            questions_data = JSON.parse(form.get('questions_data') || '[]');
+            vocabulary   = JSON.parse(form.get('vocabulary') || '[]');
+            tags         = JSON.parse(form.get('tags') || '[]');
+            script       = form.get('script') || null;
+            time_limit_minutes = form.get('time_limit_minutes') ? Number(form.get('time_limit_minutes')) : null;
+            const audioFile = form.get('audio');
+            if (audioFile && audioFile.size > 0) {
+              const key = buildTeacherAudioKey(audioFile.name || 'audio');
+              await env.R2.put(key, audioFile.stream(), { httpMetadata: { contentType: audioFile.type } });
+              uploadedR2Key = key;
+              content_url = buildR2PublicUrl(env, key);
+            }
+          } else {
+            const body = await request.json();
+            title              = body.title;
+            skill              = body.skill;
+            content_text       = body.content_text || '';
+            content_blocks     = normalizeContentBlocks(body.content_blocks || []);
+            content_text       = content_text || blocksToPlainText(content_blocks);
+            questions_data     = body.questions_data || [];
+            vocabulary         = body.vocabulary || [];
+            tags               = Array.isArray(body.tags) ? body.tags.map(String).filter(Boolean) : [];
+            script             = body.script || null;
+            time_limit_minutes = body.time_limit_minutes ? Number(body.time_limit_minutes) : null;
+            if (body.content_url) { content_url = body.content_url; contentUrls = [{ url: body.content_url }]; }
+            if (Array.isArray(body.content_urls) && body.content_urls.length) contentUrls = body.content_urls;
+          }
+          if (!title || !skill) return err('title và skill là bắt buộc', 400);
+          const [row] = await sql`
+            INSERT INTO shared_pool (skill, title, content_text, content_blocks, content_url, content_urls, questions_data, vocabulary, tags, script, time_limit_minutes)
+            VALUES (
+              ${skill}, ${title}, ${content_text},
+              ${JSON.stringify(content_blocks)}::jsonb, ${content_url},
+              ${JSON.stringify(contentUrls)}::jsonb,
+              ${JSON.stringify(questions_data)}, ${JSON.stringify(vocabulary)},
+              ${tags}, ${script}, ${time_limit_minutes}
+            )
+            RETURNING *
+          `;
+          for (const imgUrl of extractContentBlockImageUrls(row.content_blocks || [])) {
+            const imgKey = extractR2Key(imgUrl, env.R2_PUBLIC_URL);
+            if (imgKey) await r2RefIncrement(sql, imgKey).catch(() => {});
+          }
+          return json(row, 201);
+        }
+      }
+
+      if ((p = matchPath('/shared-pool/:id/stats', path)) && method === 'GET') {
+        if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
+        const rows = await sql`
+          SELECT sa.id, sa.mode, sa.overall_score, sa.max_score, sa.submitted_at,
+                 s.full_name AS student_name, s.username,
+                 (SELECT string_agg(c.name, ', ')
+                  FROM student_classes sc JOIN classes c ON c.id = sc.class_id
+                  WHERE sc.student_id = sa.student_id) AS class_names
+          FROM shared_attempts sa
+          JOIN students s ON s.id = sa.student_id
+          WHERE sa.shared_pool_id = ${p.id}
+          ORDER BY sa.submitted_at DESC
+        `;
+        return json(rows);
+      }
+
+      if ((p = matchPath('/shared-pool/:id', path))) {
+        if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
+        if (method === 'GET') {
+          const [row] = await sql`SELECT * FROM shared_pool WHERE id = ${p.id}`;
+          if (!row) return err('Không tìm thấy đề', 404);
+          return json(row);
+        }
+        if (method === 'PATCH') {
+          const body = await request.json();
+          const [existing] = await sql`SELECT content_blocks FROM shared_pool WHERE id = ${p.id}`;
+          if (!existing) return err('Không tìm thấy đề', 404);
+          const normalizedBlocks = body.content_blocks !== undefined ? normalizeContentBlocks(body.content_blocks) : null;
+          const nextContentText  = normalizedBlocks ? blocksToPlainText(normalizedBlocks) : (body.content_text !== undefined ? (body.content_text ?? null) : null);
+          const qDataJson        = body.questions_data !== undefined ? JSON.stringify(body.questions_data) : null;
+          const vocabJson        = body.vocabulary    !== undefined ? JSON.stringify(body.vocabulary)     : null;
+          const blocksJson       = normalizedBlocks   !== null      ? JSON.stringify(normalizedBlocks)    : null;
+          const tagsArr          = body.tags !== undefined ? (Array.isArray(body.tags) ? body.tags.map(String).filter(Boolean) : null) : null;
+          const scriptVal        = body.script !== undefined ? (body.script ?? null) : null;
+          const timeLimitVal     = body.time_limit_minutes !== undefined ? (body.time_limit_minutes ? Number(body.time_limit_minutes) : null) : undefined;
+          const shouldUpdateText = normalizedBlocks !== null || body.content_text !== undefined;
+          const [row] = await sql`
+            UPDATE shared_pool
+            SET title              = COALESCE(${body.title ?? null}, title),
+                content_text       = CASE WHEN ${shouldUpdateText} THEN ${nextContentText} ELSE content_text END,
+                content_blocks     = COALESCE(${blocksJson}::jsonb, content_blocks),
+                questions_data     = COALESCE(${qDataJson}::jsonb,  questions_data),
+                vocabulary         = COALESCE(${vocabJson}::jsonb,  vocabulary),
+                tags               = COALESCE(${tagsArr},           tags),
+                script             = COALESCE(${scriptVal},         script),
+                time_limit_minutes = CASE WHEN ${timeLimitVal !== undefined} THEN ${timeLimitVal ?? null} ELSE time_limit_minutes END
+            WHERE id = ${p.id}
+            RETURNING *
+          `;
+          if (normalizedBlocks !== null) {
+            const oldKeys = extractContentBlockImageUrls(existing.content_blocks).map(u => extractR2Key(u, env.R2_PUBLIC_URL)).filter(Boolean);
+            const newKeySet = new Set(extractContentBlockImageUrls(normalizedBlocks).map(u => extractR2Key(u, env.R2_PUBLIC_URL)).filter(Boolean));
+            for (const key of newKeySet) if (!oldKeys.includes(key)) await r2RefIncrement(sql, key).catch(() => {});
+            for (const key of oldKeys)   if (!newKeySet.has(key))    await r2SafeDelete(env, sql, key).catch(() => {});
+          }
+          return json(row);
+        }
+        if (method === 'DELETE') {
+          const [q] = await sql`SELECT content_blocks FROM shared_pool WHERE id = ${p.id}`;
+          if (!q) return err('Không tìm thấy đề', 404);
+          await sql`DELETE FROM shared_pool WHERE id = ${p.id}`;
+          for (const url of extractContentBlockImageUrls(q.content_blocks || [])) {
+            const key = extractR2Key(url, env.R2_PUBLIC_URL);
+            if (key) await r2SafeDelete(env, sql, key).catch(() => {});
+          }
+          return json({ ok: true });
+        }
+      }
+
+      // ── Shared Pool — Student endpoints ──────────────────────────────────────
+
+      // List shared pool (student must be in ≥1 class)
+      if (path === '/student/shared-pool' && method === 'GET') {
+        const claims = await requireStudentAuth(request, env);
+        if (!claims) return err('Unauthorized', 401);
+        const studentId = String(claims.student_id);
+        const [membership] = await sql`SELECT 1 FROM student_classes WHERE student_id = ${studentId} LIMIT 1`;
+        if (!membership) return json([]);
+        const rows = await sql`
+          SELECT sp.id, sp.skill, sp.title, sp.tags, sp.time_limit_minutes, sp.created_at,
+                 COUNT(sa.id) FILTER (WHERE sa.mode = 'real_test')::int AS real_test_count,
+                 MAX(sa.overall_score) FILTER (WHERE sa.mode = 'real_test') AS best_score,
+                 MAX(sp.questions_data->0->'answers') IS NULL AS is_open_ended
+          FROM shared_pool sp
+          LEFT JOIN shared_attempts sa ON sa.shared_pool_id = sp.id AND sa.student_id = ${studentId}
+          GROUP BY sp.id
+          ORDER BY sp.created_at DESC
+        `;
+        return json(rows);
+      }
+
+      // Get single shared pool question (for taking the test)
+      if ((p = matchPath('/student/shared-pool/:id', path)) && method === 'GET') {
+        const claims = await requireStudentAuth(request, env);
+        if (!claims) return err('Unauthorized', 401);
+        const [row] = await sql`SELECT * FROM shared_pool WHERE id = ${p.id}`;
+        if (!row) return err('Không tìm thấy đề', 404);
+        return json(row);
+      }
+
+      // Submit a shared pool attempt
+      if ((p = matchPath('/student/shared-pool/:id/attempts', path)) && method === 'POST') {
+        const claims = await requireStudentAuth(request, env);
+        if (!claims) return err('Unauthorized', 401);
+        const studentId = String(claims.student_id);
+
+        // Must be in at least one class
+        const [membership] = await sql`SELECT 1 FROM student_classes WHERE student_id = ${studentId} LIMIT 1`;
+        if (!membership) return err('Bạn chưa vào lớp nào', 403);
+
+        const [poolQ] = await sql`SELECT * FROM shared_pool WHERE id = ${p.id}`;
+        if (!poolQ) return err('Không tìm thấy đề', 404);
+
+        const ct = request.headers.get('Content-Type') || '';
+        let mode = 'practice', studentAnswers = null, writingContent = null;
+        let speakingScript = null, speakingAudioUrls = [], audioUploadKeys = null;
+
+        const body = await request.json();
+        mode           = body.mode === 'real_test' ? 'real_test' : 'practice';
+        studentAnswers = body.student_answers ?? null;
+        writingContent = body.writing_content ?? null;
+        audioUploadKeys = Array.isArray(body.audio_upload_keys) && body.audio_upload_keys.length > 0
+          ? body.audio_upload_keys : null;
+
+        // Handle speaking audio transcription
+        if (audioUploadKeys) {
+          const validKeys = audioUploadKeys.filter(item => item.key && isExpectedSharedSpeakingKey(item.key, p.id, studentId));
+          if (validKeys.length === 0) {
+            for (const k of audioUploadKeys) await env.R2.delete(k.key).catch(() => {});
+            return err('audio_upload_keys không hợp lệ', 400);
+          }
+          const parts = [];
+          for (const item of validKeys) {
+            try {
+              const transcriptData = await transcribeR2Audio(env, item.key);
+              const label = item.name || item.key.split('/').pop();
+              parts.push(`--- Transcript: ${label} ---\n${transcriptData.text || ''}`);
+              speakingAudioUrls.push({ url: buildR2PublicUrl(env, item.key), key: item.key, name: item.name || '' });
+            } catch (sttErr) {
+              for (const k of validKeys) await env.R2.delete(k.key).catch(() => {});
+              return err(sttErr.message || 'Không thể nhận diện giọng nói', sttErr.statusCode || 500);
+            }
+          }
+          speakingScript = parts.join('\n\n\n');
+        }
+
+        // Auto-grade reading/listening
+        let overallScore = null, maxScore = null;
+        if ((poolQ.skill === 'reading' || poolQ.skill === 'listening') && studentAnswers) {
+          overallScore = autoGrade(studentAnswers, poolQ.questions_data);
+          maxScore     = Array.isArray(poolQ.questions_data) ? poolQ.questions_data.length : null;
+        }
+
+        const [attempt] = await sql`
+          INSERT INTO shared_attempts
+            (student_id, shared_pool_id, mode, student_answers, writing_content, speaking_script, speaking_audio_urls, overall_score, max_score)
+          VALUES (
+            ${studentId}, ${p.id}, ${mode},
+            ${JSON.stringify(studentAnswers || [])}::jsonb,
+            ${writingContent || ''}, ${speakingScript || ''},
+            ${JSON.stringify(speakingAudioUrls)}::jsonb,
+            ${overallScore}, ${maxScore}
+          )
+          RETURNING *
+        `;
+
+        // Auto AI feedback for writing/speaking (fire-and-forget, update async)
+        if ((poolQ.skill === 'writing' || poolQ.skill === 'speaking') && env.OPENAI_API_KEY) {
+          const studentContent = poolQ.skill === 'writing' ? writingContent : speakingScript;
+          if (studentContent?.trim()) {
+            callAiFeedback(poolQ.skill, poolQ.content_text || '', studentContent, env)
+              .then(aiFeedback => sql`UPDATE shared_attempts SET ai_feedback = ${JSON.stringify(aiFeedback)}::jsonb WHERE id = ${attempt.id}`)
+              .catch(e => console.error('Shared pool AI feedback error:', e));
+          }
+        }
+
+        return json(attempt, 201);
+      }
+
+      // Student attempt history for a specific shared pool question
+      if ((p = matchPath('/student/shared-pool/:id/attempts', path)) && method === 'GET') {
+        const claims = await requireStudentAuth(request, env);
+        if (!claims) return err('Unauthorized', 401);
+        const studentId = String(claims.student_id);
+        const rows = await sql`
+          SELECT id, mode, overall_score, max_score, ai_feedback IS NOT NULL AS has_feedback, submitted_at
+          FROM shared_attempts
+          WHERE student_id = ${studentId} AND shared_pool_id = ${p.id}
+          ORDER BY submitted_at DESC
+        `;
+        return json(rows);
+      }
+
+      // Get a single shared attempt result
+      if ((p = matchPath('/student/shared-attempts/:id', path)) && method === 'GET') {
+        const claims = await requireStudentAuth(request, env);
+        if (!claims) return err('Unauthorized', 401);
+        const studentId = String(claims.student_id);
+        const [row] = await sql`
+          SELECT sa.*, sp.skill, sp.title, sp.content_text, sp.content_blocks, sp.content_urls, sp.content_url,
+                 sp.questions_data, sp.vocabulary, sp.script, sp.time_limit_minutes
+          FROM shared_attempts sa
+          JOIN shared_pool sp ON sp.id = sa.shared_pool_id
+          WHERE sa.id = ${p.id} AND sa.student_id = ${studentId}
+        `;
+        if (!row) return err('Không tìm thấy kết quả', 404);
+        return json(row);
       }
 
       // ── File serving (R2) ──────────────────────────────────────────────────

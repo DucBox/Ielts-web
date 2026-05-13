@@ -701,6 +701,9 @@ const routes = {
   '/questions':        showQuestions,
   '/questions/new':    showQuestionForm,
   '/questions/:id':    showQuestionDetail,
+  '/shared-pool':      showSharedPool,
+  '/shared-pool/new':  showSharedPoolForm,
+  '/shared-pool/:id':  showSharedPoolDetail,
   '/inbox':            showInbox,
   '/profile-fields':   showProfileFields,
 };
@@ -713,6 +716,9 @@ const routeLoadingMessages = {
   '/questions':        'Đang tải kho đề...',
   '/questions/new':    'Đang mở form tạo đề...',
   '/questions/:id':    'Đang tải đề...',
+  '/shared-pool':      'Đang tải kho đề luyện tập...',
+  '/shared-pool/new':  'Đang mở form tạo đề...',
+  '/shared-pool/:id':  'Đang tải đề...',
   '/inbox':            'Đang tải hộp thư...',
   '/profile-fields':   'Đang tải hồ sơ học sinh...',
 };
@@ -735,7 +741,8 @@ function router() {
       const route = link.dataset.route;
       link.classList.toggle('active',
         (route === 'classes' && hash.startsWith('/class')) ||
-        (route === 'questions' && hash.startsWith('/question'))
+        (route === 'questions' && hash.startsWith('/questions')) ||
+        (route === 'shared-pool' && hash.startsWith('/shared-pool'))
       );
     });
 
@@ -6389,6 +6396,316 @@ function toggleGatePassword() {
   input.type = isHidden ? 'text' : 'password';
   btn.textContent = isHidden ? '🙈' : '👁';
 }
+
+// ─── Shared Pool (Kho đề luyện tập) ─────────────────────────────────────────
+
+let _sharedQuestions = [];
+let _sharedSearch = '';
+let _sharedSkillFilter = '';
+
+async function showSharedPool() {
+  try {
+    _sharedQuestions = await api.get('/shared-pool');
+  } catch (e) {
+    renderRouteError('Không tải được kho đề luyện tập', e, '/shared-pool');
+    return;
+  }
+  renderSharedPool();
+}
+
+function renderSharedPool() {
+  let filtered = _sharedSkillFilter
+    ? _sharedQuestions.filter(q => q.skill === _sharedSkillFilter)
+    : _sharedQuestions;
+  if (_sharedSearch) {
+    const s = _sharedSearch.toLowerCase();
+    filtered = filtered.filter(q =>
+      q.title.toLowerCase().includes(s) ||
+      (Array.isArray(q.tags) && q.tags.some(t => t.toLowerCase().includes(s)))
+    );
+  }
+
+  const existingTbody = $('#app')?.querySelector('.shared-pool-tbody');
+  if (existingTbody) {
+    existingTbody.innerHTML = _buildSharedPoolRows(filtered);
+    document.querySelectorAll('.shared-skill-tab').forEach(btn =>
+      btn.classList.toggle('active', btn.dataset.skill === _sharedSkillFilter));
+    return;
+  }
+
+  $('#app').innerHTML = `
+    <div class="page-header">
+      <div>
+        <div class="page-title">Kho đề luyện tập</div>
+        <div class="page-subtitle">Tổng cộng ${_sharedQuestions.length} đề — tự động hiển thị cho tất cả học sinh</div>
+      </div>
+      <button class="btn btn-primary" onclick="navigate('/shared-pool/new')">+ Tạo đề mới</button>
+    </div>
+    <div class="list-toolbar">
+      <input id="shared-search-input" class="form-input search-input"
+        placeholder="🔍 Tìm theo tên đề hoặc tag..."
+        value="${escapeHtml(_sharedSearch)}" />
+    </div>
+    <div class="skill-tabs">
+      ${[['','Tất cả'],['reading','📖 Reading'],['listening','🎧 Listening'],
+         ['writing','✍️ Writing'],['speaking','🎤 Speaking']].map(([s,l]) =>
+        `<button class="skill-tab shared-skill-tab ${_sharedSkillFilter===s?'active':''}" data-skill="${s}" onclick="setSharedSkillFilter('${s}')">${l}</button>`
+      ).join('')}
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>Kỹ năng</th><th>Tiêu đề</th><th>Tags</th>
+          <th>Thời gian</th><th>Lượt làm</th><th>Ngày tạo</th><th>Thao tác</th>
+        </tr></thead>
+        <tbody class="shared-pool-tbody">${_buildSharedPoolRows(filtered)}</tbody>
+      </table>
+    </div>`;
+
+  const inp = document.getElementById('shared-search-input');
+  if (inp) {
+    inp.addEventListener('input', () => { _sharedSearch = inp.value; renderSharedPool(); });
+    if (_sharedSearch) inp.focus();
+  }
+}
+
+function _buildSharedPoolRows(list) {
+  if (!list.length) return '<tr><td colspan="7" style="text-align:center;color:var(--gray-400);padding:32px">Chưa có đề nào.</td></tr>';
+  return list.map(q => `
+    <tr>
+      <td>${skillBadge(q.skill)}</td>
+      <td><a onclick="navigate('/shared-pool/${q.id}')" style="cursor:pointer;color:var(--primary)">${escapeHtml(q.title)}</a></td>
+      <td>${Array.isArray(q.tags)&&q.tags.length ? q.tags.map(t=>`<span class="tag-chip">${escapeHtml(t)}</span>`).join(' ') : '<span style="color:var(--gray-300)">—</span>'}</td>
+      <td>${q.time_limit_minutes ? `${q.time_limit_minutes} phút` : '<span style="color:var(--gray-300)">—</span>'}</td>
+      <td>${q.attempt_count || 0}</td>
+      <td>${formatDate(q.created_at)}</td>
+      <td style="white-space:nowrap">
+        <button class="btn btn-sm btn-outline" onclick="navigate('/shared-pool/${q.id}')">✏️ Sửa</button>
+        <button class="btn btn-sm btn-outline" style="color:var(--red)" onclick="deleteSharedQuestion('${q.id}','${escapeHtml(q.title)}')">🗑</button>
+      </td>
+    </tr>`).join('');
+}
+
+function setSharedSkillFilter(s) { _sharedSkillFilter = s; renderSharedPool(); }
+window.setSharedSkillFilter = setSharedSkillFilter;
+
+async function deleteSharedQuestion(id, title) {
+  if (!confirm(`Xoá đề "${title}" khỏi Kho đề luyện tập?`)) return;
+  try {
+    await api.delete(`/shared-pool/${id}`);
+    _sharedQuestions = _sharedQuestions.filter(q => q.id !== id);
+    renderSharedPool();
+    toast('Đã xoá đề', 'success');
+  } catch (e) { toast('Lỗi xoá đề: ' + (e.error || e.message), 'error'); }
+}
+window.deleteSharedQuestion = deleteSharedQuestion;
+
+// ─── Shared Pool Form (create / edit) ──────────────────────────────────────
+
+let _sharedEditingId = null;
+
+async function showSharedPoolForm() {
+  _sharedEditingId = null;
+  _vocabItems = [];
+  _contentBlocks = [createTextBlock('')];
+  _audioSlots = [_newAudioSlot()]; _audioFiles = _audioSlots;
+  _audioFile = null; _audioUploadUrl = null; _audioUploadKey = null;
+  _audioUploadName = ''; _audioUploadSize = 0; _audioUploading = false;
+  _editingVocabIndex = -1;
+  renderSharedPoolFormPage('Tạo đề luyện tập mới', null);
+}
+
+async function showSharedPoolDetail({ id }) {
+  let q;
+  try { q = await api.get(`/shared-pool/${id}`); } catch (e) {
+    renderRouteError('Không tải được đề', e, '/shared-pool'); return;
+  }
+  _sharedEditingId = id;
+  _vocabItems = Array.isArray(q.vocabulary) ? [...q.vocabulary] : [];
+  _contentBlocks = Array.isArray(q.content_blocks) && q.content_blocks.length
+    ? q.content_blocks : [createTextBlock(q.content_text || '')];
+  _audioSlots = [_newAudioSlot()]; _audioFiles = _audioSlots;
+  _audioFile = null; _audioUploadUrl = q.content_url || null;
+  _audioUploadKey = null; _audioUploadName = ''; _audioUploadSize = 0; _audioUploading = false;
+  _editingVocabIndex = -1;
+  renderSharedPoolFormPage('Sửa đề luyện tập', q);
+
+  // Load and show stats dashboard below form
+  try {
+    const stats = await api.get(`/shared-pool/${id}/stats`);
+    renderSharedPoolStats(stats, id);
+  } catch (_) {}
+}
+
+function renderSharedPoolFormPage(pageTitle, q) {
+  const skill = q?.skill || '';
+  $('#app').innerHTML = `
+    <a class="back-link" onclick="navigate('/shared-pool')">← Kho đề luyện tập</a>
+    <div class="page-header"><div class="page-title">${escapeHtml(pageTitle)}</div></div>
+    <div class="form-card">
+      <div class="form-group">
+        <label class="form-label">Tiêu đề <span class="required">*</span></label>
+        <input id="sp-title" class="form-input" placeholder="Tên đề..." value="${escapeHtml(q?.title||'')}" />
+      </div>
+      <div style="display:flex;gap:16px;flex-wrap:wrap">
+        <div class="form-group" style="flex:1;min-width:180px">
+          <label class="form-label">Kỹ năng <span class="required">*</span></label>
+          <select id="sp-skill" class="form-input" onchange="onSharedSkillChange(this.value)">
+            <option value="">-- Chọn kỹ năng --</option>
+            ${['reading','listening','writing','speaking'].map(s =>
+              `<option value="${s}" ${skill===s?'selected':''}>${s.charAt(0).toUpperCase()+s.slice(1)}</option>`
+            ).join('')}
+          </select>
+        </div>
+        <div class="form-group" style="flex:0 0 160px">
+          <label class="form-label">Thời gian kiểm tra (phút)</label>
+          <input id="sp-time-limit" class="form-input" type="number" min="1" max="999"
+            placeholder="Không giới hạn" value="${q?.time_limit_minutes||''}" />
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Tags</label>
+        <div id="sp-tags-chip" class="chip-input-container">
+          <input id="sp-tag-input" class="chip-input" placeholder="Nhập tag rồi Enter..." />
+        </div>
+      </div>
+      <div id="sp-skill-form"></div>
+      <div class="form-actions">
+        <button class="btn btn-outline" onclick="navigate(_sharedEditingId ? '/shared-pool/'+_sharedEditingId : '/shared-pool')">Huỷ</button>
+        <button id="sp-submit-btn" class="btn btn-primary" onclick="submitSharedPoolQuestion()">
+          ${_sharedEditingId ? 'Lưu thay đổi' : 'Tạo đề'}
+        </button>
+      </div>
+    </div>
+    <div id="sp-stats-section"></div>`;
+
+  // Populate tags
+  if (Array.isArray(q?.tags)) q.tags.forEach(t => addChip($('#sp-tags-chip'), t));
+  attachChipListeners($('#sp-tag-input'), $('#sp-tags-chip'));
+
+  if (skill) onSharedSkillChange(skill, q);
+}
+
+function onSharedSkillChange(skill, q) {
+  const container = $('#sp-skill-form');
+  if (!container) return;
+  if (!skill) { container.innerHTML = ''; return; }
+
+  let html = '';
+  if (skill === 'reading') {
+    html = `${contentComposerHtml('Nội dung đề')}${answerGridHtml()}${vocabSectionHtml()}`;
+  } else if (skill === 'listening') {
+    html = `
+      <div class="form-group"><label class="form-label">File Audio <span style="color:var(--danger)">*</span></label>${audioUploadHtml()}</div>
+      <div class="form-group" id="script-section">
+        <label class="form-label">Script Listening</label>
+        <textarea id="listening-script" class="form-textarea listening-script-editor" rows="8"
+          placeholder="Script...">${escapeHtml(q?.script || '')}</textarea>
+      </div>
+      ${contentComposerHtml('Câu hỏi (text)')}${answerGridHtml()}${vocabSectionHtml()}`;
+  } else if (skill === 'writing') {
+    html = `${contentComposerHtml('Đề bài Writing')}<div class="form-hint-box">ℹ️ Writing là tự luận — không cần nhập đáp án mẫu.</div>`;
+  } else if (skill === 'speaking') {
+    html = `${contentComposerHtml('Câu hỏi / Cue Card')}<div class="form-hint-box">ℹ️ Speaking — học sinh sẽ upload file audio.</div>`;
+  }
+
+  container.innerHTML = html;
+  initContentComposer(q?.content_blocks || [], q?.content_text || '');
+
+  if ((skill === 'reading' || skill === 'listening') && Array.isArray(q?.questions_data) && q.questions_data.length) {
+    renderAnswerGridWithData(q.questions_data);
+  } else {
+    const countInput = $('#answer-count');
+    if (countInput) countInput.addEventListener('input', () => {
+      const n = parseInt(countInput.value) || 0;
+      if (n > 0 && n <= 100) renderAnswerGrid(n);
+    });
+  }
+
+  if (Array.isArray(q?.vocabulary)) { _vocabItems = [...q.vocabulary]; renderVocabList(); }
+
+  if (skill === 'listening') { attachAudioUpload(); _renderAudioSlots(); }
+}
+window.onSharedSkillChange = onSharedSkillChange;
+
+async function submitSharedPoolQuestion() {
+  const title = $('#sp-title')?.value.trim();
+  const skill  = $('#sp-skill')?.value;
+  const timeLimitRaw = $('#sp-time-limit')?.value.trim();
+  const timeLimit = timeLimitRaw ? parseInt(timeLimitRaw, 10) : null;
+  if (!title) { toast('Vui lòng nhập tiêu đề', 'error'); return; }
+  if (!skill)  { toast('Vui lòng chọn kỹ năng', 'error'); return; }
+  if (_contentImageUploadCount > 0) { toast('Ảnh đang upload, vui lòng đợi xong rồi lưu', 'warning'); return; }
+  if (skill === 'listening' && _audioSlots.filter(s => s.status === 'done').length === 0 && !_sharedEditingId) {
+    toast('Vui lòng upload ít nhất 1 file audio', 'error'); return;
+  }
+
+  const btn = $('#sp-submit-btn');
+  btnLoading(btn);
+  try {
+    const tags = getChipValues($('#sp-tags-chip'));
+    const contentBlocks = normalizeContentBlocksForEditor(_contentBlocks);
+    const content_text  = blocksToPlainText(contentBlocks) || '';
+
+    let body = { title, skill, content_blocks: contentBlocks, content_text, vocabulary: _vocabItems, tags };
+    if (timeLimit) body.time_limit_minutes = timeLimit;
+
+    if (skill === 'reading' || skill === 'listening') {
+      body.questions_data = collectAnswerGrid();
+    }
+    if (skill === 'listening') {
+      const doneSlots = _audioSlots.filter(s => s.status === 'done');
+      if (doneSlots.length > 0) {
+        body.content_url  = doneSlots[0]?.url || null;
+        body.content_urls = doneSlots.map(s => ({ url: s.url, key: s.key, name: s.displayName || s.name }));
+      }
+      body.script = ($('#listening-script')?.value || '').trim() || null;
+    }
+
+    if (_sharedEditingId) {
+      await api.patch(`/shared-pool/${_sharedEditingId}`, body);
+      toast('Đã lưu thay đổi', 'success');
+    } else {
+      await api.post('/shared-pool', body);
+      toast('Đã tạo đề luyện tập! 🎉', 'success');
+    }
+    navigate('/shared-pool');
+  } catch (e) {
+    btnReset(btn);
+    toast('Lỗi lưu đề: ' + (e.error || e.message), 'error');
+  }
+}
+window.submitSharedPoolQuestion = submitSharedPoolQuestion;
+
+function renderSharedPoolStats(stats, poolId) {
+  const el = $('#sp-stats-section');
+  if (!el) return;
+  el.innerHTML = `
+    <div class="page-header" style="margin-top:32px">
+      <div class="page-title" style="font-size:18px">📊 Thống kê lượt làm</div>
+    </div>
+    ${stats.length === 0
+      ? '<p style="color:var(--gray-400)">Chưa có học sinh nào làm đề này.</p>'
+      : `<div class="table-wrap"><table>
+          <thead><tr>
+            <th>Học sinh</th><th>Lớp</th><th>Mode</th>
+            <th>Điểm</th><th>Thời gian nộp</th>
+          </tr></thead>
+          <tbody>${stats.map(s => `
+            <tr>
+              <td>${escapeHtml(s.full_name||s.username)}</td>
+              <td>${escapeHtml(s.class_names||'—')}</td>
+              <td><span class="badge ${s.mode==='real_test'?'badge-red':'badge-blue'}">${s.mode==='real_test'?'Thi thử':'Luyện tập'}</span></td>
+              <td>${s.overall_score != null ? `${s.overall_score}${s.max_score?'/'+s.max_score:''}` : '—'}</td>
+              <td>${formatDate(s.submitted_at)}</td>
+            </tr>`).join('')}
+          </tbody></table></div>`
+    }`;
+}
+
+window.showSharedPool       = showSharedPool;
+window.showSharedPoolForm   = showSharedPoolForm;
+window.showSharedPoolDetail = showSharedPoolDetail;
 
 window.submitLoginGate        = submitLoginGate;
 window.toggleGatePassword     = toggleGatePassword;

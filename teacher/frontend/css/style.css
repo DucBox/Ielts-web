@@ -3853,3 +3853,22 @@ tr[draggable="true"]:active { cursor: grabbing; }
   background: rgba(15, 23, 42, .88);
   border-color: rgba(94, 234, 212, .42);
 }
+
+/* ── Shared Pool extras ──────────────────────────────────────────────────── */
+
+.badge-red  { background: #fee2e2; color: #b91c1c; }
+.badge-blue { background: #dbeafe; color: #1d4ed8; }
+
+.form-hint-box {
+  padding: 12px 16px;
+  background: var(--primary-lt);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--primary-dk);
+  margin-top: 8px;
+}
+
+[data-theme="dark"] .form-hint-box {
+  background: rgba(99,102,241,.12);
+  color: #a5b4fc;
+}

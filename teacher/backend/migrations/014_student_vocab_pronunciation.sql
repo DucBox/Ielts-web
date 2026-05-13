@@ -1,0 +1,2 @@
+ALTER TABLE student_vocab
+  ADD COLUMN IF NOT EXISTS pronunciation TEXT NOT NULL DEFAULT '';

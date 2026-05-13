@@ -1384,6 +1384,13 @@ body {
   line-height: 1.5;
 }
 
+.vocab-result-pronunciation {
+  font-size: 12px;
+  color: var(--gray-500);
+  font-style: italic;
+  margin-top: 4px;
+}
+
 .vocab-result-collocation {
   font-size: 12px;
   color: var(--primary);
@@ -2278,6 +2285,14 @@ body {
   text-align: center;
   margin-top: 6px;
 }
+.flashcard-pronunciation {
+  font-size: 13px;
+  color: var(--gray-500);
+  font-style: italic;
+  text-align: center;
+  margin-top: 6px;
+}
+
 .flashcard-collocation {
   font-size: 12px;
   color: var(--primary);
@@ -3638,6 +3653,7 @@ mark.student-note::after {
 }
 .mvc:hover { box-shadow: var(--shadow-md); transform: translateY(-2px); }
 .mvc-word { font-size: 17px; font-weight: 800; color: var(--primary-dk); margin-bottom: 4px; }
+.mvc-pron { font-size: 12px; color: var(--gray-500); font-style: italic; margin-bottom: 2px; }
 .mvc-def  { font-size: 13px; color: var(--gray-700, var(--gray-600)); margin-bottom: 4px; line-height: 1.4; }
 .mvc-ex   { font-size: 11px; color: var(--gray-400); font-style: italic; margin-bottom: 4px; }
 .mvc-src  { font-size: 10px; color: var(--gray-300); margin-top: 6px; }
@@ -4617,6 +4633,7 @@ select.pi-input { height: 42px; cursor: pointer; }
 [data-theme="dark"] .class-select-sub,
 [data-theme="dark"] .score-band,
 [data-theme="dark"] .stat-label,
+[data-theme="dark"] .vocab-result-pronunciation,
 [data-theme="dark"] .vocab-result-collocation,
 [data-theme="dark"] .vocab-result-example,
 [data-theme="dark"] .submit-confirm-body,
@@ -4626,6 +4643,7 @@ select.pi-input { height: 42px; cursor: pointer; }
   color: var(--text-muted);
 }
 
+[data-theme="dark"] .flashcard-pronunciation,
 [data-theme="dark"] .flashcard-collocation {
   color: var(--text-muted);
 }

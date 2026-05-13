@@ -1243,6 +1243,14 @@ body.resizing-image {
   min-width: 120px;
 }
 
+.vocab-pronunciation {
+  flex: 1;
+  color: var(--gray-500);
+  font-size: 12px;
+  font-style: italic;
+  min-width: 80px;
+}
+
 .vocab-collocation {
   flex: 1;
   color: var(--primary);
@@ -3823,6 +3831,7 @@ tr[draggable="true"]:active { cursor: grabbing; }
 [data-theme="dark"] .pdf-import-meta,
 [data-theme="dark"] .vocab-list-heading,
 [data-theme="dark"] .vocab-def,
+[data-theme="dark"] .vocab-pronunciation,
 [data-theme="dark"] .vocab-collocation,
 [data-theme="dark"] .vocab-example {
   color: var(--text-muted);

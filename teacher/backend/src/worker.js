@@ -3395,7 +3395,7 @@ export default {
         if (!claims) return err('Unauthorized', 401);
         const studentId = claims.student_id;
         const rows = await sql`
-          SELECT word, definition, example, source, saved_at
+          SELECT word, definition, pronunciation, example, source, saved_at
           FROM student_vocab WHERE student_id = ${studentId}
           ORDER BY saved_at DESC
         `;
@@ -3407,16 +3407,17 @@ export default {
         if (!claims) return err('Unauthorized', 401);
         const studentId = claims.student_id;
         const body = await request.json();
-        const { word, definition = '', example = '', source = '' } = body;
+        const { word, definition = '', pronunciation = '', example = '', source = '' } = body;
         if (!word) return err('word required', 400);
         await sql`
-          INSERT INTO student_vocab (student_id, word, definition, example, source)
-          VALUES (${studentId}, ${word}, ${definition}, ${example}, ${source})
+          INSERT INTO student_vocab (student_id, word, definition, pronunciation, example, source)
+          VALUES (${studentId}, ${word}, ${definition}, ${pronunciation}, ${example}, ${source})
           ON CONFLICT (student_id, word) DO UPDATE
-            SET definition = EXCLUDED.definition,
-                example    = EXCLUDED.example,
-                source     = EXCLUDED.source,
-                saved_at   = NOW()
+            SET definition   = EXCLUDED.definition,
+                pronunciation = EXCLUDED.pronunciation,
+                example      = EXCLUDED.example,
+                source       = EXCLUDED.source,
+                saved_at     = NOW()
         `;
         return json({ ok: true });
       }

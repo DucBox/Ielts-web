@@ -4769,6 +4769,7 @@ function vocabSectionHtml() {
       <div class="vocab-add-row">
         <input id="vocab-word"    class="form-input" placeholder="Từ vựng"         style="flex:1;min-width:0" />
         <input id="vocab-def"     class="form-input" placeholder="Định nghĩa"       style="flex:2;min-width:0" />
+        <input id="vocab-pronunciation" class="form-input" placeholder="Phiên âm (tùy chọn)" style="flex:1.5;min-width:0" />
         <input id="vocab-collocation" class="form-input" placeholder="Collocation (tùy chọn)" style="flex:2;min-width:0" />
         <input id="vocab-example" class="form-input" placeholder="Ví dụ (tùy chọn)" style="flex:2;min-width:0" />
         <button id="vocab-submit-btn" class="btn btn-primary btn-sm" onclick="addVocabItem()">+ Thêm</button>
@@ -4789,6 +4790,7 @@ function syncVocabEditorState() {
 function resetVocabInputs() {
   if ($('#vocab-word')) $('#vocab-word').value = '';
   if ($('#vocab-def')) $('#vocab-def').value = '';
+  if ($('#vocab-pronunciation')) $('#vocab-pronunciation').value = '';
   if ($('#vocab-collocation')) $('#vocab-collocation').value = '';
   if ($('#vocab-example')) $('#vocab-example').value = '';
 }
@@ -4803,12 +4805,14 @@ function cancelVocabEdit() {
 function addVocabItem() {
   const word = $('#vocab-word')?.value.trim();
   const def  = $('#vocab-def')?.value.trim();
+  const pronunciation = $('#vocab-pronunciation')?.value.trim() || '';
   const collocation = $('#vocab-collocation')?.value.trim() || '';
   const ex   = $('#vocab-example')?.value.trim() || '';
   if (!word || !def) { toast('Nhập từ vựng và định nghĩa', 'warning'); return; }
   const item = {
     word,
     definition: def,
+    ...(pronunciation && { pronunciation }),
     ...(collocation && { collocation }),
     ...(ex && { example: ex }),
   };
@@ -4843,6 +4847,7 @@ function editVocabItem(idx) {
   _editingVocabIndex = idx;
   if ($('#vocab-word')) $('#vocab-word').value = item.word || '';
   if ($('#vocab-def')) $('#vocab-def').value = item.definition || '';
+  if ($('#vocab-pronunciation')) $('#vocab-pronunciation').value = item.pronunciation || '';
   if ($('#vocab-collocation')) $('#vocab-collocation').value = item.collocation || '';
   if ($('#vocab-example')) $('#vocab-example').value = item.example || '';
   syncVocabEditorState();
@@ -4863,6 +4868,7 @@ function renderVocabList() {
     <div class="vocab-item">
       <span class="vocab-word">${escapeHtml(v.word)}</span>
       <span class="vocab-def">${escapeHtml(v.definition)}</span>
+      ${v.pronunciation ? `<span class="vocab-pronunciation">${escapeHtml(v.pronunciation)}</span>` : ''}
       ${v.collocation ? `<span class="vocab-collocation">${escapeHtml(v.collocation)}</span>` : ''}
       ${v.example ? `<span class="vocab-example">${escapeHtml(v.example)}</span>` : ''}
       <div class="vocab-actions">

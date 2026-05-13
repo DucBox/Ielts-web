@@ -3234,7 +3234,7 @@ function isWordSaved(word) {
 window.isWordSaved = isWordSaved;
 
 async function toggleSaveWordBtn(btn) {
-  const { word, def, ex, src } = btn.dataset;
+  const { word, def, pron, ex, src } = btn.dataset;
   // Optimistic UI
   const alreadySaved = isWordSaved(word);
   btn.disabled = true;
@@ -3246,7 +3246,7 @@ async function toggleSaveWordBtn(btn) {
       btn.classList.remove('saved');
       toast(`Đã xoá "${word}"`, 'info');
     } else {
-      await api.post('/student/vocab', { word, definition: def, example: ex || '', source: src || '' });
+      await api.post('/student/vocab', { word, definition: def, pronunciation: pron || '', example: ex || '', source: src || '' });
       _invalidateVocabCache();
       btn.textContent = '✓ Đã lưu';
       btn.classList.add('saved');
@@ -3285,6 +3285,7 @@ function renderMyVocabList() {
     : `<div class="my-vocab-grid">${list.map(v => `
         <div class="mvc">
           <div class="mvc-word">${escapeHtml(v.word)}</div>
+          ${v.pronunciation ? `<div class="mvc-pron">${escapeHtml(v.pronunciation)}</div>` : ''}
           <div class="mvc-def">${escapeHtml(v.definition)}</div>
           ${v.example ? `<div class="mvc-ex">"${escapeHtml(v.example)}"</div>` : ''}
           ${v.source ? `<div class="mvc-src">📋 ${escapeHtml(v.source)}</div>` : ''}
@@ -4386,6 +4387,7 @@ function renderGradedResult(sub) {
             <button class="btn-save-word ${saved ? 'saved' : ''}"
               data-word="${escapeHtml(v.word)}"
               data-def="${escapeHtml(v.definition)}"
+              data-pron="${escapeHtml(v.pronunciation || '')}"
               data-ex="${escapeHtml(v.example || '')}"
               data-src="${escapeHtml(sub.assignment_title || '')}"
               onclick="event.stopPropagation();toggleSaveWordBtn(this)"
@@ -4393,6 +4395,7 @@ function renderGradedResult(sub) {
           </div>
           <div class="vocab-result-detail hidden" id="vocab-detail-${i}">
             <div class="vocab-result-def">${escapeHtml(v.definition)}</div>
+            ${v.pronunciation ? `<div class="vocab-result-pronunciation">${escapeHtml(v.pronunciation)}</div>` : ''}
             ${v.collocation ? `<div class="vocab-result-collocation">Collocation: ${escapeHtml(v.collocation)}</div>` : ''}
             ${v.example ? `<div class="vocab-result-example">"${escapeHtml(v.example)}"</div>` : ''}
           </div>
@@ -5086,6 +5089,7 @@ function renderFlashcard() {
           <div class="flashcard-face flashcard-back">
             <div class="flashcard-lang">Nghĩa tiếng Việt</div>
             <div class="flashcard-word">${escapeHtml(card.definition)}</div>
+            ${card.pronunciation ? `<div class="flashcard-pronunciation">${escapeHtml(card.pronunciation)}</div>` : ''}
             ${card.collocation ? `<div class="flashcard-collocation">Collocation: ${escapeHtml(card.collocation)}</div>` : ''}
             ${card.example ? `<div class="flashcard-example">"${escapeHtml(card.example)}"</div>` : ''}
           </div>

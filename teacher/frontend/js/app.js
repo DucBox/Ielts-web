@@ -4819,17 +4819,8 @@ function renderContentComposer() {
   host.onkeydown = (e) => {
     if (e.key === 'Tab') {
       e.preventDefault();
-      const sel = window.getSelection();
-      if (!sel?.rangeCount) return;
-      const range = sel.getRangeAt(0);
-      range.deleteContents();
-      const tab = document.createTextNode('    ');
-      range.insertNode(tab);
-      const after = document.createRange();
-      after.setStartAfter(tab);
-      after.collapse(true);
-      sel.removeAllRanges();
-      sel.addRange(after);
+      // execCommand records in undo stack so Ctrl+Z works
+      document.execCommand('insertText', false, '    ');
       syncContentBlocksFromEditor();
       return;
     }
@@ -4841,15 +4832,34 @@ function renderContentComposer() {
     const sel = window.getSelection();
     if (!sel?.rangeCount) return;
     const range = sel.getRangeAt(0);
-    range.deleteContents();
-    const br = document.createElement('br');
-    range.insertNode(br);
-    if (!br.nextSibling) host.appendChild(document.createTextNode(''));
-    const after = document.createRange();
-    after.setStartAfter(br);
-    after.collapse(true);
-    sel.removeAllRanges();
-    sel.addRange(after);
+
+    // Check if there is visible content after the cursor inside the host.
+    // If not, we are at end-of-block: a single <br> is consumed by the browser
+    // as a sentinel and the cursor does not visually move — need <br><br>.
+    const afterRange = range.cloneRange();
+    afterRange.setEnd(host, host.childNodes.length);
+    const hasContentAfter = afterRange.toString().trim().length > 0
+      || afterRange.cloneContents().querySelector('img,table') !== null;
+
+    // Use a marker span to position cursor precisely after execCommand.
+    // execCommand puts the action in the browser undo stack so Ctrl+Z works.
+    const MARKER = '__br_cursor__';
+    document.execCommand('insertHTML', false,
+      hasContentAfter
+        ? `<br><span id="${MARKER}"></span>`
+        : `<br><span id="${MARKER}"></span><br>`
+    );
+    const marker = document.getElementById(MARKER);
+    if (marker) {
+      const parent = marker.parentNode;
+      const offset = Array.from(parent.childNodes).indexOf(marker);
+      marker.remove();
+      const r = document.createRange();
+      r.setStart(parent, offset);
+      r.collapse(true);
+      sel.removeAllRanges();
+      sel.addRange(r);
+    }
     syncContentBlocksFromEditor();
   };
   host.oninput = () => { syncContentBlocksFromEditor(); saveComposerRange(); };

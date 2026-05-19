@@ -603,7 +603,7 @@ tbody tr:hover { background: var(--bg-surface-alt); }
   border: 1px solid var(--gray-200);
   border-radius: 12px;
   background: #fff;
-  overflow: hidden;
+  overflow: clip; /* clip visual but not scroll context — keeps sticky working */
 }
 .content-composer-toolbar {
   display: flex;
@@ -626,6 +626,10 @@ tbody tr:hover { background: var(--bg-surface-alt); }
   padding: 5px 12px;
   background: #fff;
   border-bottom: 1px solid var(--gray-200);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  box-shadow: 0 2px 6px rgba(0,0,0,.06);
 }
 .fmt-btn {
   display: inline-flex;
@@ -4108,6 +4112,10 @@ tr[draggable="true"]:active { cursor: grabbing; }
 [data-theme="dark"] .content-composer-format-bar,
 [data-theme="dark"] .content-composer-toolbar {
   border-color: var(--border);
+}
+[data-theme="dark"] .content-composer-format-bar {
+  background: var(--card-bg);
+  box-shadow: 0 2px 6px rgba(0,0,0,.18);
 }
 
 [data-theme="dark"] .document-editor-image-preview,

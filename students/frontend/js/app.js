@@ -4160,19 +4160,58 @@ function _onSlotRecordingDone(idx, blob, mimeType) {
 const SPEAKING_ALLOWED_MIMES = ['audio/webm', 'audio/ogg', 'audio/mp4', 'audio/x-m4a', 'audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/wave', 'audio/x-wav', 'audio/flac'];
 const SPEAKING_BLOCKED_MIMES = ['audio/aac', 'audio/x-aac'];
 
-function onSpeakingSlotFileSelected(input, idx) {
+function showRawAacModal(fileName) {
+  openModal('Định dạng audio không được hỗ trợ', `
+    <div style="line-height:1.7">
+      <p>File <strong>${fileName}</strong> là định dạng <strong>AAC thô (raw AAC ADTS)</strong> — thường xuất hiện khi bạn ghi âm bằng <strong>Voice Memos (Ghi âm)</strong> trên iPhone hoặc một số app Apple khác.</p>
+      <p style="margin-top:8px">Định dạng này chưa được hệ thống hỗ trợ. Bạn cần convert sang <strong>MP3</strong> trước khi nộp bài.</p>
+
+      <hr style="margin:16px 0;border:none;border-top:1px solid var(--gray-200)">
+
+      <p><strong>Cách convert nhanh:</strong></p>
+      <ol style="padding-left:20px;margin-top:8px;display:flex;flex-direction:column;gap:10px">
+        <li>
+          <strong>Trên iPhone:</strong> Mở app <em>Phím tắt (Shortcuts)</em> → tạo shortcut "Convert to MP3" dùng action <em>Encode Media</em> → chọn format MP3.
+        </li>
+        <li>
+          <strong>Trên Mac:</strong> Mở file bằng <em>QuickTime Player</em> → File → Export As → <em>Audio Only</em> (xuất ra .m4a đúng chuẩn, hệ thống chấp nhận).
+        </li>
+        <li>
+          <strong>Online (mọi thiết bị):</strong> Truy cập <a href="https://cloudconvert.com/aac-to-mp3" target="_blank" rel="noopener" style="color:var(--primary)">cloudconvert.com</a> → upload file AAC → convert sang MP3 → tải về rồi upload lại.
+        </li>
+      </ol>
+
+      <p style="margin-top:16px;font-size:13px;color:var(--gray-500)">Sau khi convert xong, bấm nút <strong>Chọn file</strong> và chọn file MP3/M4A vừa tạo.</p>
+    </div>
+  `);
+}
+
+async function onSpeakingSlotFileSelected(input, idx) {
   const file = input.files?.[0];
   if (!file || !_speakingSlots[idx]) return;
   input.value = '';
+
+  // Check magic bytes first (most reliable — catches raw AAC regardless of extension/MIME)
+  try {
+    const header = await file.slice(0, 2).arrayBuffer();
+    const b = new Uint8Array(header);
+    if (b[0] === 0xFF && (b[1] === 0xF1 || b[1] === 0xF9)) {
+      showRawAacModal(file.name);
+      return;
+    }
+  } catch (_) { /* if read fails, fall through to MIME check */ }
+
+  // Fallback: check declared MIME type
   const fileMime = (file.type || '').split(';')[0].toLowerCase();
   if (SPEAKING_BLOCKED_MIMES.includes(fileMime)) {
-    toast('Định dạng AAC không được hỗ trợ. Vui lòng dùng file MP4/M4A, WebM, MP3 hoặc WAV.', 'error');
+    showRawAacModal(file.name);
     return;
   }
   if (fileMime && !SPEAKING_ALLOWED_MIMES.includes(fileMime) && !fileMime.startsWith('audio/')) {
     toast('Định dạng file không được hỗ trợ. Vui lòng dùng MP4/M4A, WebM, MP3 hoặc WAV.', 'error');
     return;
   }
+
   _speakingSlots[idx].name = file.name;
   _speakingSlots[idx].size = file.size;
   _speakingSlots[idx].localUrl = URL.createObjectURL(file);

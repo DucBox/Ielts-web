@@ -4536,6 +4536,11 @@ function contentComposerHtml(label, hint = '') {
           <button type="button" class="fmt-btn" id="fmt-italic" onmousedown="event.preventDefault()" onclick="applyFormat('italic')" title="In nghiêng (Ctrl+I)"><i>I</i></button>
           <button type="button" class="fmt-btn" id="fmt-underline" onmousedown="event.preventDefault()" onclick="applyFormat('underline')" title="Gạch chân (Ctrl+U)"><u>U</u></button>
           <div class="fmt-sep"></div>
+          <button type="button" class="fmt-btn" id="fmt-align-left"    onmousedown="event.preventDefault()" onclick="applyFormat('justifyLeft')"   title="Căn trái"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><line x1="1" y1="3" x2="13" y2="3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="1" y1="6" x2="9"  y2="6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="1" y1="9" x2="13" y2="9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="1" y1="12" x2="8" y2="12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+          <button type="button" class="fmt-btn" id="fmt-align-center"  onmousedown="event.preventDefault()" onclick="applyFormat('justifyCenter')" title="Căn giữa"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><line x1="1" y1="3" x2="13" y2="3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="3" y1="6" x2="11" y2="6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="1" y1="9" x2="13" y2="9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="3" y1="12" x2="11" y2="12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+          <button type="button" class="fmt-btn" id="fmt-align-right"   onmousedown="event.preventDefault()" onclick="applyFormat('justifyRight')"  title="Căn phải"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><line x1="1" y1="3" x2="13" y2="3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="5" y1="6" x2="13" y2="6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="1" y1="9" x2="13" y2="9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="6" y1="12" x2="13" y2="12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+          <button type="button" class="fmt-btn" id="fmt-align-justify" onmousedown="event.preventDefault()" onclick="applyFormat('justifyFull')"   title="Căn đều"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><line x1="1" y1="3" x2="13" y2="3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="1" y1="6" x2="13" y2="6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="1" y1="9" x2="13" y2="9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="1" y1="12" x2="13" y2="12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+          <div class="fmt-sep"></div>
           <select class="fmt-select" id="fmt-fontsize" onfocus="saveComposerRange()" onchange="applyFormatFontSize(this.value)" title="Cỡ chữ">
             <option value="">Cỡ chữ (13)</option>
             <option value="11">11</option>
@@ -4896,6 +4901,10 @@ function updateFormatToolbarState() {
   if (btnBold) btnBold.classList.toggle('is-active', document.queryCommandState('bold'));
   if (btnItalic) btnItalic.classList.toggle('is-active', document.queryCommandState('italic'));
   if (btnUnderline) btnUnderline.classList.toggle('is-active', document.queryCommandState('underline'));
+  ['Left','Center','Right','Full'].forEach(dir => {
+    const btn = document.getElementById(`fmt-align-${dir === 'Full' ? 'justify' : dir.toLowerCase()}`);
+    if (btn) btn.classList.toggle('is-active', document.queryCommandState(`justify${dir}`));
+  });
   const sel = window.getSelection();
   if (sel?.rangeCount) {
     const node = sel.getRangeAt(0).commonAncestorContainer;

@@ -435,6 +435,13 @@ async function transcribeR2Audio(env, r2Key) {
   }
   console.log('[STT]', JSON.stringify({ key: r2Key, r2Mime: obj.httpMetadata?.contentType, usedMime: contentType, file: fileName, r2Bytes: obj.size, abBytes: arrayBuffer.byteLength }));
 
+  if (contentType === 'audio/aac') {
+    throw Object.assign(
+      new Error('Định dạng audio AAC thô không được hỗ trợ. Vui lòng thu âm lại hoặc dùng file MP4/M4A, WebM, MP3 hoặc WAV.'),
+      { statusCode: 400 },
+    );
+  }
+
   const sttForm = new FormData();
   sttForm.append('file', new Blob([arrayBuffer], { type: contentType }), fileName);
   sttForm.append('model', 'gpt-4o-mini-transcribe');

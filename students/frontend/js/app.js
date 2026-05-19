@@ -4104,8 +4104,9 @@ async function startSlotRecording(idx) {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     _audioChunks = [];
-    const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/ogg';
-    _mediaRecorder = new MediaRecorder(stream, { mimeType });
+    const PREFERRED_MIMES = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/ogg', 'audio/mp4'];
+    const mimeType = PREFERRED_MIMES.find(m => MediaRecorder.isTypeSupported(m)) || '';
+    _mediaRecorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
     _mediaRecorder.ondataavailable = e => { if (e.data.size > 0) _audioChunks.push(e.data); };
     _mediaRecorder.onstop = () => {
       stream.getTracks().forEach(t => t.stop());
@@ -4144,7 +4145,7 @@ function _onSlotRecordingDone(idx, blob, mimeType) {
   if (!slot) { _speakingRecordIdx = -1; return; }
   // Strip codec qualifier so R2 stores a clean MIME type (e.g. "audio/webm" not "audio/webm;codecs=opus")
   const cleanMime = String(mimeType || 'audio/webm').split(';')[0].trim();
-  const ext = cleanMime.includes('webm') ? 'webm' : cleanMime.includes('ogg') ? 'ogg' : 'webm';
+  const ext = cleanMime.includes('webm') ? 'webm' : cleanMime.includes('ogg') ? 'ogg' : cleanMime.includes('mp4') ? 'mp4' : 'webm';
   const file = new File([blob], `speaking-part${idx + 1}.${ext}`, { type: cleanMime });
   slot.name = file.name;
   slot.size = blob.size;
@@ -4156,10 +4157,22 @@ function _onSlotRecordingDone(idx, blob, mimeType) {
   _uploadSpeakingSlot(idx, file);
 }
 
+const SPEAKING_ALLOWED_MIMES = ['audio/webm', 'audio/ogg', 'audio/mp4', 'audio/x-m4a', 'audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/wave', 'audio/x-wav', 'audio/flac'];
+const SPEAKING_BLOCKED_MIMES = ['audio/aac', 'audio/x-aac'];
+
 function onSpeakingSlotFileSelected(input, idx) {
   const file = input.files?.[0];
   if (!file || !_speakingSlots[idx]) return;
   input.value = '';
+  const fileMime = (file.type || '').split(';')[0].toLowerCase();
+  if (SPEAKING_BLOCKED_MIMES.includes(fileMime)) {
+    toast('Định dạng AAC không được hỗ trợ. Vui lòng dùng file MP4/M4A, WebM, MP3 hoặc WAV.', 'error');
+    return;
+  }
+  if (fileMime && !SPEAKING_ALLOWED_MIMES.includes(fileMime) && !fileMime.startsWith('audio/')) {
+    toast('Định dạng file không được hỗ trợ. Vui lòng dùng MP4/M4A, WebM, MP3 hoặc WAV.', 'error');
+    return;
+  }
   _speakingSlots[idx].name = file.name;
   _speakingSlots[idx].size = file.size;
   _speakingSlots[idx].localUrl = URL.createObjectURL(file);

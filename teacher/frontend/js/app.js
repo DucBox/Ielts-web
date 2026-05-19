@@ -4824,8 +4824,9 @@ function renderContentComposer() {
   host.onkeydown = (e) => {
     if (e.key === 'Tab') {
       e.preventDefault();
-      // execCommand records in undo stack so Ctrl+Z works
-      document.execCommand('insertText', false, '    ');
+      // insertHTML with &nbsp; guarantees non-breaking spaces regardless of browser normalization.
+      // NBSP does not stretch under text-align:justify, so tab indents stay visually consistent.
+      document.execCommand('insertHTML', false, '&nbsp;&nbsp;&nbsp;&nbsp;');
       syncContentBlocksFromEditor();
       return;
     }

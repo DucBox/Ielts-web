@@ -3425,6 +3425,8 @@ let _currentSkillFilter = '';
 let _allQuestions = [];
 let _questionSearch = '';
 let _questionTagFilter = '';
+let _questionSortCol = '';
+let _questionSortDir = 'asc';
 let _allClasses = [];
 let _classSearch = '';
 let _classSort = 'newest'; // 'newest' | 'name' | 'students'
@@ -3443,6 +3445,8 @@ let _classStudentsSortCol = '';  // class detail: student list
 let _classStudentsSortDir = 'asc';
 
 async function showQuestions() {
+  _questionSortCol = '';
+  _questionSortDir = 'asc';
   setLoading('Đang tải kho đề...');
   try {
     _allQuestions = await api.get('/questions');
@@ -3785,11 +3789,31 @@ function renderQuestions() {
     );
   }
 
+  if (_questionSortCol) {
+    filtered = [...filtered].sort((a, b) => {
+      let va, vb;
+      if (_questionSortCol === 'skill')       { va = a.skill || ''; vb = b.skill || ''; }
+      else if (_questionSortCol === 'title')  { va = a.title.toLowerCase(); vb = b.title.toLowerCase(); }
+      else if (_questionSortCol === 'created_at') { va = a.created_at || ''; vb = b.created_at || ''; }
+      else return 0;
+      if (va < vb) return _questionSortDir === 'asc' ? -1 : 1;
+      if (va > vb) return _questionSortDir === 'asc' ? 1 : -1;
+      return 0;
+    });
+  }
+
   // If the questions page is already rendered, only update tbody + skill tabs
   // to avoid destroying the search input and losing focus.
   const existingTbody = $('#app')?.querySelector('table tbody');
   if (existingTbody) {
     existingTbody.innerHTML = _buildQuestionTableRows(filtered);
+    ['skill','title','created_at'].forEach(col => {
+      const th = document.querySelector(`th[data-q-col="${col}"]`);
+      if (!th) return;
+      const icon = th.querySelector('.sort-icon');
+      if (icon) icon.remove();
+      th.insertAdjacentHTML('beforeend', makeSortIcon(col, _questionSortCol, _questionSortDir));
+    });
     document.querySelectorAll('.skill-tab').forEach(btn => {
       btn.classList.toggle('active', btn.textContent.trim().includes(
         _currentSkillFilter
@@ -3848,11 +3872,11 @@ function renderQuestions() {
       <table>
         <thead>
           <tr>
-            <th>Kỹ năng</th>
-            <th>Tiêu đề <span style="font-size:11px;font-weight:400;color:var(--gray-400)">(click để xem nhanh)</span></th>
+            <th class="sortable" data-q-col="skill" onclick="sortQuestions('skill')">Kỹ năng ${makeSortIcon('skill', _questionSortCol, _questionSortDir)}</th>
+            <th class="sortable" data-q-col="title" onclick="sortQuestions('title')">Tiêu đề <span style="font-size:11px;font-weight:400;color:var(--gray-400)">(click để xem nhanh)</span> ${makeSortIcon('title', _questionSortCol, _questionSortDir)}</th>
             <th>Tags</th>
             <th>Chi tiết</th>
-            <th>Ngày tạo</th>
+            <th class="sortable" data-q-col="created_at" onclick="sortQuestions('created_at')">Ngày tạo ${makeSortIcon('created_at', _questionSortCol, _questionSortDir)}</th>
             <th>Thao tác</th>
           </tr>
         </thead>
@@ -3876,6 +3900,17 @@ function setQuestionTagFilter(tag) {
   renderQuestions();
 }
 window.setQuestionTagFilter = setQuestionTagFilter;
+
+function sortQuestions(col) {
+  if (_questionSortCol === col) {
+    _questionSortDir = _questionSortDir === 'asc' ? 'desc' : 'asc';
+  } else {
+    _questionSortCol = col;
+    _questionSortDir = 'asc';
+  }
+  renderQuestions();
+}
+window.sortQuestions = sortQuestions;
 
 async function previewQuestion(id) {
   // Find from cache for instant title display

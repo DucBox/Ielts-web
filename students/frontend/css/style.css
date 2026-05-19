@@ -5017,3 +5017,22 @@ select.pi-input { height: 42px; cursor: pointer; }
 }
 .shared-countdown.timer-urgent { color: #dc2626; animation: pulse-timer .8s ease-in-out infinite; }
 @keyframes pulse-timer { 0%,100% { opacity: 1; } 50% { opacity: .55; } }
+
+/* Sortable table headers */
+th.sortable {
+  cursor: pointer;
+  user-select: none;
+}
+th.sortable:hover { color: var(--primary, #0f766e); }
+.sort-icon { font-size: 10px; color: #9ca3af; margin-left: 2px; }
+.sort-icon.active { color: var(--primary, #0f766e); }
+
+.mvc-sort-pills { display: flex; gap: 4px; flex-wrap: wrap; }
+.mvc-sort-pill {
+  padding: 3px 10px; border-radius: 999px;
+  border: 1px solid var(--border, #e5e7eb); background: none;
+  font-size: 12px; font-weight: 500; color: var(--gray-600, #4b5563);
+  cursor: pointer; transition: all .15s;
+}
+.mvc-sort-pill:hover { border-color: var(--primary, #0f766e); color: var(--primary, #0f766e); }
+.mvc-sort-pill.active { background: var(--primary, #0f766e); border-color: var(--primary, #0f766e); color: #fff; }

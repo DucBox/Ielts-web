@@ -154,6 +154,12 @@ function renderAiAdviceCard(icon, title, advice) {
   </div>`;
 }
 
+function makeSortIcon(col, currentCol, currentDir) {
+  if (currentCol !== col) return '<span class="sort-icon">↕</span>';
+  return `<span class="sort-icon active">${currentDir === 'asc' ? '↑' : '↓'}</span>`;
+}
+window.makeSortIcon = makeSortIcon;
+
 function escapeHtml(str) {
   return (str || '')
     .replace(/&/g, '&amp;')
@@ -3340,9 +3346,17 @@ async function toggleSaveWordBtn(btn) {
 window.toggleSaveWordBtn = toggleSaveWordBtn;
 
 let _myVocabSearch = '';
+let _myVocabSort = '';
+let _gradedResultSub = null;
+let _gradedResultSortCol = '';
+let _gradedResultSortDir = 'asc';
+let _practiceResultData = null; // { result, questionsToShow, answers }
+let _practiceResultSortCol = '';
+let _practiceResultSortDir = 'asc';
 
 async function showMyVocab() {
   _myVocabSearch = '';
+  _myVocabSort = '';
   setLoading('Đang tải từ vựng...');
   await loadMyVocab();
   renderMyVocabList();
@@ -3351,9 +3365,16 @@ async function showMyVocab() {
 function renderMyVocabList() {
   const all  = _myVocabCache || [];
   const q    = _myVocabSearch.toLowerCase();
-  const list = q ? all.filter(v =>
+  let list = q ? all.filter(v =>
     v.word.toLowerCase().includes(q) || v.definition.toLowerCase().includes(q)
   ) : all;
+  if (_myVocabSort === 'az') {
+    list = [...list].sort((a, b) => a.word.toLowerCase().localeCompare(b.word.toLowerCase()));
+  } else if (_myVocabSort === 'za') {
+    list = [...list].sort((a, b) => b.word.toLowerCase().localeCompare(a.word.toLowerCase()));
+  } else if (_myVocabSort === 'newest') {
+    list = [...list].sort((a, b) => (b.savedAt || '') > (a.savedAt || '') ? 1 : -1);
+  }
 
   const cards = list.length === 0
     ? `<div class="empty-state-v2">
@@ -3388,6 +3409,11 @@ function renderMyVocabList() {
           <input class="form-input search-input" placeholder="🔍 Tìm từ hoặc nghĩa..."
             value="${escapeHtml(_myVocabSearch)}"
             oninput="_myVocabSearch=this.value; renderMyVocabList()" />
+          <div class="mvc-sort-pills">
+            ${[['', 'Mặc định'], ['az', 'A→Z'], ['za', 'Z→A'], ['newest', 'Mới nhất']].map(([v, l]) =>
+              `<button class="mvc-sort-pill${_myVocabSort === v ? ' active' : ''}" onclick="_myVocabSort='${v}';renderMyVocabList()">${l}</button>`
+            ).join('')}
+          </div>
           <span class="mvc-count">${list.length} / ${all.length}</span>
         </div>` : ''}
       ${cards}
@@ -4425,16 +4451,30 @@ function renderResult(sub) {
 }
 
 function renderGradedResult(sub) {
+  _gradedResultSub = sub;
   const questionsData  = sub.questions_data || [];
   const studentAnswers = sub.student_answers || [];
 
   let correctCount = 0;
   const hasActions = questionsData.some(q => q.explanation || q.location);
-  const rows = questionsData.map(q => {
-    const sa      = studentAnswers.find(a => a.q_no === q.q_no);
-    const given   = (sa?.answer || '').trim();
+  const qWithStatus = questionsData.map(q => {
+    const sa = studentAnswers.find(a => a.q_no === q.q_no);
+    const given = (sa?.answer || '').trim();
     const correct = q.answers.some(a => a.toLowerCase().trim() === given.toLowerCase());
     if (correct) correctCount++;
+    return { ...q, _given: given, _correct: correct };
+  });
+  if (_gradedResultSortCol === 'result') {
+    qWithStatus.sort((a, b) => {
+      const va = a._correct ? 1 : 0, vb = b._correct ? 1 : 0;
+      return _gradedResultSortDir === 'asc' ? va - vb : vb - va;
+    });
+  } else if (_gradedResultSortCol === 'q_no') {
+    qWithStatus.sort((a, b) => _gradedResultSortDir === 'asc' ? a.q_no - b.q_no : b.q_no - a.q_no);
+  }
+  const rows = qWithStatus.map(q => {
+    const given = q._given;
+    const correct = q._correct;
     const actionBtns = (q.explanation || q.location) ? `
       <td class="result-actions">
         ${q.explanation ? `<button class="btn-result-action btn-result-explain" onclick="toggleExplanation('exp-q${q.q_no}')">Explain</button>` : ''}
@@ -4541,7 +4581,13 @@ function renderGradedResult(sub) {
           <div class="section-label">Chi tiết đáp án</div>
           <div class="result-answers">
             <table class="result-table">
-              <thead><tr><th>Câu</th><th>Bạn trả lời</th><th>Đáp án đúng</th><th>Kết quả</th>${hasActions ? '<th></th>' : ''}</tr></thead>
+              <thead><tr>
+                <th class="sortable" onclick="sortGradedResult('q_no')">Câu ${makeSortIcon('q_no', _gradedResultSortCol, _gradedResultSortDir)}</th>
+                <th>Bạn trả lời</th>
+                <th>Đáp án đúng</th>
+                <th class="sortable" onclick="sortGradedResult('result')">Kết quả ${makeSortIcon('result', _gradedResultSortCol, _gradedResultSortDir)}</th>
+                ${hasActions ? '<th></th>' : ''}
+              </tr></thead>
               <tbody>${rows || `<tr><td colspan="${colSpanEmpty}" style="text-align:center;padding:20px;color:var(--gray-400)">Không có dữ liệu</td></tr>`}</tbody>
             </table>
           </div>
@@ -4555,6 +4601,17 @@ function toggleExplanation(id) {
   const row = document.getElementById(id);
   if (row) row.classList.toggle('hidden');
 }
+
+function sortGradedResult(col) {
+  if (_gradedResultSortCol === col) {
+    _gradedResultSortDir = _gradedResultSortDir === 'asc' ? 'desc' : 'asc';
+  } else {
+    _gradedResultSortCol = col;
+    _gradedResultSortDir = 'asc';
+  }
+  if (_gradedResultSub) renderGradedResult(_gradedResultSub);
+}
+window.sortGradedResult = sortGradedResult;
 
 function toggleListeningScript(forceOpen) {
   const body = document.getElementById('listening-script-body');
@@ -5635,25 +5692,39 @@ async function submitPractice(assignmentId, btn) {
 }
 
 function renderPracticeResult(result, questionsToShow, answers) {
+  _practiceResultData = { result, questionsToShow, answers };
   const qData = result.questions_data || [];
-  const rows = questionsToShow.map(q => {
-    const fullQ  = qData.find(x => x.q_no === q.q_no) || q;
-    const sa     = answers.find(a => a.q_no === q.q_no);
-    const given  = (sa?.answer || '').trim();
-    const correct = fullQ.answers?.some(a => a.toLowerCase().trim() === given.toLowerCase());
-    const expRow  = fullQ.explanation ? `
+  const qWithStatus = questionsToShow.map(q => {
+    const fullQ = qData.find(x => x.q_no === q.q_no) || q;
+    const sa = answers.find(a => a.q_no === q.q_no);
+    const given = (sa?.answer || '').trim();
+    const correct = fullQ.answers?.some(a => a.toLowerCase().trim() === given.toLowerCase()) || false;
+    return { ...fullQ, _given: given, _correct: correct };
+  });
+  if (_practiceResultSortCol === 'result') {
+    qWithStatus.sort((a, b) => {
+      const va = a._correct ? 1 : 0, vb = b._correct ? 1 : 0;
+      return _practiceResultSortDir === 'asc' ? va - vb : vb - va;
+    });
+  } else if (_practiceResultSortCol === 'q_no') {
+    qWithStatus.sort((a, b) => _practiceResultSortDir === 'asc' ? a.q_no - b.q_no : b.q_no - a.q_no);
+  }
+  const rows = qWithStatus.map(q => {
+    const given = q._given;
+    const correct = q._correct;
+    const expRow  = q.explanation ? `
       <tr class="explanation-row hidden" id="pexp-q${q.q_no}">
         <td colspan="5">
-          <div class="explanation-content"><span class="explanation-label">💡 Giải thích:</span>${escapeHtml(fullQ.explanation)}</div>
+          <div class="explanation-content"><span class="explanation-label">💡 Giải thích:</span>${escapeHtml(q.explanation)}</div>
         </td>
       </tr>` : '';
     return `
       <tr>
         <td style="font-weight:700;color:var(--gray-400)">Q${q.q_no}</td>
         <td>${escapeHtml(given) || '<em style="color:var(--gray-400)">Bỏ trống</em>'}</td>
-        <td>${escapeHtml((fullQ.answers || []).join(' / '))}</td>
+        <td>${escapeHtml((q.answers || []).join(' / '))}</td>
         <td class="${correct ? 'result-correct' : 'result-wrong'}">${correct ? '✓' : '✗'}</td>
-        <td class="result-actions">${fullQ.explanation ? `<button class="btn-result-action btn-result-explain" onclick="togglePracticeExp('pexp-q${q.q_no}')">Explain</button>` : ''}${fullQ.location ? `<button class="btn-result-action btn-result-locate" data-locate="${escapeHtml(fullQ.location)}" data-locate-meta="${escapeAttrJson(fullQ.location_meta)}" onclick="locatePracticeText(this.dataset.locate, this.dataset.locateMeta)">Locate</button>` : ''}</td>
+        <td class="result-actions">${q.explanation ? `<button class="btn-result-action btn-result-explain" onclick="togglePracticeExp('pexp-q${q.q_no}')">Explain</button>` : ''}${q.location ? `<button class="btn-result-action btn-result-locate" data-locate="${escapeHtml(q.location)}" data-locate-meta="${escapeAttrJson(q.location_meta)}" onclick="locatePracticeText(this.dataset.locate, this.dataset.locateMeta)">Locate</button>` : ''}</td>
       </tr>${expRow}`;
   }).join('');
 
@@ -5689,7 +5760,12 @@ function renderPracticeResult(result, questionsToShow, answers) {
           <div class="section-label">Chi tiết đáp án</div>
           <div class="result-answers">
             <table class="result-table">
-              <thead><tr><th>Câu</th><th>Bạn trả lời</th><th>Đáp án đúng</th><th>Kết quả</th><th></th></tr></thead>
+              <thead><tr>
+                <th class="sortable" onclick="sortPracticeResult('q_no')">Câu ${makeSortIcon('q_no', _practiceResultSortCol, _practiceResultSortDir)}</th>
+                <th>Bạn trả lời</th><th>Đáp án đúng</th>
+                <th class="sortable" onclick="sortPracticeResult('result')">Kết quả ${makeSortIcon('result', _practiceResultSortCol, _practiceResultSortDir)}</th>
+                <th></th>
+              </tr></thead>
               <tbody>${rows}</tbody>
             </table>
           </div>
@@ -5702,6 +5778,18 @@ function togglePracticeExp(id) {
   const row = document.getElementById(id);
   if (row) row.classList.toggle('hidden');
 }
+
+function sortPracticeResult(col) {
+  if (_practiceResultSortCol === col) {
+    _practiceResultSortDir = _practiceResultSortDir === 'asc' ? 'desc' : 'asc';
+  } else {
+    _practiceResultSortCol = col;
+    _practiceResultSortDir = 'asc';
+  }
+  const d = _practiceResultData;
+  if (d) renderPracticeResult(d.result, d.questionsToShow, d.answers);
+}
+window.sortPracticeResult = sortPracticeResult;
 
 function locatePracticeText(searchText, metaRaw = '') {
   if (!searchText) return;

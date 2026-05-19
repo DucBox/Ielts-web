@@ -914,10 +914,17 @@ window.addEventListener('hashchange', router);
 // PAGE: INBOX (B4.8)
 // ═══════════════════════════════════════════════════════════════════════════
 
+let _inboxItems = [];
+let _inboxSortCol = 'submitted_at';
+let _inboxSortDir = 'desc';
+
 async function showInbox() {
+  _inboxSortCol = 'submitted_at';
+  _inboxSortDir = 'desc';
   setLoading('Đang tải hộp thư...');
   try {
     const items = await api.get('/inbox');
+    _inboxItems = items;
     renderInbox(items);
     // Update badge in sidebar
     updateInboxBadge(items.length);
@@ -927,24 +934,62 @@ async function showInbox() {
   }
 }
 
-function renderInbox(items) {
-  const rows = items.length === 0
-    ? `<div class="empty-state-v2">
+function sortedInboxItems() {
+  if (!_inboxSortCol) return _inboxItems;
+  return [..._inboxItems].sort((a, b) => {
+    let va, vb;
+    if (_inboxSortCol === 'student_name')    { va = a.student_name.toLowerCase(); vb = b.student_name.toLowerCase(); }
+    else if (_inboxSortCol === 'class_name') { va = a.class_name.toLowerCase();   vb = b.class_name.toLowerCase(); }
+    else if (_inboxSortCol === 'skill')      { va = a.skill || '';                vb = b.skill || ''; }
+    else if (_inboxSortCol === 'submitted_at') { va = a.submitted_at || '';       vb = b.submitted_at || ''; }
+    else return 0;
+    if (va < vb) return _inboxSortDir === 'asc' ? -1 : 1;
+    if (va > vb) return _inboxSortDir === 'asc' ? 1 : -1;
+    return 0;
+  });
+}
+
+function sortInbox(col) {
+  if (_inboxSortCol === col) {
+    _inboxSortDir = _inboxSortDir === 'asc' ? 'desc' : 'asc';
+  } else {
+    _inboxSortCol = col;
+    _inboxSortDir = col === 'student_name' || col === 'class_name' ? 'asc' : 'desc';
+  }
+  const list = document.getElementById('inbox-list-body');
+  if (list) list.innerHTML = buildInboxRows(sortedInboxItems());
+  document.querySelectorAll('th[data-inbox-col]').forEach(th => {
+    const icon = th.querySelector('.sort-icon');
+    if (icon) icon.remove();
+    th.insertAdjacentHTML('beforeend', makeSortIcon(th.dataset.inboxCol, _inboxSortCol, _inboxSortDir));
+  });
+}
+window.sortInbox = sortInbox;
+
+function buildInboxRows(items) {
+  return items.length === 0
+    ? `<tr><td colspan="5"><div class="empty-state-v2">
         <span class="empty-illu">✅</span>
         <div class="empty-title">Không có bài nào cần chấm!</div>
         <div class="empty-desc">Tất cả bài Writing và Speaking đã được chấm xong.</div>
-      </div>`
+      </div></td></tr>`
     : items.map(it => `
-      <div class="inbox-row">
-        <div class="inbox-skill">${skillBadge(it.skill)}</div>
-        <div class="inbox-info">
-          <div class="inbox-student"><strong>${escapeHtml(it.student_name)}</strong></div>
-          <div class="inbox-meta">${escapeHtml(it.assignment_title)} · <span class="inbox-class">${escapeHtml(it.class_name)}</span></div>
-          <div class="inbox-time">${formatDateTime(it.submitted_at)}</div>
-        </div>
-        <button class="btn btn-sm btn-primary inbox-grade-btn"
-          onclick="navigate('/grading/${it.submission_id}')">✏️ Chấm bài</button>
-      </div>`).join('');
+      <tr>
+        <td>${skillBadge(it.skill)}</td>
+        <td><strong>${escapeHtml(it.student_name)}</strong></td>
+        <td>${escapeHtml(it.assignment_title)}</td>
+        <td><span class="inbox-class">${escapeHtml(it.class_name)}</span></td>
+        <td style="font-size:12px;color:var(--gray-400)">${formatDateTime(it.submitted_at)}</td>
+        <td>
+          <button class="btn btn-sm btn-primary inbox-grade-btn"
+            onclick="navigate('/grading/${it.submission_id}')">✏️ Chấm bài</button>
+        </td>
+      </tr>`).join('');
+}
+
+function renderInbox(items) {
+  _inboxItems = items;
+  const isi = col => makeSortIcon(col, _inboxSortCol, _inboxSortDir);
 
   $('#app').innerHTML = `
     <div class="page-header">
@@ -953,7 +998,20 @@ function renderInbox(items) {
         <div class="page-subtitle">${items.length} bài Writing/Speaking chưa chấm điểm</div>
       </div>
     </div>
-    <div class="inbox-list">${rows}</div>`;
+    ${items.length > 0 ? `
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th class="sortable" data-inbox-col="skill" onclick="sortInbox('skill')">Kỹ năng ${isi('skill')}</th>
+          <th class="sortable" data-inbox-col="student_name" onclick="sortInbox('student_name')">Học sinh ${isi('student_name')}</th>
+          <th>Bài tập</th>
+          <th class="sortable" data-inbox-col="class_name" onclick="sortInbox('class_name')">Lớp ${isi('class_name')}</th>
+          <th class="sortable" data-inbox-col="submitted_at" onclick="sortInbox('submitted_at')">Thời gian nộp ${isi('submitted_at')}</th>
+          <th></th>
+        </tr></thead>
+        <tbody id="inbox-list-body">${buildInboxRows(sortedInboxItems())}</tbody>
+      </table>
+    </div>` : buildInboxRows([])}`;
 }
 
 function updateInboxBadge(count) {
@@ -1144,6 +1202,12 @@ async function showClassDetail({ id }) {
     _statsSkillFilter = '';
     _statsStatusFilter = '';
     _statsModeFilter = '';
+    _assignTableSortCol = '';
+    _assignTableSortDir = 'desc';
+    _assignListSortCol = '';
+    _assignListSortDir = 'desc';
+    _classStudentsSortCol = '';
+    _classStudentsSortDir = 'asc';
     destroyStatsCharts();
     renderClassDetail(cls, students);
   } catch (e) {
@@ -1173,11 +1237,21 @@ let _statsSortCol = '';
 let _statsSortDir = 'desc';
 let _statsAllScoredSubs = []; // flat list of all scored submissions with student_name
 let _statsTrendSkill = ''; // skill filter for the trend chart only
+let _closedAssignsExpanded = false;
+let _closedAssignsSearch = '';
+let _statsSubSortCol = '';
+let _statsSubSortDir = 'asc';
 
 function destroyStatsCharts() {
   _statsCharts.forEach(c => { try { c.destroy(); } catch {} });
   _statsCharts = [];
 }
+
+function makeSortIcon(col, currentCol, currentDir) {
+  if (currentCol !== col) return '<span class="sort-icon">↕</span>';
+  return `<span class="sort-icon active">${currentDir === 'asc' ? '↑' : '↓'}</span>`;
+}
+window.makeSortIcon = makeSortIcon;
 
 function refreshStatsTab() {
   const container = document.getElementById('tab-stats');
@@ -1200,6 +1274,10 @@ async function loadStatsTab(classId) {
     _statsModeFilter = '';
     _statsSortCol = '';
     _statsSortDir = 'desc';
+    _closedAssignsExpanded = false;
+    _closedAssignsSearch = '';
+    _statsSubSortCol = '';
+    _statsSubSortDir = 'asc';
     // Default to first skill that has assignments
     const skillOrder = ['reading','listening','writing','speaking'];
     _statsTrendSkill = skillOrder.find(sk =>
@@ -1220,6 +1298,19 @@ function applyStatsFilter() {
 }
 window.applyStatsFilter = applyStatsFilter;
 
+function toggleClosedAssignsExpanded() {
+  _closedAssignsExpanded = !_closedAssignsExpanded;
+  applyStatsFilter();
+}
+window.toggleClosedAssignsExpanded = toggleClosedAssignsExpanded;
+
+function setClosedAssignsSearch(val) {
+  _closedAssignsSearch = val.toLowerCase().trim();
+  _closedAssignsExpanded = true;
+  applyStatsFilter();
+}
+window.setClosedAssignsSearch = setClosedAssignsSearch;
+
 function sortStudentTable(col) {
   if (_statsSortCol === col) {
     _statsSortDir = _statsSortDir === 'asc' ? 'desc' : 'asc';
@@ -1230,6 +1321,17 @@ function sortStudentTable(col) {
   applyStatsFilter();
 }
 window.sortStudentTable = sortStudentTable;
+
+function sortAssignTable(col) {
+  if (_assignTableSortCol === col) {
+    _assignTableSortDir = _assignTableSortDir === 'asc' ? 'desc' : 'asc';
+  } else {
+    _assignTableSortCol = col;
+    _assignTableSortDir = col === 'title' || col === 'skill' ? 'asc' : 'desc';
+  }
+  applyStatsFilter();
+}
+window.sortAssignTable = sortAssignTable;
 
 function toggleTrendStudent(studentId) {
   const btn = document.querySelector(`.stats-student-toggle[data-sid="${studentId}"]`);
@@ -1516,10 +1618,29 @@ function renderStatsTab(container, data) {
 
   // Chart: on-time stacked bar (closed assignments only)
   const closedAssigns = filteredAssignments.filter(a => !a.is_active && a.deadline);
+  const closedSearched = _closedAssignsSearch
+    ? closedAssigns.filter(a => a.title.toLowerCase().includes(_closedAssignsSearch))
+    : closedAssigns;
+  const CLOSED_PREVIEW = 3;
+  const displayedClosedAssigns = _closedAssignsExpanded ? closedSearched : closedSearched.slice(0, CLOSED_PREVIEW);
+  const closedHiddenCount = closedSearched.length - displayedClosedAssigns.length;
   const onTimeChartHtml = closedAssigns.length === 0 ? '' : `
     <div class="stats-section-card">
       <div class="stats-section-title">Đúng hạn / muộn / chưa nộp (bài đã đóng)</div>
-      <canvas id="chart-ontime" height="${Math.max(80, closedAssigns.length * 36)}"></canvas>
+      <div class="stats-closed-controls">
+        <input class="stats-closed-search" type="text" placeholder="🔍 Tìm bài tập..."
+          value="${escapeHtml(_closedAssignsSearch)}"
+          oninput="setClosedAssignsSearch(this.value)" />
+      </div>
+      ${closedSearched.length === 0
+        ? '<p style="color:var(--gray-400);font-size:13px;padding:8px 0 4px">Không tìm thấy bài tập phù hợp</p>'
+        : `<canvas id="chart-ontime" height="${Math.max(80, displayedClosedAssigns.length * 38)}"></canvas>`}
+      ${closedSearched.length > CLOSED_PREVIEW ? `
+        <button class="stats-closed-toggle-btn" onclick="toggleClosedAssignsExpanded()">
+          ${_closedAssignsExpanded
+            ? '▲ Thu gọn'
+            : `▼ Xem thêm ${closedHiddenCount} bài tập`}
+        </button>` : ''}
     </div>`;
 
   // Chart: student score trend (multi-line, per-student + skill filters)
@@ -1646,21 +1767,16 @@ function renderStatsTab(container, data) {
                 <tr id="stats-row-${st.id}" style="display:none">
                   <td colspan="${colCount}" style="padding:0">
                     <div class="stats-expand-body">
-                      ${st.submissions.length === 0
-                        ? '<p style="color:var(--gray-400);padding:12px">Chưa nộp bài nào</p>'
-                        : `<table class="stats-sub-table">
-                            <thead><tr><th>Bài tập</th><th>Kỹ năng</th><th>Điểm</th><th>Ngày nộp</th><th>Đúng hạn</th></tr></thead>
-                            <tbody>${st.submissions
-                              .filter(s => filteredAssignmentIds.has(s.assignment_id))
-                              .map(s => `<tr>
-                                <td>${escapeHtml(s.assignment_title)}</td>
-                                <td>${skillBadge(s.skill)}</td>
-                                <td><span class="stats-score-badge">${s.overall_score !== null ? Number(s.overall_score).toFixed(1) : '—'}</span></td>
-                                <td style="color:var(--gray-400);font-size:12px">${formatDate(s.submitted_at)}</td>
-                                <td>${s.on_time === null ? '—' : s.on_time ? '<span class="stats-ontime-pill good">Đúng hạn</span>' : '<span class="stats-ontime-pill bad">Muộn</span>'}</td>
-                              </tr>`).join('')}
-                            </tbody>
-                          </table>`}
+                      <table class="stats-sub-table">
+                            <thead id="stats-sub-thead-${st.id}"><tr>
+                              <th class="sortable" onclick="sortStatsSubTable('${st.id}','title')">Bài tập ${makeSortIcon('title',_statsSubSortCol,_statsSubSortDir)}</th>
+                              <th class="sortable" onclick="sortStatsSubTable('${st.id}','skill')">Kỹ năng ${makeSortIcon('skill',_statsSubSortCol,_statsSubSortDir)}</th>
+                              <th class="sortable" onclick="sortStatsSubTable('${st.id}','score')">Điểm ${makeSortIcon('score',_statsSubSortCol,_statsSubSortDir)}</th>
+                              <th class="sortable" onclick="sortStatsSubTable('${st.id}','submitted_at')">Ngày nộp ${makeSortIcon('submitted_at',_statsSubSortCol,_statsSubSortDir)}</th>
+                              <th class="sortable" onclick="sortStatsSubTable('${st.id}','on_time')">Đúng hạn ${makeSortIcon('on_time',_statsSubSortCol,_statsSubSortDir)}</th>
+                            </tr></thead>
+                            <tbody id="stats-sub-tbody-${st.id}">${buildStatsSubRows(st.submissions.filter(s => filteredAssignmentIds.has(s.assignment_id)))}</tbody>
+                          </table>
                     </div>
                   </td>
                 </tr>`;
@@ -1670,7 +1786,29 @@ function renderStatsTab(container, data) {
         </div>`}
     </div>`;
 
-  // Per-assignment table
+  // Per-assignment table — sortable
+  const atsi = col => makeSortIcon(col, _assignTableSortCol, _assignTableSortDir);
+  const sortedAssignments = [...filteredAssignments];
+  if (_assignTableSortCol) {
+    sortedAssignments.sort((a, b) => {
+      let va, vb;
+      switch (_assignTableSortCol) {
+        case 'title':         va = a.title.toLowerCase(); vb = b.title.toLowerCase(); break;
+        case 'skill':         va = a.skill || ''; vb = b.skill || ''; break;
+        case 'mode':          va = a.mode || ''; vb = b.mode || ''; break;
+        case 'submitted_rate': va = a.total ? a.submitted / a.total : 0; vb = b.total ? b.submitted / b.total : 0; break;
+        case 'avg_score':     va = a.avg_score ?? -1; vb = b.avg_score ?? -1; break;
+        case 'on_time':       va = a.on_time ?? -1; vb = b.on_time ?? -1; break;
+        case 'late':          va = a.late ?? -1; vb = b.late ?? -1; break;
+        case 'missing':       va = a.missing ?? -1; vb = b.missing ?? -1; break;
+        case 'is_active':     va = a.is_active ? 1 : 0; vb = b.is_active ? 1 : 0; break;
+        default: return 0;
+      }
+      if (va < vb) return _assignTableSortDir === 'asc' ? -1 : 1;
+      if (va > vb) return _assignTableSortDir === 'asc' ? 1 : -1;
+      return 0;
+    });
+  }
   const assignTableHtml = `
     <div class="stats-section-card">
       <div class="stats-section-title">Chi tiết từng bài tập</div>
@@ -1679,11 +1817,18 @@ function renderStatsTab(container, data) {
         : `<div class="table-wrap">
           <table class="stats-table">
             <thead><tr>
-              <th>Kỹ năng</th><th>Tên bài tập</th><th>Chế độ</th><th>Tỷ lệ nộp</th><th>Điểm TB</th>
-              <th>Đúng hạn</th><th>Muộn</th><th>Chưa nộp</th><th>Trạng thái</th>
+              <th class="sortable" onclick="sortAssignTable('skill')">Kỹ năng ${atsi('skill')}</th>
+              <th class="sortable" onclick="sortAssignTable('title')">Tên bài tập ${atsi('title')}</th>
+              <th class="sortable" onclick="sortAssignTable('mode')">Chế độ ${atsi('mode')}</th>
+              <th class="sortable" onclick="sortAssignTable('submitted_rate')">Tỷ lệ nộp ${atsi('submitted_rate')}</th>
+              <th class="sortable" onclick="sortAssignTable('avg_score')">Điểm TB ${atsi('avg_score')}</th>
+              <th class="sortable" onclick="sortAssignTable('on_time')">Đúng hạn ${atsi('on_time')}</th>
+              <th class="sortable" onclick="sortAssignTable('late')">Muộn ${atsi('late')}</th>
+              <th class="sortable" onclick="sortAssignTable('missing')">Chưa nộp ${atsi('missing')}</th>
+              <th class="sortable" onclick="sortAssignTable('is_active')">Trạng thái ${atsi('is_active')}</th>
             </tr></thead>
             <tbody>
-              ${filteredAssignments.map(a => {
+              ${sortedAssignments.map(a => {
                 const submittedPct = pct(a.submitted, a.total);
                 return `<tr>
                   <td>${skillBadge(a.skill)}</td>
@@ -1885,15 +2030,15 @@ function renderStatsTab(container, data) {
 
     // Chart 5: On-time stacked horizontal bar
     const ontimeCanvas = document.getElementById('chart-ontime');
-    if (ontimeCanvas && closedAssigns.length > 0) {
+    if (ontimeCanvas && displayedClosedAssigns.length > 0) {
       const chart = new Chart(ontimeCanvas.getContext('2d'), {
         type: 'bar',
         data: {
-          labels: closedAssigns.map(a => a.title.length > 22 ? a.title.slice(0,20) + '…' : a.title),
+          labels: displayedClosedAssigns.map(a => a.title.length > 22 ? a.title.slice(0,20) + '…' : a.title),
           datasets: [
-            { label: 'Đúng hạn', data: closedAssigns.map(a => a.on_time), backgroundColor: '#86efac', borderRadius: 4 },
-            { label: 'Nộp muộn', data: closedAssigns.map(a => a.late), backgroundColor: '#fcd34d', borderRadius: 4 },
-            { label: 'Chưa nộp', data: closedAssigns.map(a => a.missing || 0), backgroundColor: '#fca5a5', borderRadius: 4 },
+            { label: 'Đúng hạn', data: displayedClosedAssigns.map(a => a.on_time), backgroundColor: '#86efac', borderRadius: 4 },
+            { label: 'Nộp muộn', data: displayedClosedAssigns.map(a => a.late), backgroundColor: '#fcd34d', borderRadius: 4 },
+            { label: 'Chưa nộp', data: displayedClosedAssigns.map(a => a.missing || 0), backgroundColor: '#fca5a5', borderRadius: 4 },
           ],
         },
         options: {
@@ -1916,6 +2061,60 @@ function toggleStudentStatsRow(studentId) {
   row.style.display = row.style.display === 'none' ? '' : 'none';
 }
 window.toggleStudentStatsRow = toggleStudentStatsRow;
+
+function buildStatsSubRows(subs) {
+  if (subs.length === 0) return `<tr><td colspan="5" style="color:var(--gray-400);padding:12px">Chưa nộp bài nào</td></tr>`;
+  const sorted = _statsSubSortCol ? [...subs].sort((a, b) => {
+    let va, vb;
+    if (_statsSubSortCol === 'title')       { va = (a.assignment_title||'').toLowerCase(); vb = (b.assignment_title||'').toLowerCase(); }
+    else if (_statsSubSortCol === 'skill')  { va = a.skill||''; vb = b.skill||''; }
+    else if (_statsSubSortCol === 'score')  { va = a.overall_score ?? -1; vb = b.overall_score ?? -1; }
+    else if (_statsSubSortCol === 'submitted_at') { va = a.submitted_at||''; vb = b.submitted_at||''; }
+    else if (_statsSubSortCol === 'on_time') { va = a.on_time === null ? -1 : a.on_time ? 1 : 0; vb = b.on_time === null ? -1 : b.on_time ? 1 : 0; }
+    else return 0;
+    if (va < vb) return _statsSubSortDir === 'asc' ? -1 : 1;
+    if (va > vb) return _statsSubSortDir === 'asc' ? 1 : -1;
+    return 0;
+  }) : subs;
+  return sorted.map(s => `<tr>
+    <td>${escapeHtml(s.assignment_title)}</td>
+    <td>${skillBadge(s.skill)}</td>
+    <td><span class="stats-score-badge">${s.overall_score !== null ? Number(s.overall_score).toFixed(1) : '—'}</span></td>
+    <td style="color:var(--gray-400);font-size:12px">${formatDate(s.submitted_at)}</td>
+    <td>${s.on_time === null ? '—' : s.on_time ? '<span class="stats-ontime-pill good">Đúng hạn</span>' : '<span class="stats-ontime-pill bad">Muộn</span>'}</td>
+  </tr>`).join('');
+}
+
+function sortStatsSubTable(studentId, col) {
+  if (_statsSubSortCol === col) {
+    _statsSubSortDir = _statsSubSortDir === 'asc' ? 'desc' : 'asc';
+  } else {
+    _statsSubSortCol = col;
+    _statsSubSortDir = col === 'title' || col === 'skill' ? 'asc' : 'desc';
+  }
+  if (!_statsData) return;
+  const st = _statsData.per_student.find(s => s.id === studentId);
+  if (!st) return;
+  const sf = _statsSkillFilter, stf = _statsStatusFilter, mf = _statsModeFilter;
+  const filteredIds = new Set(
+    _statsData.per_assignment
+      .filter(a => (!sf || a.skill === sf) && (stf !== 'active' || a.is_active) && (stf !== 'closed' || !a.is_active) && (!mf || a.mode === mf))
+      .map(a => a.id)
+  );
+  const subs = st.submissions.filter(s => filteredIds.has(s.assignment_id));
+  const tbody = document.getElementById(`stats-sub-tbody-${studentId}`);
+  if (tbody) tbody.innerHTML = buildStatsSubRows(subs);
+  const thead = document.getElementById(`stats-sub-thead-${studentId}`);
+  if (thead) {
+    thead.querySelectorAll('th.sortable').forEach(th => {
+      const icon = th.querySelector('.sort-icon');
+      if (icon) icon.remove();
+      const c = th.getAttribute('onclick').match(/'([^']+)'\)$/)?.[1];
+      if (c) th.insertAdjacentHTML('beforeend', makeSortIcon(c, _statsSubSortCol, _statsSubSortDir));
+    });
+  }
+}
+window.sortStatsSubTable = sortStatsSubTable;
 
 function renderClassDetail(cls, students = []) {
   const assignRows = cls.assignments.length === 0
@@ -1972,31 +2171,7 @@ function renderClassDetail(cls, students = []) {
           <p style="font-size:12px">Nhấn "Thêm học sinh" để tạo tài khoản cho học sinh.</p>
         </div>
        </td></tr>`
-    : students.map(s => `
-        <tr data-student-id="${s.id}">
-          <td style="width:36px">
-            <input type="checkbox" class="student-bulk-check" data-sid="${s.id}"
-              onchange="updateBulkBar('${cls.id}')" />
-          </td>
-          <td>
-            <div style="display:flex;align-items:center;gap:8px">
-              <span class="student-avatar">${escapeHtml(s.full_name.charAt(0).toUpperCase())}</span>
-              <button class="btn-student-profile" data-sid="${s.id}" data-sname="${escapeHtml(s.full_name)}"
-                onclick="openStudentProfileModal(this.dataset.sid, this.dataset.sname)">
-                ${escapeHtml(s.full_name)} <span class="btn-sp-icon">👁</span>
-              </button>
-            </div>
-          </td>
-          <td style="color:var(--gray-400);font-size:12px;font-family:monospace">${escapeHtml(s.username)}</td>
-          <td>
-            <div class="td-actions">
-              <button class="btn btn-sm btn-outline" title="Đổi mật khẩu"
-                onclick="openResetPasswordModal('${s.id}', '${s.full_name.replace(/'/g, "\\'")}', this)">🔑 Đổi MK</button>
-              <button class="btn-icon danger" title="Xoá khỏi lớp này"
-                onclick="removeStudentFromClass('${s.id}', '${cls.id}', this)">🗑</button>
-            </div>
-          </td>
-        </tr>`).join('');
+    : buildStudentRows(students, cls.id);
 
   const statsHtml = `<div class="stats-loading-placeholder" id="stats-loading-placeholder">
       <div class="spinner"></div><p style="margin-top:12px;color:var(--gray-400)">Đang tải thống kê...</p>
@@ -2048,8 +2223,11 @@ function renderClassDetail(cls, students = []) {
       <div class="table-wrap assign-table-wrap">
         <table>
           <thead><tr>
-            <th>Kỹ năng</th><th>Tên bài tập</th><th>Đề</th>
-            <th>Hạn nộp</th><th>Mở/Đóng</th><th>Thao tác</th>
+            <th class="sortable" id="assign-th-skill" onclick="sortAssignList('skill')">Kỹ năng</th>
+            <th class="sortable" id="assign-th-title" onclick="sortAssignList('title')">Tên bài tập</th>
+            <th>Đề</th>
+            <th class="sortable" id="assign-th-deadline" onclick="sortAssignList('deadline')">Hạn nộp</th>
+            <th>Mở/Đóng</th><th>Thao tác</th>
           </tr></thead>
           <tbody id="assign-tbody">${assignRows}</tbody>
         </table>
@@ -2071,9 +2249,11 @@ function renderClassDetail(cls, students = []) {
         <table>
           <thead><tr>
             <th style="width:36px"><input type="checkbox" id="select-all-students" onchange="toggleSelectAllStudents(this, '${cls.id}')" title="Chọn tất cả" /></th>
-            <th>Họ tên</th><th>Username</th><th>Thao tác</th>
+            <th class="sortable" id="student-th-name" onclick="sortClassStudentsTable('full_name')">Họ tên</th>
+            <th class="sortable" id="student-th-username" onclick="sortClassStudentsTable('username')">Username</th>
+            <th>Thao tác</th>
           </tr></thead>
-          <tbody>${studentRows}</tbody>
+          <tbody id="students-tbody">${studentRows}</tbody>
         </table>
       </div>
     </div>
@@ -2116,6 +2296,20 @@ function filterAssignments(search, skill) {
     return;
   }
 
+  if (_assignListSortCol) {
+    filtered.sort((a, b) => {
+      let va, vb;
+      if (_assignListSortCol === 'skill')     { va = a.skill || '';      vb = b.skill || ''; }
+      else if (_assignListSortCol === 'title') { va = a.title.toLowerCase(); vb = b.title.toLowerCase(); }
+      else if (_assignListSortCol === 'deadline') { va = a.deadline || ''; vb = b.deadline || ''; }
+      else return 0;
+      if (va < vb) return _assignListSortDir === 'asc' ? -1 : 1;
+      if (va > vb) return _assignListSortDir === 'asc' ? 1 : -1;
+      return 0;
+    });
+  }
+  updateAssignListSortIcons();
+
   tbody.innerHTML = filtered.map(a => {
     const overdue = isOverdue(a.deadline) && a.is_active;
     const pct = cls.student_count > 0 ? Math.round(a.submission_count / cls.student_count * 100) : 0;
@@ -2155,6 +2349,27 @@ function filterAssignments(search, skill) {
   }).join('');
 }
 window.filterAssignments = filterAssignments;
+
+function updateAssignListSortIcons() {
+  [['assign-th-skill', 'skill'], ['assign-th-title', 'title'], ['assign-th-deadline', 'deadline']].forEach(([id, col]) => {
+    const th = document.getElementById(id);
+    if (!th) return;
+    const existing = th.querySelector('.sort-icon');
+    if (existing) existing.remove();
+    th.insertAdjacentHTML('beforeend', makeSortIcon(col, _assignListSortCol, _assignListSortDir));
+  });
+}
+
+function sortAssignList(col) {
+  if (_assignListSortCol === col) {
+    _assignListSortDir = _assignListSortDir === 'asc' ? 'desc' : 'asc';
+  } else {
+    _assignListSortCol = col;
+    _assignListSortDir = col === 'title' || col === 'skill' ? 'asc' : 'desc';
+  }
+  filterAssignments(null, null);
+}
+window.sortAssignList = sortAssignList;
 
 // B4.2 — Bulk actions for student list
 function getSelectedStudentIds() {
@@ -2226,6 +2441,61 @@ function bulkExportCSV(classId) {
 }
 window.bulkExportCSV = bulkExportCSV;
 
+function buildStudentRows(students, classId) {
+  return students.map(s => `
+    <tr data-student-id="${s.id}">
+      <td style="width:36px">
+        <input type="checkbox" class="student-bulk-check" data-sid="${s.id}"
+          onchange="updateBulkBar('${classId}')" />
+      </td>
+      <td>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span class="student-avatar">${escapeHtml(s.full_name.charAt(0).toUpperCase())}</span>
+          <button class="btn-student-profile" data-sid="${s.id}" data-sname="${escapeHtml(s.full_name)}"
+            onclick="openStudentProfileModal(this.dataset.sid, this.dataset.sname)">
+            ${escapeHtml(s.full_name)} <span class="btn-sp-icon">👁</span>
+          </button>
+        </div>
+      </td>
+      <td style="color:var(--gray-400);font-size:12px;font-family:monospace">${escapeHtml(s.username)}</td>
+      <td>
+        <div class="td-actions">
+          <button class="btn btn-sm btn-outline" title="Đổi mật khẩu"
+            onclick="openResetPasswordModal('${s.id}', '${s.full_name.replace(/'/g, "\\'")}', this)">🔑 Đổi MK</button>
+          <button class="btn-icon danger" title="Xoá khỏi lớp này"
+            onclick="removeStudentFromClass('${s.id}', '${classId}', this)">🗑</button>
+        </div>
+      </td>
+    </tr>`).join('');
+}
+
+function sortClassStudentsTable(col) {
+  if (_classStudentsSortCol === col) {
+    _classStudentsSortDir = _classStudentsSortDir === 'asc' ? 'desc' : 'asc';
+  } else {
+    _classStudentsSortCol = col;
+    _classStudentsSortDir = 'asc';
+  }
+  if (!_cachedStudents.length || !_cachedCls) return;
+  const sorted = [..._cachedStudents].sort((a, b) => {
+    const va = (a[col] || '').toLowerCase();
+    const vb = (b[col] || '').toLowerCase();
+    if (va < vb) return _classStudentsSortDir === 'asc' ? -1 : 1;
+    if (va > vb) return _classStudentsSortDir === 'asc' ? 1 : -1;
+    return 0;
+  });
+  const tbody = document.getElementById('students-tbody');
+  if (tbody) tbody.innerHTML = buildStudentRows(sorted, _cachedCls.id);
+  [['student-th-name', 'full_name'], ['student-th-username', 'username']].forEach(([id, c]) => {
+    const th = document.getElementById(id);
+    if (!th) return;
+    const existing = th.querySelector('.sort-icon');
+    if (existing) existing.remove();
+    th.insertAdjacentHTML('beforeend', makeSortIcon(c, _classStudentsSortCol, _classStudentsSortDir));
+  });
+}
+window.sortClassStudentsTable = sortClassStudentsTable;
+
 async function toggleAssignment(id, isActive) {
   try {
     await api.patch(`/assignments/${id}`, { is_active: isActive });
@@ -2292,6 +2562,8 @@ async function deleteAssignment(id, classId, btn) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 async function showAssignmentSubmissions({ id }) {
+  _submissionsSortCol = '';
+  _submissionsSortDir = 'desc';
   setLoading('Đang tải danh sách bài nộp...');
   try {
     const { assignment, students } = await api.get(`/assignments/${id}/submissions`);
@@ -2322,46 +2594,87 @@ function exportSubmissionsCSV(assignment, students) {
 }
 window.exportSubmissionsCSV = exportSubmissionsCSV;
 
+function buildSubmissionRows(students, assignment) {
+  if (students.length === 0) {
+    return `<tr><td colspan="5">
+      <div class="empty-state" style="padding:30px">
+        <div class="empty-state-icon">👤</div>
+        <h3>Lớp chưa có học sinh nào</h3>
+      </div>
+     </td></tr>`;
+  }
+  return students.map(s => {
+    const hasSubmission = !!s.submission_id;
+    const scoreDisplay  = s.overall_score != null
+      ? `<span style="font-weight:700;color:var(--primary)">${s.overall_score}/9</span>`
+      : (hasSubmission ? '<span style="color:var(--gray-400)">Chờ chấm</span>' : '—');
+    const statusBadge = hasSubmission
+      ? `<span class="badge" style="background:#d1fae5;color:#065f46">✓ Đã nộp</span>`
+      : `<span class="badge" style="background:#fee2e2;color:#991b1b">✗ Chưa nộp</span>`;
+    const viewBtn = hasSubmission
+      ? `<button class="btn btn-sm btn-outline"
+           onclick="openSubmissionModal('${s.submission_id}', '${assignment.skill}')">
+           Xem bài
+         </button>`
+      : `<span style="font-size:12px;color:var(--gray-400)">—</span>`;
+    return `
+      <tr>
+        <td>
+          <div style="font-weight:600">${escapeHtml(s.full_name)}</div>
+          <div style="font-size:11px;color:var(--gray-400);font-family:monospace">${escapeHtml(s.username)}</div>
+        </td>
+        <td>${statusBadge}</td>
+        <td>${scoreDisplay}</td>
+        <td style="font-size:12px;color:var(--gray-400)">${s.submitted_at ? formatDateTime(s.submitted_at) : '—'}</td>
+        <td>${viewBtn}</td>
+      </tr>`;
+  }).join('');
+}
+
+function sortedSubmissionStudents(students) {
+  if (!_submissionsSortCol) return students;
+  return [...students].sort((a, b) => {
+    let va, vb;
+    switch (_submissionsSortCol) {
+      case 'full_name':    va = a.full_name.toLowerCase(); vb = b.full_name.toLowerCase(); break;
+      case 'status':       va = a.submission_id ? 1 : 0;  vb = b.submission_id ? 1 : 0; break;
+      case 'score':        va = a.overall_score ?? -1;     vb = b.overall_score ?? -1; break;
+      case 'submitted_at': va = a.submitted_at || '';       vb = b.submitted_at || ''; break;
+      default: return 0;
+    }
+    if (va < vb) return _submissionsSortDir === 'asc' ? -1 : 1;
+    if (va > vb) return _submissionsSortDir === 'asc' ? 1 : -1;
+    return 0;
+  });
+}
+
+function sortSubmissionsTable(col) {
+  if (_submissionsSortCol === col) {
+    _submissionsSortDir = _submissionsSortDir === 'asc' ? 'desc' : 'asc';
+  } else {
+    _submissionsSortCol = col;
+    _submissionsSortDir = col === 'full_name' ? 'asc' : 'desc';
+  }
+  const data = window._currentAssignmentData;
+  if (!data) return;
+  const tbody = document.querySelector('.table-wrap table tbody');
+  if (tbody) tbody.innerHTML = buildSubmissionRows(sortedSubmissionStudents(data.students), data.assignment);
+  document.querySelectorAll('th[data-sub-col]').forEach(th => {
+    th.querySelector('.sort-icon')?.remove();
+    th.insertAdjacentHTML('beforeend', makeSortIcon(th.dataset.subCol, _submissionsSortCol, _submissionsSortDir));
+  });
+}
+window.sortSubmissionsTable = sortSubmissionsTable;
+
 function renderAssignmentSubmissions(assignment, students) {
   const submitted   = students.filter(s => s.submission_id).length;
   const notSubmitted = students.length - submitted;
   const overdue = isOverdue(assignment.deadline) && assignment.is_active;
 
-  const rows = students.length === 0
-    ? `<tr><td colspan="5">
-        <div class="empty-state" style="padding:30px">
-          <div class="empty-state-icon">👤</div>
-          <h3>Lớp chưa có học sinh nào</h3>
-        </div>
-       </td></tr>`
-    : students.map(s => {
-        const hasSubmission = !!s.submission_id;
-        const scoreDisplay  = s.overall_score != null
-          ? `<span style="font-weight:700;color:var(--primary)">${s.overall_score}/9</span>`
-          : (hasSubmission ? '<span style="color:var(--gray-400)">Chờ chấm</span>' : '—');
-        const statusBadge = hasSubmission
-          ? `<span class="badge" style="background:#d1fae5;color:#065f46">✓ Đã nộp</span>`
-          : `<span class="badge" style="background:#fee2e2;color:#991b1b">✗ Chưa nộp</span>`;
-        const viewBtn = hasSubmission
-          ? `<button class="btn btn-sm btn-outline"
-               onclick="openSubmissionModal('${s.submission_id}', '${assignment.skill}')">
-               Xem bài
-             </button>`
-          : `<span style="font-size:12px;color:var(--gray-400)">—</span>`;
-        return `
-          <tr>
-            <td>
-              <div style="font-weight:600">${escapeHtml(s.full_name)}</div>
-              <div style="font-size:11px;color:var(--gray-400);font-family:monospace">${escapeHtml(s.username)}</div>
-            </td>
-            <td>${statusBadge}</td>
-            <td>${scoreDisplay}</td>
-            <td style="font-size:12px;color:var(--gray-400)">${s.submitted_at ? formatDateTime(s.submitted_at) : '—'}</td>
-            <td>${viewBtn}</td>
-          </tr>`;
-      }).join('');
+  const sssi = col => makeSortIcon(col, _submissionsSortCol, _submissionsSortDir);
+  const rows = buildSubmissionRows(sortedSubmissionStudents(students), assignment);
 
-  // Store for CSV export
+  // Store for CSV export and re-sort
   window._currentAssignmentData = { assignment, students };
 
   $('#app').innerHTML = `
@@ -2404,10 +2717,10 @@ function renderAssignmentSubmissions(assignment, students) {
       <table>
         <thead>
           <tr>
-            <th>Học sinh</th>
-            <th>Trạng thái</th>
-            <th>Điểm</th>
-            <th>Thời gian nộp</th>
+            <th class="sortable" data-sub-col="full_name" onclick="sortSubmissionsTable('full_name')">Học sinh ${sssi('full_name')}</th>
+            <th class="sortable" data-sub-col="status" onclick="sortSubmissionsTable('status')">Trạng thái ${sssi('status')}</th>
+            <th class="sortable" data-sub-col="score" onclick="sortSubmissionsTable('score')">Điểm ${sssi('score')}</th>
+            <th class="sortable" data-sub-col="submitted_at" onclick="sortSubmissionsTable('submitted_at')">Thời gian nộp ${sssi('submitted_at')}</th>
             <th>Bài làm</th>
           </tr>
         </thead>
@@ -3149,6 +3462,8 @@ let _selectedQuestionId = null;
 let _assignSkillFilter = '';
 let _assignTagFilter = '';
 let _assignSearch = '';
+let _assignSortCol = '';
+let _assignSortDir = 'asc';
 
 async function openAssignModal(classId, className, preSelectedId = null) {
   _assignClassId = classId;
@@ -3157,6 +3472,8 @@ async function openAssignModal(classId, className, preSelectedId = null) {
   _assignSkillFilter = '';
   _assignTagFilter = '';
   _assignSearch = '';
+  _assignSortCol = '';
+  _assignSortDir = 'asc';
 
   openModal(`Giao bài cho lớp "${className}"`, `
     <div class="form-group">
@@ -3247,7 +3564,28 @@ function renderAssignPicker(skillFilter) {
     return;
   }
 
-  picker.innerHTML = filtered.map(q => `
+  if (_assignSortCol) {
+    filtered.sort((a, b) => {
+      let va, vb;
+      if (_assignSortCol === 'title')      { va = a.title.toLowerCase(); vb = b.title.toLowerCase(); }
+      else if (_assignSortCol === 'created_at') { va = a.created_at || ''; vb = b.created_at || ''; }
+      else return 0;
+      if (va < vb) return _assignSortDir === 'asc' ? -1 : 1;
+      if (va > vb) return _assignSortDir === 'asc' ? 1 : -1;
+      return 0;
+    });
+  }
+
+  const sortPills = `<div class="assign-sort-pills">
+    <span style="font-size:11px;font-weight:600;color:var(--gray-400)">Sắp xếp:</span>
+    ${[['', 'Mặc định'], ['title', 'A→Z tên'], ['created_at', 'Mới nhất']].map(([col, label]) => `
+      <button type="button" class="stats-filter-pill${_assignSortCol === col ? ' active' : ''}"
+        onclick="_assignSortCol='${col}'; _assignSortDir='asc'; renderAssignPicker(_assignSkillFilter)">
+        ${label}
+      </button>`).join('')}
+  </div>`;
+
+  picker.innerHTML = sortPills + filtered.map(q => `
     <div class="question-picker-item ${_selectedQuestionId === q.id ? 'selected' : ''}"
       onclick="selectQuestion('${q.id}', this)">
       <input type="radio" name="assign-q" value="${q.id}"
@@ -3360,6 +3698,8 @@ let _allFolders = [];
 let _currentFolderFilter = null; // null=tất cả | 'root'=chưa phân loại | uuid=thư mục cụ thể
 let _questionSearch = '';
 let _questionTagFilter = '';
+let _questionSortCol = '';
+let _questionSortDir = 'asc';
 let _allClasses = [];
 let _classSearch = '';
 let _classSort = 'newest'; // 'newest' | 'name' | 'students'
@@ -3367,7 +3707,19 @@ let _classDetailTab = 'assignments';
 let _cachedCls = null;
 let _cachedStudents = [];
 
+// Sort state for tables that don't use applyStatsFilter
+let _assignTableSortCol = '';    // stats: "Chi tiết từng bài tập"
+let _assignTableSortDir = 'desc';
+let _submissionsSortCol = '';    // assignment submissions page
+let _submissionsSortDir = 'desc';
+let _assignListSortCol = '';     // class detail: assignment list
+let _assignListSortDir = 'desc';
+let _classStudentsSortCol = '';  // class detail: student list
+let _classStudentsSortDir = 'asc';
+
 async function showQuestions() {
+  _questionSortCol = '';
+  _questionSortDir = 'asc';
   setLoading('Đang tải kho đề...');
   try {
     [_allQuestions, _allFolders] = await Promise.all([
@@ -3868,15 +4220,35 @@ async function previewAsStudent(id) {
 window.previewAsStudent = previewAsStudent;
 
 function renderQuestions() {
-  const filtered = _getFilteredQuestions();
+  let filtered = _getFilteredQuestions();
 
-  // Partial update: sidebar + tbody + tabs — avoids destroying search input focus
+  if (_questionSortCol) {
+    filtered = [...filtered].sort((a, b) => {
+      let va, vb;
+      if (_questionSortCol === 'skill')           { va = a.skill || ''; vb = b.skill || ''; }
+      else if (_questionSortCol === 'title')       { va = a.title.toLowerCase(); vb = b.title.toLowerCase(); }
+      else if (_questionSortCol === 'created_at') { va = a.created_at || ''; vb = b.created_at || ''; }
+      else return 0;
+      if (va < vb) return _questionSortDir === 'asc' ? -1 : 1;
+      if (va > vb) return _questionSortDir === 'asc' ? 1 : -1;
+      return 0;
+    });
+  }
+
+  // Partial update: sidebar + tbody + sort icons + tabs — avoids destroying search input focus
   const existingLayout = $('#app')?.querySelector('.question-bank-layout');
   if (existingLayout) {
     existingLayout.querySelector('.folder-sidebar').innerHTML = _buildFolderSidebar();
     existingLayout.querySelector('table tbody').innerHTML = _buildQuestionTableRows(filtered);
     const sub = existingLayout.querySelector('.page-subtitle');
     if (sub) sub.textContent = `Tổng cộng ${_allQuestions.length} đề thi`;
+    ['skill','title','created_at'].forEach(col => {
+      const th = document.querySelector(`th[data-q-col="${col}"]`);
+      if (!th) return;
+      const icon = th.querySelector('.sort-icon');
+      if (icon) icon.remove();
+      th.insertAdjacentHTML('beforeend', makeSortIcon(col, _questionSortCol, _questionSortDir));
+    });
     document.querySelectorAll('.skill-tab').forEach(btn => {
       btn.classList.toggle('active', btn.textContent.trim().includes(
         _currentSkillFilter
@@ -3932,11 +4304,11 @@ function renderQuestions() {
           <table>
             <thead>
               <tr>
-                <th>Kỹ năng</th>
-                <th>Tiêu đề <span style="font-size:11px;font-weight:400;color:var(--gray-400)">(click để xem nhanh)</span></th>
+                <th class="sortable" data-q-col="skill" onclick="sortQuestions('skill')">Kỹ năng ${makeSortIcon('skill', _questionSortCol, _questionSortDir)}</th>
+                <th class="sortable" data-q-col="title" onclick="sortQuestions('title')">Tiêu đề <span style="font-size:11px;font-weight:400;color:var(--gray-400)">(click để xem nhanh)</span> ${makeSortIcon('title', _questionSortCol, _questionSortDir)}</th>
                 <th>Tags</th>
                 <th>Chi tiết</th>
-                <th>Ngày tạo</th>
+                <th class="sortable" data-q-col="created_at" onclick="sortQuestions('created_at')">Ngày tạo ${makeSortIcon('created_at', _questionSortCol, _questionSortDir)}</th>
                 <th>Thao tác</th>
               </tr>
             </thead>
@@ -3958,6 +4330,17 @@ function setQuestionTagFilter(tag) {
   renderQuestions();
 }
 window.setQuestionTagFilter = setQuestionTagFilter;
+
+function sortQuestions(col) {
+  if (_questionSortCol === col) {
+    _questionSortDir = _questionSortDir === 'asc' ? 'desc' : 'asc';
+  } else {
+    _questionSortCol = col;
+    _questionSortDir = 'asc';
+  }
+  renderQuestions();
+}
+window.sortQuestions = sortQuestions;
 
 async function previewQuestion(id) {
   // Find from cache for instant title display

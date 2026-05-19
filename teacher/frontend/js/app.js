@@ -5993,10 +5993,35 @@ function _renderAudioFileList() { _renderAudioSlots(); }
 
 function attachAudioUpload() { /* no-op: slots use inline pickers */ }
 
-function onSlotFileSelected(input, idx) {
+// Read first 2 bytes to detect raw AAC ADTS stream (FF F1 = MPEG-4, FF F9 = MPEG-2).
+// These cannot be decoded by OpenAI Whisper — must be converted to MP3 first.
+async function isRawAacFile(file) {
+  const buf = await file.slice(0, 2).arrayBuffer();
+  const b = new Uint8Array(buf);
+  return b[0] === 0xFF && (b[1] === 0xF1 || b[1] === 0xF9);
+}
+
+function showRawAacWarning(fileName) {
+  openModal('⚠️ Định dạng audio không được hỗ trợ', `
+    <div style="line-height:1.7">
+      <p>File <strong>${escapeHtml(fileName)}</strong> là <strong>raw AAC ADTS stream</strong> — định dạng này không được OpenAI Whisper hỗ trợ và sẽ bị lỗi khi transcribe.</p>
+      <p style="margin-top:12px">Vui lòng <strong>convert sang MP3</strong> trước khi upload. Một số cách nhanh:</p>
+      <ul style="margin:8px 0 0 18px;font-size:14px">
+        <li>macOS: mở bằng <em>QuickTime Player</em> → File → Export As → Audio Only (xuất ra .m4a), rồi dùng <a href="https://cloudconvert.com/m4a-to-mp3" target="_blank">CloudConvert</a> để chuyển sang .mp3</li>
+        <li>Windows: dùng <a href="https://www.ffmpeg.org/" target="_blank">FFmpeg</a>: <code>ffmpeg -i input.aac output.mp3</code></li>
+        <li>Online: <a href="https://cloudconvert.com/aac-to-mp3" target="_blank">cloudconvert.com/aac-to-mp3</a></li>
+      </ul>
+    </div>
+    <div style="margin-top:20px;text-align:right">
+      <button class="btn btn-primary" onclick="document.getElementById('modal-overlay').classList.add('hidden')">Đã hiểu</button>
+    </div>`);
+}
+
+async function onSlotFileSelected(input, idx) {
   const file = input.files?.[0];
   if (!file || !_audioSlots[idx]) return;
   input.value = '';
+  if (await isRawAacFile(file)) { showRawAacWarning(file.name); return; }
   _audioSlots[idx].file = file;
   _audioSlots[idx].name = file.name;
   _audioSlots[idx].size = file.size;

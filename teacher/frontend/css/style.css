@@ -2546,11 +2546,11 @@ body.resizing-image {
 }
 
 /* Sortable column headers */
-.stats-table th.sortable {
+th.sortable {
   cursor: pointer;
   user-select: none;
 }
-.stats-table th.sortable:hover { color: var(--primary); }
+th.sortable:hover { color: var(--primary); }
 .sort-icon {
   font-size: 10px;
   color: var(--gray-300);

@@ -1018,6 +1018,12 @@ async function showClassDetail({ id }) {
     _statsSkillFilter = '';
     _statsStatusFilter = '';
     _statsModeFilter = '';
+    _assignTableSortCol = '';
+    _assignTableSortDir = 'desc';
+    _assignListSortCol = '';
+    _assignListSortDir = 'desc';
+    _classStudentsSortCol = '';
+    _classStudentsSortDir = 'asc';
     destroyStatsCharts();
     renderClassDetail(cls, students);
   } catch (e) {
@@ -1054,6 +1060,12 @@ function destroyStatsCharts() {
   _statsCharts.forEach(c => { try { c.destroy(); } catch {} });
   _statsCharts = [];
 }
+
+function makeSortIcon(col, currentCol, currentDir) {
+  if (currentCol !== col) return '<span class="sort-icon">↕</span>';
+  return `<span class="sort-icon active">${currentDir === 'asc' ? '↑' : '↓'}</span>`;
+}
+window.makeSortIcon = makeSortIcon;
 
 function refreshStatsTab() {
   const container = document.getElementById('tab-stats');
@@ -1121,6 +1133,17 @@ function sortStudentTable(col) {
   applyStatsFilter();
 }
 window.sortStudentTable = sortStudentTable;
+
+function sortAssignTable(col) {
+  if (_assignTableSortCol === col) {
+    _assignTableSortDir = _assignTableSortDir === 'asc' ? 'desc' : 'asc';
+  } else {
+    _assignTableSortCol = col;
+    _assignTableSortDir = col === 'title' || col === 'skill' ? 'asc' : 'desc';
+  }
+  applyStatsFilter();
+}
+window.sortAssignTable = sortAssignTable;
 
 function toggleTrendStudent(studentId) {
   const btn = document.querySelector(`.stats-student-toggle[data-sid="${studentId}"]`);
@@ -1580,7 +1603,29 @@ function renderStatsTab(container, data) {
         </div>`}
     </div>`;
 
-  // Per-assignment table
+  // Per-assignment table — sortable
+  const atsi = col => makeSortIcon(col, _assignTableSortCol, _assignTableSortDir);
+  const sortedAssignments = [...filteredAssignments];
+  if (_assignTableSortCol) {
+    sortedAssignments.sort((a, b) => {
+      let va, vb;
+      switch (_assignTableSortCol) {
+        case 'title':         va = a.title.toLowerCase(); vb = b.title.toLowerCase(); break;
+        case 'skill':         va = a.skill || ''; vb = b.skill || ''; break;
+        case 'mode':          va = a.mode || ''; vb = b.mode || ''; break;
+        case 'submitted_rate': va = a.total ? a.submitted / a.total : 0; vb = b.total ? b.submitted / b.total : 0; break;
+        case 'avg_score':     va = a.avg_score ?? -1; vb = b.avg_score ?? -1; break;
+        case 'on_time':       va = a.on_time ?? -1; vb = b.on_time ?? -1; break;
+        case 'late':          va = a.late ?? -1; vb = b.late ?? -1; break;
+        case 'missing':       va = a.missing ?? -1; vb = b.missing ?? -1; break;
+        case 'is_active':     va = a.is_active ? 1 : 0; vb = b.is_active ? 1 : 0; break;
+        default: return 0;
+      }
+      if (va < vb) return _assignTableSortDir === 'asc' ? -1 : 1;
+      if (va > vb) return _assignTableSortDir === 'asc' ? 1 : -1;
+      return 0;
+    });
+  }
   const assignTableHtml = `
     <div class="stats-section-card">
       <div class="stats-section-title">Chi tiết từng bài tập</div>
@@ -1589,11 +1634,18 @@ function renderStatsTab(container, data) {
         : `<div class="table-wrap">
           <table class="stats-table">
             <thead><tr>
-              <th>Kỹ năng</th><th>Tên bài tập</th><th>Chế độ</th><th>Tỷ lệ nộp</th><th>Điểm TB</th>
-              <th>Đúng hạn</th><th>Muộn</th><th>Chưa nộp</th><th>Trạng thái</th>
+              <th class="sortable" onclick="sortAssignTable('skill')">Kỹ năng ${atsi('skill')}</th>
+              <th class="sortable" onclick="sortAssignTable('title')">Tên bài tập ${atsi('title')}</th>
+              <th class="sortable" onclick="sortAssignTable('mode')">Chế độ ${atsi('mode')}</th>
+              <th class="sortable" onclick="sortAssignTable('submitted_rate')">Tỷ lệ nộp ${atsi('submitted_rate')}</th>
+              <th class="sortable" onclick="sortAssignTable('avg_score')">Điểm TB ${atsi('avg_score')}</th>
+              <th class="sortable" onclick="sortAssignTable('on_time')">Đúng hạn ${atsi('on_time')}</th>
+              <th class="sortable" onclick="sortAssignTable('late')">Muộn ${atsi('late')}</th>
+              <th class="sortable" onclick="sortAssignTable('missing')">Chưa nộp ${atsi('missing')}</th>
+              <th class="sortable" onclick="sortAssignTable('is_active')">Trạng thái ${atsi('is_active')}</th>
             </tr></thead>
             <tbody>
-              ${filteredAssignments.map(a => {
+              ${sortedAssignments.map(a => {
                 const submittedPct = pct(a.submitted, a.total);
                 return `<tr>
                   <td>${skillBadge(a.skill)}</td>
@@ -1882,31 +1934,7 @@ function renderClassDetail(cls, students = []) {
           <p style="font-size:12px">Nhấn "Thêm học sinh" để tạo tài khoản cho học sinh.</p>
         </div>
        </td></tr>`
-    : students.map(s => `
-        <tr data-student-id="${s.id}">
-          <td style="width:36px">
-            <input type="checkbox" class="student-bulk-check" data-sid="${s.id}"
-              onchange="updateBulkBar('${cls.id}')" />
-          </td>
-          <td>
-            <div style="display:flex;align-items:center;gap:8px">
-              <span class="student-avatar">${escapeHtml(s.full_name.charAt(0).toUpperCase())}</span>
-              <button class="btn-student-profile" data-sid="${s.id}" data-sname="${escapeHtml(s.full_name)}"
-                onclick="openStudentProfileModal(this.dataset.sid, this.dataset.sname)">
-                ${escapeHtml(s.full_name)} <span class="btn-sp-icon">👁</span>
-              </button>
-            </div>
-          </td>
-          <td style="color:var(--gray-400);font-size:12px;font-family:monospace">${escapeHtml(s.username)}</td>
-          <td>
-            <div class="td-actions">
-              <button class="btn btn-sm btn-outline" title="Đổi mật khẩu"
-                onclick="openResetPasswordModal('${s.id}', '${s.full_name.replace(/'/g, "\\'")}', this)">🔑 Đổi MK</button>
-              <button class="btn-icon danger" title="Xoá khỏi lớp này"
-                onclick="removeStudentFromClass('${s.id}', '${cls.id}', this)">🗑</button>
-            </div>
-          </td>
-        </tr>`).join('');
+    : buildStudentRows(students, cls.id);
 
   const statsHtml = `<div class="stats-loading-placeholder" id="stats-loading-placeholder">
       <div class="spinner"></div><p style="margin-top:12px;color:var(--gray-400)">Đang tải thống kê...</p>
@@ -1958,8 +1986,11 @@ function renderClassDetail(cls, students = []) {
       <div class="table-wrap assign-table-wrap">
         <table>
           <thead><tr>
-            <th>Kỹ năng</th><th>Tên bài tập</th><th>Đề</th>
-            <th>Hạn nộp</th><th>Mở/Đóng</th><th>Thao tác</th>
+            <th class="sortable" id="assign-th-skill" onclick="sortAssignList('skill')">Kỹ năng</th>
+            <th class="sortable" id="assign-th-title" onclick="sortAssignList('title')">Tên bài tập</th>
+            <th>Đề</th>
+            <th class="sortable" id="assign-th-deadline" onclick="sortAssignList('deadline')">Hạn nộp</th>
+            <th>Mở/Đóng</th><th>Thao tác</th>
           </tr></thead>
           <tbody id="assign-tbody">${assignRows}</tbody>
         </table>
@@ -1981,9 +2012,11 @@ function renderClassDetail(cls, students = []) {
         <table>
           <thead><tr>
             <th style="width:36px"><input type="checkbox" id="select-all-students" onchange="toggleSelectAllStudents(this, '${cls.id}')" title="Chọn tất cả" /></th>
-            <th>Họ tên</th><th>Username</th><th>Thao tác</th>
+            <th class="sortable" id="student-th-name" onclick="sortClassStudentsTable('full_name')">Họ tên</th>
+            <th class="sortable" id="student-th-username" onclick="sortClassStudentsTable('username')">Username</th>
+            <th>Thao tác</th>
           </tr></thead>
-          <tbody>${studentRows}</tbody>
+          <tbody id="students-tbody">${studentRows}</tbody>
         </table>
       </div>
     </div>
@@ -2026,6 +2059,20 @@ function filterAssignments(search, skill) {
     return;
   }
 
+  if (_assignListSortCol) {
+    filtered.sort((a, b) => {
+      let va, vb;
+      if (_assignListSortCol === 'skill')     { va = a.skill || '';      vb = b.skill || ''; }
+      else if (_assignListSortCol === 'title') { va = a.title.toLowerCase(); vb = b.title.toLowerCase(); }
+      else if (_assignListSortCol === 'deadline') { va = a.deadline || ''; vb = b.deadline || ''; }
+      else return 0;
+      if (va < vb) return _assignListSortDir === 'asc' ? -1 : 1;
+      if (va > vb) return _assignListSortDir === 'asc' ? 1 : -1;
+      return 0;
+    });
+  }
+  updateAssignListSortIcons();
+
   tbody.innerHTML = filtered.map(a => {
     const overdue = isOverdue(a.deadline) && a.is_active;
     const pct = cls.student_count > 0 ? Math.round(a.submission_count / cls.student_count * 100) : 0;
@@ -2065,6 +2112,27 @@ function filterAssignments(search, skill) {
   }).join('');
 }
 window.filterAssignments = filterAssignments;
+
+function updateAssignListSortIcons() {
+  [['assign-th-skill', 'skill'], ['assign-th-title', 'title'], ['assign-th-deadline', 'deadline']].forEach(([id, col]) => {
+    const th = document.getElementById(id);
+    if (!th) return;
+    const existing = th.querySelector('.sort-icon');
+    if (existing) existing.remove();
+    th.insertAdjacentHTML('beforeend', makeSortIcon(col, _assignListSortCol, _assignListSortDir));
+  });
+}
+
+function sortAssignList(col) {
+  if (_assignListSortCol === col) {
+    _assignListSortDir = _assignListSortDir === 'asc' ? 'desc' : 'asc';
+  } else {
+    _assignListSortCol = col;
+    _assignListSortDir = col === 'title' || col === 'skill' ? 'asc' : 'desc';
+  }
+  filterAssignments(null, null);
+}
+window.sortAssignList = sortAssignList;
 
 // B4.2 — Bulk actions for student list
 function getSelectedStudentIds() {
@@ -2136,6 +2204,61 @@ function bulkExportCSV(classId) {
 }
 window.bulkExportCSV = bulkExportCSV;
 
+function buildStudentRows(students, classId) {
+  return students.map(s => `
+    <tr data-student-id="${s.id}">
+      <td style="width:36px">
+        <input type="checkbox" class="student-bulk-check" data-sid="${s.id}"
+          onchange="updateBulkBar('${classId}')" />
+      </td>
+      <td>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span class="student-avatar">${escapeHtml(s.full_name.charAt(0).toUpperCase())}</span>
+          <button class="btn-student-profile" data-sid="${s.id}" data-sname="${escapeHtml(s.full_name)}"
+            onclick="openStudentProfileModal(this.dataset.sid, this.dataset.sname)">
+            ${escapeHtml(s.full_name)} <span class="btn-sp-icon">👁</span>
+          </button>
+        </div>
+      </td>
+      <td style="color:var(--gray-400);font-size:12px;font-family:monospace">${escapeHtml(s.username)}</td>
+      <td>
+        <div class="td-actions">
+          <button class="btn btn-sm btn-outline" title="Đổi mật khẩu"
+            onclick="openResetPasswordModal('${s.id}', '${s.full_name.replace(/'/g, "\\'")}', this)">🔑 Đổi MK</button>
+          <button class="btn-icon danger" title="Xoá khỏi lớp này"
+            onclick="removeStudentFromClass('${s.id}', '${classId}', this)">🗑</button>
+        </div>
+      </td>
+    </tr>`).join('');
+}
+
+function sortClassStudentsTable(col) {
+  if (_classStudentsSortCol === col) {
+    _classStudentsSortDir = _classStudentsSortDir === 'asc' ? 'desc' : 'asc';
+  } else {
+    _classStudentsSortCol = col;
+    _classStudentsSortDir = 'asc';
+  }
+  if (!_cachedStudents.length || !_cachedCls) return;
+  const sorted = [..._cachedStudents].sort((a, b) => {
+    const va = (a[col] || '').toLowerCase();
+    const vb = (b[col] || '').toLowerCase();
+    if (va < vb) return _classStudentsSortDir === 'asc' ? -1 : 1;
+    if (va > vb) return _classStudentsSortDir === 'asc' ? 1 : -1;
+    return 0;
+  });
+  const tbody = document.getElementById('students-tbody');
+  if (tbody) tbody.innerHTML = buildStudentRows(sorted, _cachedCls.id);
+  [['student-th-name', 'full_name'], ['student-th-username', 'username']].forEach(([id, c]) => {
+    const th = document.getElementById(id);
+    if (!th) return;
+    const existing = th.querySelector('.sort-icon');
+    if (existing) existing.remove();
+    th.insertAdjacentHTML('beforeend', makeSortIcon(c, _classStudentsSortCol, _classStudentsSortDir));
+  });
+}
+window.sortClassStudentsTable = sortClassStudentsTable;
+
 async function toggleAssignment(id, isActive) {
   try {
     await api.patch(`/assignments/${id}`, { is_active: isActive });
@@ -2202,6 +2325,8 @@ async function deleteAssignment(id, classId, btn) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 async function showAssignmentSubmissions({ id }) {
+  _submissionsSortCol = '';
+  _submissionsSortDir = 'desc';
   setLoading('Đang tải danh sách bài nộp...');
   try {
     const { assignment, students } = await api.get(`/assignments/${id}/submissions`);
@@ -2232,46 +2357,87 @@ function exportSubmissionsCSV(assignment, students) {
 }
 window.exportSubmissionsCSV = exportSubmissionsCSV;
 
+function buildSubmissionRows(students, assignment) {
+  if (students.length === 0) {
+    return `<tr><td colspan="5">
+      <div class="empty-state" style="padding:30px">
+        <div class="empty-state-icon">👤</div>
+        <h3>Lớp chưa có học sinh nào</h3>
+      </div>
+     </td></tr>`;
+  }
+  return students.map(s => {
+    const hasSubmission = !!s.submission_id;
+    const scoreDisplay  = s.overall_score != null
+      ? `<span style="font-weight:700;color:var(--primary)">${s.overall_score}/9</span>`
+      : (hasSubmission ? '<span style="color:var(--gray-400)">Chờ chấm</span>' : '—');
+    const statusBadge = hasSubmission
+      ? `<span class="badge" style="background:#d1fae5;color:#065f46">✓ Đã nộp</span>`
+      : `<span class="badge" style="background:#fee2e2;color:#991b1b">✗ Chưa nộp</span>`;
+    const viewBtn = hasSubmission
+      ? `<button class="btn btn-sm btn-outline"
+           onclick="openSubmissionModal('${s.submission_id}', '${assignment.skill}')">
+           Xem bài
+         </button>`
+      : `<span style="font-size:12px;color:var(--gray-400)">—</span>`;
+    return `
+      <tr>
+        <td>
+          <div style="font-weight:600">${escapeHtml(s.full_name)}</div>
+          <div style="font-size:11px;color:var(--gray-400);font-family:monospace">${escapeHtml(s.username)}</div>
+        </td>
+        <td>${statusBadge}</td>
+        <td>${scoreDisplay}</td>
+        <td style="font-size:12px;color:var(--gray-400)">${s.submitted_at ? formatDateTime(s.submitted_at) : '—'}</td>
+        <td>${viewBtn}</td>
+      </tr>`;
+  }).join('');
+}
+
+function sortedSubmissionStudents(students) {
+  if (!_submissionsSortCol) return students;
+  return [...students].sort((a, b) => {
+    let va, vb;
+    switch (_submissionsSortCol) {
+      case 'full_name':    va = a.full_name.toLowerCase(); vb = b.full_name.toLowerCase(); break;
+      case 'status':       va = a.submission_id ? 1 : 0;  vb = b.submission_id ? 1 : 0; break;
+      case 'score':        va = a.overall_score ?? -1;     vb = b.overall_score ?? -1; break;
+      case 'submitted_at': va = a.submitted_at || '';       vb = b.submitted_at || ''; break;
+      default: return 0;
+    }
+    if (va < vb) return _submissionsSortDir === 'asc' ? -1 : 1;
+    if (va > vb) return _submissionsSortDir === 'asc' ? 1 : -1;
+    return 0;
+  });
+}
+
+function sortSubmissionsTable(col) {
+  if (_submissionsSortCol === col) {
+    _submissionsSortDir = _submissionsSortDir === 'asc' ? 'desc' : 'asc';
+  } else {
+    _submissionsSortCol = col;
+    _submissionsSortDir = col === 'full_name' ? 'asc' : 'desc';
+  }
+  const data = window._currentAssignmentData;
+  if (!data) return;
+  const tbody = document.querySelector('.table-wrap table tbody');
+  if (tbody) tbody.innerHTML = buildSubmissionRows(sortedSubmissionStudents(data.students), data.assignment);
+  document.querySelectorAll('th[data-sub-col]').forEach(th => {
+    th.querySelector('.sort-icon')?.remove();
+    th.insertAdjacentHTML('beforeend', makeSortIcon(th.dataset.subCol, _submissionsSortCol, _submissionsSortDir));
+  });
+}
+window.sortSubmissionsTable = sortSubmissionsTable;
+
 function renderAssignmentSubmissions(assignment, students) {
   const submitted   = students.filter(s => s.submission_id).length;
   const notSubmitted = students.length - submitted;
   const overdue = isOverdue(assignment.deadline) && assignment.is_active;
 
-  const rows = students.length === 0
-    ? `<tr><td colspan="5">
-        <div class="empty-state" style="padding:30px">
-          <div class="empty-state-icon">👤</div>
-          <h3>Lớp chưa có học sinh nào</h3>
-        </div>
-       </td></tr>`
-    : students.map(s => {
-        const hasSubmission = !!s.submission_id;
-        const scoreDisplay  = s.overall_score != null
-          ? `<span style="font-weight:700;color:var(--primary)">${s.overall_score}/9</span>`
-          : (hasSubmission ? '<span style="color:var(--gray-400)">Chờ chấm</span>' : '—');
-        const statusBadge = hasSubmission
-          ? `<span class="badge" style="background:#d1fae5;color:#065f46">✓ Đã nộp</span>`
-          : `<span class="badge" style="background:#fee2e2;color:#991b1b">✗ Chưa nộp</span>`;
-        const viewBtn = hasSubmission
-          ? `<button class="btn btn-sm btn-outline"
-               onclick="openSubmissionModal('${s.submission_id}', '${assignment.skill}')">
-               Xem bài
-             </button>`
-          : `<span style="font-size:12px;color:var(--gray-400)">—</span>`;
-        return `
-          <tr>
-            <td>
-              <div style="font-weight:600">${escapeHtml(s.full_name)}</div>
-              <div style="font-size:11px;color:var(--gray-400);font-family:monospace">${escapeHtml(s.username)}</div>
-            </td>
-            <td>${statusBadge}</td>
-            <td>${scoreDisplay}</td>
-            <td style="font-size:12px;color:var(--gray-400)">${s.submitted_at ? formatDateTime(s.submitted_at) : '—'}</td>
-            <td>${viewBtn}</td>
-          </tr>`;
-      }).join('');
+  const sssi = col => makeSortIcon(col, _submissionsSortCol, _submissionsSortDir);
+  const rows = buildSubmissionRows(sortedSubmissionStudents(students), assignment);
 
-  // Store for CSV export
+  // Store for CSV export and re-sort
   window._currentAssignmentData = { assignment, students };
 
   $('#app').innerHTML = `
@@ -2314,10 +2480,10 @@ function renderAssignmentSubmissions(assignment, students) {
       <table>
         <thead>
           <tr>
-            <th>Học sinh</th>
-            <th>Trạng thái</th>
-            <th>Điểm</th>
-            <th>Thời gian nộp</th>
+            <th class="sortable" data-sub-col="full_name" onclick="sortSubmissionsTable('full_name')">Học sinh ${sssi('full_name')}</th>
+            <th class="sortable" data-sub-col="status" onclick="sortSubmissionsTable('status')">Trạng thái ${sssi('status')}</th>
+            <th class="sortable" data-sub-col="score" onclick="sortSubmissionsTable('score')">Điểm ${sssi('score')}</th>
+            <th class="sortable" data-sub-col="submitted_at" onclick="sortSubmissionsTable('submitted_at')">Thời gian nộp ${sssi('submitted_at')}</th>
             <th>Bài làm</th>
           </tr>
         </thead>
@@ -3265,6 +3431,16 @@ let _classSort = 'newest'; // 'newest' | 'name' | 'students'
 let _classDetailTab = 'assignments';
 let _cachedCls = null;
 let _cachedStudents = [];
+
+// Sort state for tables that don't use applyStatsFilter
+let _assignTableSortCol = '';    // stats: "Chi tiết từng bài tập"
+let _assignTableSortDir = 'desc';
+let _submissionsSortCol = '';    // assignment submissions page
+let _submissionsSortDir = 'desc';
+let _assignListSortCol = '';     // class detail: assignment list
+let _assignListSortDir = 'desc';
+let _classStudentsSortCol = '';  // class detail: student list
+let _classStudentsSortDir = 'asc';
 
 async function showQuestions() {
   setLoading('Đang tải kho đề...');

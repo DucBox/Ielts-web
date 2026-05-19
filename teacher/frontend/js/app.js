@@ -4939,15 +4939,27 @@ function applyFormatFontSize(size) {
     return;
   }
   const range = sel.getRangeAt(0);
+
+  // Extract, strip all existing font-size styles inside the selection so the
+  // new outer span is not overridden by inner spans with their own font-size.
+  const fragment = range.extractContents();
+  fragment.querySelectorAll('[style]').forEach(el => {
+    el.style.fontSize = '';
+    // Remove the style attribute entirely if it became empty after stripping
+    if (!el.getAttribute('style').trim()) el.removeAttribute('style');
+  });
+
   const span = document.createElement('span');
   span.style.fontSize = size + 'px';
-  try {
-    range.surroundContents(span);
-  } catch {
-    const fragment = range.extractContents();
-    span.appendChild(fragment);
-    range.insertNode(span);
-  }
+  span.appendChild(fragment);
+  range.insertNode(span);
+
+  // Restore selection over the newly inserted span
+  const newRange = document.createRange();
+  newRange.selectNodeContents(span);
+  sel.removeAllRanges();
+  sel.addRange(newRange);
+
   if (select) select.value = '';
   host.focus();
   syncContentBlocksFromEditor();

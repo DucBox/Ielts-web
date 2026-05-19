@@ -4063,7 +4063,7 @@ function _renderSpeakingSlots() {
     if (s.status === 'idle' || s.status === 'error') {
       const errLabel = s.status === 'error' ? `<span style="color:var(--danger);font-size:12px">✗ Lỗi upload — thử lại:</span>` : '';
       fileBody = `${errLabel}
-        <input id="sp-slot-input-${i}" type="file" accept="audio/*" style="display:none" onchange="onSpeakingSlotFileSelected(this,${i})" />
+        <input id="sp-slot-input-${i}" type="file" accept="audio/*,.m4a,.mp4,.mp3,.wav,.webm,.ogg,.flac" style="display:none" onchange="onSpeakingSlotFileSelected(this,${i})" />
         <button class="audio-pick-btn" onclick="startSlotRecording(${i})">🎙️ Thu âm</button>
         <button class="audio-pick-btn" onclick="document.getElementById('sp-slot-input-${i}').click()">🎵 Chọn file</button>`;
     } else if (s.status === 'recording') {

@@ -2665,6 +2665,15 @@ th.sortable:hover { color: var(--primary); }
   border-color: var(--primary);
 }
 
+/* Assign-picker sort pills */
+.assign-sort-pills {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 4px 4px;
+  flex-wrap: wrap;
+}
+
 /* ═══ QUESTION PREVIEW ═════════════════════════════════════════════════════ */
 .q-title-link {
   color: var(--primary);

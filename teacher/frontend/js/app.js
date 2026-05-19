@@ -4539,7 +4539,7 @@ function contentComposerHtml(label, hint = '') {
           <button type="button" class="fmt-btn" id="fmt-align-left"    onmousedown="event.preventDefault()" onclick="applyFormat('justifyLeft')"   title="Căn trái"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><line x1="1" y1="3" x2="13" y2="3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="1" y1="6" x2="9"  y2="6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="1" y1="9" x2="13" y2="9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="1" y1="12" x2="8" y2="12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
           <button type="button" class="fmt-btn" id="fmt-align-center"  onmousedown="event.preventDefault()" onclick="applyFormat('justifyCenter')" title="Căn giữa"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><line x1="1" y1="3" x2="13" y2="3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="3" y1="6" x2="11" y2="6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="1" y1="9" x2="13" y2="9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="3" y1="12" x2="11" y2="12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
           <button type="button" class="fmt-btn" id="fmt-align-right"   onmousedown="event.preventDefault()" onclick="applyFormat('justifyRight')"  title="Căn phải"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><line x1="1" y1="3" x2="13" y2="3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="5" y1="6" x2="13" y2="6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="1" y1="9" x2="13" y2="9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="6" y1="12" x2="13" y2="12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
-          <button type="button" class="fmt-btn" id="fmt-align-justify" onmousedown="event.preventDefault()" onclick="applyFormat('justifyFull')"   title="Căn đều"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><line x1="1" y1="3" x2="13" y2="3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="1" y1="6" x2="13" y2="6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="1" y1="9" x2="13" y2="9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="1" y1="12" x2="13" y2="12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+          <button type="button" class="fmt-btn" id="fmt-align-justify" onmousedown="event.preventDefault()" onclick="applyJustify()"   title="Căn đều"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><line x1="1" y1="3" x2="13" y2="3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="1" y1="6" x2="13" y2="6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="1" y1="9" x2="13" y2="9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="1" y1="12" x2="13" y2="12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
           <div class="fmt-sep"></div>
           <select class="fmt-select" id="fmt-fontsize" onfocus="saveComposerRange()" onchange="applyFormatFontSize(this.value)" title="Cỡ chữ">
             <option value="">Cỡ chữ (13)</option>
@@ -4824,9 +4824,9 @@ function renderContentComposer() {
   host.onkeydown = (e) => {
     if (e.key === 'Tab') {
       e.preventDefault();
-      // insertHTML with &nbsp; guarantees non-breaking spaces regardless of browser normalization.
-      // NBSP does not stretch under text-align:justify, so tab indents stay visually consistent.
-      document.execCommand('insertHTML', false, '&nbsp;&nbsp;&nbsp;&nbsp;');
+      // inline-block span: atomic unit immune to text-align:justify stretching.
+      // No matter how justify distributes space, this span's width never changes.
+      document.execCommand('insertHTML', false, '<span style="display:inline-block">&nbsp;&nbsp;&nbsp;&nbsp;</span>');
       syncContentBlocksFromEditor();
       return;
     }
@@ -4902,10 +4902,16 @@ function updateFormatToolbarState() {
   if (btnBold) btnBold.classList.toggle('is-active', document.queryCommandState('bold'));
   if (btnItalic) btnItalic.classList.toggle('is-active', document.queryCommandState('italic'));
   if (btnUnderline) btnUnderline.classList.toggle('is-active', document.queryCommandState('underline'));
-  ['Left','Center','Right','Full'].forEach(dir => {
-    const btn = document.getElementById(`fmt-align-${dir === 'Full' ? 'justify' : dir.toLowerCase()}`);
+  ['Left','Center','Right'].forEach(dir => {
+    const btn = document.getElementById(`fmt-align-${dir.toLowerCase()}`);
     if (btn) btn.classList.toggle('is-active', document.queryCommandState(`justify${dir}`));
   });
+  const host2 = document.getElementById('content-composer-host');
+  const btnJustify = document.getElementById('fmt-align-justify');
+  if (btnJustify && host2) {
+    btnJustify.classList.toggle('is-active',
+      document.queryCommandState('justifyFull') || host2.style.textAlign === 'justify');
+  }
   const sel = window.getSelection();
   if (sel?.rangeCount) {
     const node = sel.getRangeAt(0).commonAncestorContainer;
@@ -4922,6 +4928,24 @@ function applyFormat(cmd) {
   document.execCommand(cmd);
   syncContentBlocksFromEditor();
 }
+
+// Custom justify: applies text-align:justify directly to the host and all block
+// children instead of execCommand('justifyFull'), which creates inconsistent
+// <div> wrappers that render leading NBSP indents at different positions.
+function applyJustify() {
+  const host = document.getElementById('content-composer-host');
+  if (!host) return;
+  const isOn = document.queryCommandState('justifyFull')
+    || host.style.textAlign === 'justify';
+  const val = isOn ? '' : 'justify';
+  host.style.textAlign = val;
+  host.querySelectorAll('div, p, h1, h2, h3, h4, h5, h6').forEach(el => {
+    el.style.textAlign = val;
+  });
+  updateFormatToolbarState();
+  syncContentBlocksFromEditor();
+}
+window.applyJustify = applyJustify;
 
 function applyFormatFontSize(size) {
   const select = document.getElementById('fmt-fontsize');

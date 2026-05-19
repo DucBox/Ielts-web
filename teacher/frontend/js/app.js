@@ -1047,6 +1047,8 @@ let _statsSortCol = '';
 let _statsSortDir = 'desc';
 let _statsAllScoredSubs = []; // flat list of all scored submissions with student_name
 let _statsTrendSkill = ''; // skill filter for the trend chart only
+let _closedAssignsExpanded = false;
+let _closedAssignsSearch = '';
 
 function destroyStatsCharts() {
   _statsCharts.forEach(c => { try { c.destroy(); } catch {} });
@@ -1074,6 +1076,8 @@ async function loadStatsTab(classId) {
     _statsModeFilter = '';
     _statsSortCol = '';
     _statsSortDir = 'desc';
+    _closedAssignsExpanded = false;
+    _closedAssignsSearch = '';
     // Default to first skill that has assignments
     const skillOrder = ['reading','listening','writing','speaking'];
     _statsTrendSkill = skillOrder.find(sk =>
@@ -1093,6 +1097,19 @@ function applyStatsFilter() {
   container.dataset.loadedFor = _cachedCls?.id || '';
 }
 window.applyStatsFilter = applyStatsFilter;
+
+function toggleClosedAssignsExpanded() {
+  _closedAssignsExpanded = !_closedAssignsExpanded;
+  applyStatsFilter();
+}
+window.toggleClosedAssignsExpanded = toggleClosedAssignsExpanded;
+
+function setClosedAssignsSearch(val) {
+  _closedAssignsSearch = val.toLowerCase().trim();
+  _closedAssignsExpanded = true;
+  applyStatsFilter();
+}
+window.setClosedAssignsSearch = setClosedAssignsSearch;
 
 function sortStudentTable(col) {
   if (_statsSortCol === col) {
@@ -1390,10 +1407,29 @@ function renderStatsTab(container, data) {
 
   // Chart: on-time stacked bar (closed assignments only)
   const closedAssigns = filteredAssignments.filter(a => !a.is_active && a.deadline);
+  const closedSearched = _closedAssignsSearch
+    ? closedAssigns.filter(a => a.title.toLowerCase().includes(_closedAssignsSearch))
+    : closedAssigns;
+  const CLOSED_PREVIEW = 3;
+  const displayedClosedAssigns = _closedAssignsExpanded ? closedSearched : closedSearched.slice(0, CLOSED_PREVIEW);
+  const closedHiddenCount = closedSearched.length - displayedClosedAssigns.length;
   const onTimeChartHtml = closedAssigns.length === 0 ? '' : `
     <div class="stats-section-card">
       <div class="stats-section-title">Đúng hạn / muộn / chưa nộp (bài đã đóng)</div>
-      <canvas id="chart-ontime" height="${Math.max(80, closedAssigns.length * 36)}"></canvas>
+      <div class="stats-closed-controls">
+        <input class="stats-closed-search" type="text" placeholder="🔍 Tìm bài tập..."
+          value="${escapeHtml(_closedAssignsSearch)}"
+          oninput="setClosedAssignsSearch(this.value)" />
+      </div>
+      ${closedSearched.length === 0
+        ? '<p style="color:var(--gray-400);font-size:13px;padding:8px 0 4px">Không tìm thấy bài tập phù hợp</p>'
+        : `<canvas id="chart-ontime" height="${Math.max(80, displayedClosedAssigns.length * 38)}"></canvas>`}
+      ${closedSearched.length > CLOSED_PREVIEW ? `
+        <button class="stats-closed-toggle-btn" onclick="toggleClosedAssignsExpanded()">
+          ${_closedAssignsExpanded
+            ? '▲ Thu gọn'
+            : `▼ Xem thêm ${closedHiddenCount} bài tập`}
+        </button>` : ''}
     </div>`;
 
   // Chart: student score trend (multi-line, per-student + skill filters)
@@ -1759,15 +1795,15 @@ function renderStatsTab(container, data) {
 
     // Chart 5: On-time stacked horizontal bar
     const ontimeCanvas = document.getElementById('chart-ontime');
-    if (ontimeCanvas && closedAssigns.length > 0) {
+    if (ontimeCanvas && displayedClosedAssigns.length > 0) {
       const chart = new Chart(ontimeCanvas.getContext('2d'), {
         type: 'bar',
         data: {
-          labels: closedAssigns.map(a => a.title.length > 22 ? a.title.slice(0,20) + '…' : a.title),
+          labels: displayedClosedAssigns.map(a => a.title.length > 22 ? a.title.slice(0,20) + '…' : a.title),
           datasets: [
-            { label: 'Đúng hạn', data: closedAssigns.map(a => a.on_time), backgroundColor: '#86efac', borderRadius: 4 },
-            { label: 'Nộp muộn', data: closedAssigns.map(a => a.late), backgroundColor: '#fcd34d', borderRadius: 4 },
-            { label: 'Chưa nộp', data: closedAssigns.map(a => a.missing || 0), backgroundColor: '#fca5a5', borderRadius: 4 },
+            { label: 'Đúng hạn', data: displayedClosedAssigns.map(a => a.on_time), backgroundColor: '#86efac', borderRadius: 4 },
+            { label: 'Nộp muộn', data: displayedClosedAssigns.map(a => a.late), backgroundColor: '#fcd34d', borderRadius: 4 },
+            { label: 'Chưa nộp', data: displayedClosedAssigns.map(a => a.missing || 0), backgroundColor: '#fca5a5', borderRadius: 4 },
           ],
         },
         options: {

@@ -80,6 +80,80 @@ function countWords(text) {
   return (text || '').trim().split(/\s+/).filter(Boolean).length;
 }
 
+function renderMarkdownInline(text) {
+  return escapeHtml(text)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*([^*\n]+)\*/g, '<em>$1</em>');
+}
+
+function renderSafeMarkdown(markdown) {
+  const lines = String(markdown || '').replace(/\r\n/g, '\n').split('\n');
+  const html = [];
+  let listType = null;
+  const closeList = () => { if (listType) { html.push(`</${listType}>`); listType = null; } };
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) { closeList(); continue; }
+    const bullet   = line.match(/^[-*]\s+(.+)$/);
+    const numbered = line.match(/^\d+\.\s+(.+)$/);
+    if (bullet || numbered) {
+      const t = bullet ? 'ul' : 'ol';
+      if (listType !== t) { closeList(); html.push(`<${t}>`); listType = t; }
+      html.push(`<li>${renderMarkdownInline((bullet || numbered)[1])}</li>`);
+      continue;
+    }
+    closeList();
+    const heading = line.match(/^#{2,4}\s+(.+)$/);
+    if (heading) html.push(`<h5>${renderMarkdownInline(heading[1])}</h5>`);
+    else html.push(`<p>${renderMarkdownInline(line)}</p>`);
+  }
+  closeList();
+  return html.join('');
+}
+
+function bandColor(score) {
+  const s = parseFloat(score);
+  if (s >= 7) return '#16a34a';
+  if (s >= 5.5) return '#ca8a04';
+  return '#dc2626';
+}
+
+function renderAiCriterionCard(icon, title, score, criterion) {
+  const color = bandColor(score);
+  // criterion can be a sub-object {band_justification, strengths, errors, tips}
+  // or a plain string (legacy fallback)
+  let body;
+  if (criterion && typeof criterion === 'object') {
+    const sections = [
+      criterion.band_justification ? `<div class="ai-section-label">LÝ DO BAND</div><div class="ai-section-body">${renderSafeMarkdown(criterion.band_justification)}</div>` : '',
+      criterion.strengths          ? `<div class="ai-section-label">ĐIỂM MẠNH</div><div class="ai-section-body">${renderSafeMarkdown(criterion.strengths)}</div>` : '',
+      criterion.errors             ? `<div class="ai-section-label">LỖI & ĐIỂM YẾU</div><div class="ai-section-body">${renderSafeMarkdown(criterion.errors)}</div>` : '',
+      criterion.tips               ? `<div class="ai-section-label">GỢI Ý CẢI THIỆN</div><div class="ai-section-body">${renderSafeMarkdown(criterion.tips)}</div>` : '',
+    ].filter(Boolean).join('');
+    body = body = `<div class="ai-criterion-sections">${sections}</div>`;
+  } else {
+    body = `<div class="ai-criterion-body">${renderSafeMarkdown(String(criterion || ''))}</div>`;
+  }
+  return `<div class="ai-criterion-card">
+    <div class="ai-criterion-head">
+      <span class="ai-criterion-title">${icon} ${escapeHtml(title)}</span>
+      <span class="ai-band-chip" style="--chip-color:${color}">${score ?? '—'}/9</span>
+    </div>
+    ${body}
+  </div>`;
+}
+
+function renderAiAdviceCard(icon, title, advice) {
+  return `<div class="ai-criterion-card ai-advice-card">
+    <div class="ai-criterion-head">
+      <span class="ai-criterion-title">${icon} ${escapeHtml(title)}</span>
+      <span class="ai-advice-label">Lời khuyên</span>
+    </div>
+    <div class="ai-criterion-body">${renderSafeMarkdown(advice)}</div>
+  </div>`;
+}
+
 function escapeHtml(str) {
   return (str || '')
     .replace(/&/g, '&amp;')
@@ -1395,6 +1469,7 @@ function router() {
   flushAutoSave();
   stopAutoSave();
   stopTaskTimer();
+  _stopAiFeedbackPoll();
   _activeAssignmentId = null;
   const hash = window.location.hash.slice(1) || '/home';
   updateHeader();
@@ -5926,14 +6001,17 @@ function _sharedTimerHtml(mode, timeLimitMinutes) {
 
 // ── Render: Reading ───────────────────────────────────────────────────────
 function renderSharedReading(q, mode) {
-  const qCount = (q.questions_data || []).length;
+  _flaggedSet = new Set();
+  const qData = q.questions_data || [];
+  const qCount = qData.length;
   let answerRows = '';
-  for (let i = 0; i < qCount; i++) {
-    const qItem = q.questions_data[i];
+  for (const qItem of qData) {
     answerRows += `
       <div class="answer-row">
         <span class="q-label">Q${qItem.q_no}</span>
-        <input class="answer-input" id="sans-${qItem.q_no}" type="text" placeholder="Đáp án câu ${qItem.q_no}" />
+        <input class="answer-input" id="ans-${qItem.q_no}" type="text" placeholder="Đáp án câu ${qItem.q_no}"
+          oninput="updateNavigatorState()" />
+        <button class="q-flag-btn" data-flag-q="${qItem.q_no}" onclick="toggleFlag(${qItem.q_no})" title="Đánh dấu xem lại">🚩</button>
       </div>`;
   }
   const modeBanner = mode === 'practice'
@@ -5950,7 +6028,7 @@ function renderSharedReading(q, mode) {
       </div>
       ${modeBanner}
       <div class="assignment-content">
-        <div class="content-pane" id="shared-reading-text-wrap">
+        <div class="content-pane">
           <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:16px">
             <div class="section-title" style="margin-bottom:0">Bài đọc &amp; Câu hỏi</div>
             ${buildHighlightToolbar()}
@@ -5958,6 +6036,7 @@ function renderSharedReading(q, mode) {
           <div class="reading-text" id="reading-text">${renderQuestionContentHTML(q.content_blocks, q.content_text || '')}</div>
         </div>
         <div class="answer-pane">
+          ${buildQuestionNavigator(qCount, q.id)}
           <div class="section-title">Điền đáp án</div>
           ${qCount === 0
             ? `<div style="color:var(--gray-400);font-size:13px">Bài không có câu hỏi.</div>`
@@ -5967,19 +6046,23 @@ function renderSharedReading(q, mode) {
     </div>`;
 
   bindReadingTextInteractions();
+  updateNavigatorState();
   if (mode === 'real_test' && q.time_limit_minutes) _updateSharedTimerDisplay();
 }
 
 // ── Render: Listening ─────────────────────────────────────────────────────
 function renderSharedListening(q, mode) {
-  const qCount = (q.questions_data || []).length;
+  _flaggedSet = new Set();
+  const qData = q.questions_data || [];
+  const qCount = qData.length;
   let answerRows = '';
-  for (let i = 0; i < qCount; i++) {
-    const qItem = q.questions_data[i];
+  for (const qItem of qData) {
     answerRows += `
       <div class="answer-row">
         <span class="q-label">Q${qItem.q_no}</span>
-        <input class="answer-input" id="sans-${qItem.q_no}" type="text" placeholder="Đáp án câu ${qItem.q_no}" />
+        <input class="answer-input" id="ans-${qItem.q_no}" type="text" placeholder="Đáp án câu ${qItem.q_no}"
+          oninput="updateNavigatorState()" />
+        <button class="q-flag-btn" data-flag-q="${qItem.q_no}" onclick="toggleFlag(${qItem.q_no})" title="Đánh dấu xem lại">🚩</button>
       </div>`;
   }
   const audioHtml = mode === 'practice'
@@ -6008,6 +6091,7 @@ function renderSharedListening(q, mode) {
           <div class="reading-text" id="reading-text">${renderQuestionContentHTML(q.content_blocks, q.content_text || '')}</div>
         </div>
         <div class="answer-pane">
+          ${buildQuestionNavigator(qCount, q.id)}
           <div class="section-title">Điền đáp án</div>
           ${qCount === 0
             ? `<div style="color:var(--gray-400);font-size:13px">Bài không có câu hỏi.</div>`
@@ -6018,6 +6102,7 @@ function renderSharedListening(q, mode) {
 
   if (mode !== 'practice') setupLockedListeningAudio();
   bindReadingTextInteractions();
+  updateNavigatorState();
   if (mode === 'real_test' && q.time_limit_minutes) _updateSharedTimerDisplay();
 }
 
@@ -6120,7 +6205,14 @@ async function confirmLeaveShared() {
     stopSharedCountdownTimer();
     _sharedCtx = null;
     _speakingIsShared = false;
-    navigate(`/shared-pool/${ctx.poolId}`);
+    // startSharedAttempt doesn't change the hash, so it stays at #/shared-pool/:id.
+    // navigate() is a no-op when hash is unchanged → call the route fn directly.
+    const targetHash = `#/shared-pool/${ctx.poolId}`;
+    if (window.location.hash === targetHash) {
+      showSharedQuestion({ id: ctx.poolId });
+    } else {
+      navigate(`/shared-pool/${ctx.poolId}`);
+    }
   }
 }
 window.confirmLeaveShared = confirmLeaveShared;
@@ -6149,7 +6241,7 @@ async function submitSharedReadingListening(btn, isAuto = false) {
   if (!ctx) return;
   const { poolQ, poolId, mode } = ctx;
   const qData = poolQ.questions_data || [];
-  const answers = qData.map(q => ({ q_no: q.q_no, answer: ($(`#sans-${q.q_no}`)?.value || '').trim() }));
+  const answers = qData.map(q => ({ q_no: q.q_no, answer: ($(`#ans-${q.q_no}`)?.value || '').trim() }));
   const answered = answers.filter(a => a.answer).length;
 
   if (!isAuto) {
@@ -6250,11 +6342,82 @@ async function submitSharedSpeaking(btn, isAuto = false) {
 window.submitSharedSpeaking = submitSharedSpeaking;
 
 // ── Result page ───────────────────────────────────────────────────────────
+let _aiFeedbackPollTimer = null;
+
+function _stopAiFeedbackPoll() {
+  if (_aiFeedbackPollTimer) { clearInterval(_aiFeedbackPollTimer); _aiFeedbackPollTimer = null; }
+}
+
+async function retryAiGrading(attemptId) {
+  _stopAiFeedbackPoll();
+  // Show spinner in pending view or disable retry button in graded view
+  document.querySelectorAll('.pending-feedback-text').forEach(el => {
+    el.innerHTML = `<div class="spinner" style="width:24px;height:24px;border-width:2px;margin:0 auto 8px"></div><p>Đang chấm AI... (có thể mất 30–60 giây)</p>`;
+  });
+  document.querySelectorAll('.btn-retry-ai').forEach(el => {
+    el.textContent = '⏳ Đang chấm AI...';
+    el.disabled = true;
+  });
+  try {
+    // Synchronous: POST waits for AI and returns full graded attempt
+    const graded = await api.post(`/student/shared-attempts/${attemptId}/retry-ai`, {});
+    _renderSharedAttemptResult(graded);
+    toast('✅ AI đã chấm xong bài của bạn!', 'success');
+  } catch (e) {
+    const errMsg = e.error || e.message || 'Lỗi không xác định';
+    document.querySelectorAll('.pending-feedback-text').forEach(el => {
+      el.innerHTML = `<h4>Không thể chấm AI</h4><p>${errMsg}</p><button class="btn-primary" onclick="retryAiGrading('${attemptId}')">Thử lại</button>`;
+    });
+    document.querySelectorAll('.btn-retry-ai').forEach(el => {
+      el.textContent = '↻ Chấm lại AI';
+      el.disabled = false;
+    });
+    toast('Lỗi chấm AI: ' + errMsg, 'error');
+  }
+}
+
 async function showSharedAttemptResult({ id }) {
+  _stopAiFeedbackPoll();
   setLoading('Đang tải kết quả...');
   try {
     const sub = await api.get(`/student/shared-attempts/${id}`);
     _renderSharedAttemptResult(sub);
+    // Auto-poll when AI feedback is still pending
+    const needsPoll = (sub.skill === 'writing' || sub.skill === 'speaking') && !sub.ai_feedback;
+    if (needsPoll) {
+      let attempts = 0;
+      _aiFeedbackPollTimer = setInterval(async () => {
+        attempts++;
+        if (attempts > 30) {
+          _stopAiFeedbackPoll();
+          // Show retry button in the pending-feedback areas
+          document.querySelectorAll('.pending-feedback-text').forEach(el => {
+            el.innerHTML = `<h4>AI chưa chấm được bài này</h4><p>Có thể AI bị bận, hãy thử lại.</p><button class="btn-primary" onclick="retryAiGrading('${id}')">Chấm lại ngay</button>`;
+          });
+          return;
+        }
+        try {
+          const fresh = await api.get(`/student/shared-attempts/${id}`);
+          if (fresh.ai_feedback) {
+            _stopAiFeedbackPoll();
+            _renderSharedAttemptResult(fresh);
+            toast('✅ AI đã chấm xong bài của bạn!', 'success');
+          }
+        } catch { _stopAiFeedbackPoll(); }
+      }, 4000);
+    }
+    // If already known to be stuck (page reload on old attempt), show retry immediately
+    if (needsPoll) {
+      // Re-check after a short delay whether the attempt was already submitted long ago
+      // (If submitted > 5 min ago with no ai_feedback → it's stuck, show retry right away)
+      const submittedAt = sub.submitted_at ? new Date(sub.submitted_at) : null;
+      if (submittedAt && (Date.now() - submittedAt.getTime()) > 5 * 60 * 1000) {
+        _stopAiFeedbackPoll();
+        document.querySelectorAll('.pending-feedback-text').forEach(el => {
+          el.innerHTML = `<h4>AI chưa chấm được bài này</h4><p>Có thể bài nộp lúc trước gặp sự cố. Hãy thử chấm lại.</p><button class="btn-primary" onclick="retryAiGrading('${id}')">Chấm lại ngay</button>`;
+        });
+      }
+    }
   } catch (e) {
     toast('Lỗi tải kết quả: ' + (e.error || e.message), 'error');
     navigate('/shared-pool');
@@ -6271,55 +6434,133 @@ function _renderSharedAttemptResult(sub) {
 function _renderSharedGradedResult(sub) {
   const questionsData  = sub.questions_data || [];
   const studentAnswers = sub.student_answers || [];
+  const modeLabel = sub.mode === 'real_test' ? '🎯 Thi thật' : '📝 Luyện tập';
+
   let correctCount = 0;
+  const hasActions = questionsData.some(q => q.explanation || q.location);
   const rows = questionsData.map(q => {
     const sa      = studentAnswers.find(a => a.q_no === q.q_no);
     const given   = (sa?.answer || '').trim();
     const correct = q.answers.some(a => a.toLowerCase().trim() === given.toLowerCase());
     if (correct) correctCount++;
+    const actionBtns = (q.explanation || q.location) ? `
+      <td class="result-actions">
+        ${q.explanation ? `<button class="btn-result-action btn-result-explain" onclick="toggleExplanation('exp-q${q.q_no}')">Explain</button>` : ''}
+        ${q.location ? `<button class="btn-result-action btn-result-locate" data-locate="${escapeHtml(q.location)}" data-locate-meta="${escapeAttrJson(q.location_meta)}" onclick="locateInText(this.dataset.locate, this.dataset.locateMeta)">Locate</button>` : ''}
+      </td>` : (hasActions ? '<td></td>' : '');
+    const expRow = q.explanation ? `
+      <tr class="explanation-row hidden" id="exp-q${q.q_no}">
+        <td colspan="${hasActions ? 5 : 4}">
+          <div class="explanation-content"><span class="explanation-label">💡 Giải thích:</span>${escapeHtml(q.explanation)}</div>
+        </td>
+      </tr>` : '';
     return `
       <tr>
         <td style="font-weight:700;color:var(--gray-400)">Q${q.q_no}</td>
         <td>${escapeHtml(given) || '<em style="color:var(--gray-400)">Bỏ trống</em>'}</td>
         <td>${escapeHtml(q.answers.join(' / '))}</td>
         <td class="${correct ? 'result-correct' : 'result-wrong'}">${correct ? '✓' : '✗'}</td>
-      </tr>`;
+        ${actionBtns}
+      </tr>${expRow}`;
   }).join('');
 
   const total = questionsData.length;
   const score = sub.overall_score ?? (total > 0 ? Math.round(correctCount / total * 9 * 10) / 10 : 0);
-  const modeLabel = sub.mode === 'real_test' ? '🎯 Thi thật' : '📝 Luyện tập';
-  const wrongQNos = questionsData
-    .filter(q => { const sa = studentAnswers.find(a => a.q_no === q.q_no); const g = (sa?.answer || '').trim().toLowerCase(); return !q.answers.some(a => a.toLowerCase().trim() === g); })
-    .map(q => q.q_no);
+  const wrongCount = total - correctCount;
+
+  const vocabList = sub.vocabulary || [];
+  const vocabHtml = vocabList.length === 0 ? '' : `
+    <div class="section-label" style="margin-top:20px">📚 Từ vựng trong bài</div>
+    <div class="vocab-result-list">
+      ${vocabList.map((v, i) => {
+        const saved = isWordSaved(v.word);
+        return `
+        <div class="vocab-result-item">
+          <div class="vocab-result-header" onclick="toggleVocabItem(${i})">
+            <span class="vocab-result-word">${escapeHtml(v.word)}</span>
+            <span class="vocab-result-toggle" id="vocab-toggle-${i}">▶</span>
+            <button class="btn-result-action btn-result-locate" data-locate="${escapeHtml(v.word)}" onclick="event.stopPropagation();locateInText(this.dataset.locate)">Locate</button>
+            <button class="btn-save-word ${saved ? 'saved' : ''}"
+              data-word="${escapeHtml(v.word)}"
+              data-def="${escapeHtml(v.definition)}"
+              data-pron="${escapeHtml(v.pronunciation || '')}"
+              data-ex="${escapeHtml(v.example || '')}"
+              data-src="${escapeHtml(sub.title || '')}"
+              onclick="event.stopPropagation();toggleSaveWordBtn(this)"
+            >${saved ? '✓ Đã lưu' : '💾 Lưu'}</button>
+          </div>
+          <div class="vocab-result-detail hidden" id="vocab-detail-${i}">
+            <div class="vocab-result-def">${escapeHtml(v.definition)}</div>
+            ${v.pronunciation ? `<div class="vocab-result-pronunciation">${escapeHtml(v.pronunciation)}</div>` : ''}
+            ${v.collocation ? `<div class="vocab-result-collocation">Collocation: ${escapeHtml(v.collocation)}</div>` : ''}
+            ${v.example ? `<div class="vocab-result-example">"${escapeHtml(v.example)}"</div>` : ''}
+          </div>
+        </div>`;}).join('')}
+    </div>`;
 
   $('#app').innerHTML = `
-    <div class="container">
-      <button class="btn-back" onclick="navigate('/shared-pool/${sub.shared_pool_id}')">← Kho đề</button>
-      <div class="result-header">
-        <div>${skillBadge(sub.skill)} <span style="font-size:12px;color:var(--gray-400)">${modeLabel}</span></div>
-        <div style="font-size:13px;color:var(--gray-400);margin-top:4px">${escapeHtml(sub.title || '')}</div>
-        <div class="result-score-big">${score} <span style="font-size:18px;color:var(--gray-400)">/9.0</span></div>
-        <div style="font-size:13px;color:var(--gray-400)">${correctCount}/${total} câu đúng</div>
+    <div class="assignment-page">
+      <div class="assignment-toolbar">
+        <button class="btn-back" onclick="navigate('/shared-pool/${sub.shared_pool_id}')">← Kho đề</button>
+        <div class="assignment-toolbar-title">${skillBadge(sub.skill)} ${escapeHtml(sub.title || '')}
+          <span style="font-size:11px;color:var(--gray-400);font-weight:400">${modeLabel}</span>
+        </div>
       </div>
-      ${wrongQNos.length > 0 ? `
-      <div style="margin:12px 0;text-align:center">
-        <button class="btn btn-outline btn-sm" onclick="navigate('/shared-practice/${sub.shared_pool_id}?attempt_id=${sub.id}')">🔄 Làm lại câu sai (${wrongQNos.length} câu)</button>
-      </div>` : ''}
-      <table class="result-table">
-        <thead><tr><th>Câu</th><th>Đáp án của bạn</th><th>Đáp án đúng</th><th>Kết quả</th></tr></thead>
-        <tbody>${rows || '<tr><td colspan="4" style="text-align:center;color:var(--gray-400)">Không có câu hỏi</td></tr>'}</tbody>
-      </table>
+      <div class="assignment-content">
+        <div class="content-pane" id="result-content-pane">
+          ${sub.skill === 'listening' ? renderListeningAudioHtml(sub) : ''}
+          ${sub.skill === 'listening' && sub.script ? `
+            <div class="script-section" id="listening-script-section">
+              <button class="script-toggle" onclick="toggleListeningScript()">
+                <span id="script-toggle-icon">▶</span> Script Listening
+              </button>
+              <div class="script-body hidden" id="listening-script-body">
+                <div id="listening-script-text">${escapeHtml(sub.script)}</div>
+              </div>
+            </div>` : ''}
+          <div class="section-title">${sub.skill === 'listening' ? 'Câu hỏi' : 'Bài đọc & Câu hỏi'}</div>
+          <div class="reading-text" id="result-reading-text">${renderQuestionContentHTML(sub.content_blocks, sub.content_text || '')}</div>
+        </div>
+        <div class="answer-pane">
+          <div class="result-header" style="margin-bottom:16px">
+            <div class="score-display" style="margin-top:0">
+              <div class="score-number">${score}</div>
+              <div class="score-band">Band Score / 9.0</div>
+            </div>
+            <div class="result-stats">
+              <div class="stat-item"><div class="stat-value" style="color:var(--success)">${correctCount}</div><div class="stat-label">Đúng</div></div>
+              <div class="stat-item"><div class="stat-value" style="color:var(--danger)">${wrongCount}</div><div class="stat-label">Sai</div></div>
+              <div class="stat-item"><div class="stat-value">${total}</div><div class="stat-label">Tổng số</div></div>
+            </div>
+          </div>
+          ${wrongCount > 0 ? `
+          <div style="margin-bottom:16px">
+            <button class="btn-practice btn-practice-wrong" style="width:100%;justify-content:center"
+              onclick="navigate('/shared-practice/${sub.shared_pool_id}?attempt_id=${sub.id}')">
+              📝 Làm lại câu sai (${wrongCount} câu)
+            </button>
+          </div>` : ''}
+          <div class="section-label">Chi tiết đáp án</div>
+          <div class="result-answers">
+            <table class="result-table">
+              <thead><tr><th>Câu</th><th>Bạn trả lời</th><th>Đáp án đúng</th><th>Kết quả</th>${hasActions ? '<th></th>' : ''}</tr></thead>
+              <tbody>${rows || `<tr><td colspan="${hasActions ? 5 : 4}" style="text-align:center;padding:20px;color:var(--gray-400)">Không có dữ liệu</td></tr>`}</tbody>
+            </table>
+          </div>
+          ${vocabHtml}
+        </div>
+      </div>
     </div>`;
+
+  bindReadingTextInteractions('result-reading-text');
 }
 
 function _renderSharedWritingResult(sub) {
-  const feedback = sub.ai_feedback;
-  const isGraded = sub.overall_score != null || (feedback?.annotations?.length > 0) || feedback?.overall;
+  const f = sub.ai_feedback;
   const modeLabel = sub.mode === 'real_test' ? '🎯 Thi thật' : '📝 Luyện tập';
   const wordCount = countWords(sub.writing_content || '');
 
-  if (!isGraded) {
+  if (!f) {
     $('#app').innerHTML = `
       <div class="container">
         <button class="btn-back" onclick="navigate('/shared-pool/${sub.shared_pool_id}')">← Kho đề</button>
@@ -6332,8 +6573,8 @@ function _renderSharedWritingResult(sub) {
           </div>
         </div>
         <div class="pending-feedback">
-          <div class="pending-feedback-icon">⏳</div>
-          <div class="pending-feedback-text"><h4>Đang chấm AI...</h4><p>AI đang xử lý bài làm của bạn. Vui lòng tải lại sau.</p></div>
+          <div class="pending-feedback-icon"><span class="spinner" style="width:28px;height:28px;border-width:3px;display:inline-block"></span></div>
+          <div class="pending-feedback-text"><h4>Đang chấm AI...</h4><p>Trang sẽ tự cập nhật khi có kết quả.</p></div>
         </div>
         <div class="section-label">Bài làm của bạn</div>
         <div class="submitted-content">${escapeHtml(sub.writing_content || '')}</div>
@@ -6341,57 +6582,74 @@ function _renderSharedWritingResult(sub) {
     return;
   }
 
-  const annotations = (feedback?.annotations || []).sort((a, b) => a.start - b.start);
-  const overall = feedback?.overall || '';
-  const score = sub.overall_score ?? feedback?.score;
-  const overallBlock = overall ? `<div class="section-label">Nhận xét tổng thể</div><div class="feedback-overall">${escapeHtml(overall)}</div>` : '';
-  const annSidebar = annotations.length === 0
-    ? `<div style="color:var(--gray-400);font-size:13px;text-align:center;padding-top:48px">Không có nhận xét theo đoạn</div>`
-    : `<div class="section-label">Nhận xét theo đoạn</div>
-       <div class="feedback-annotations">
-         ${annotations.map((ann, i) => `
-           <div class="feedback-ann-card feedback-ann-clickable" onclick="scrollToFeedbackMark(${i})">
-             <div class="feedback-ann-header">
-               <span class="feedback-ann-number">${i + 1}</span>
-               <span class="feedback-ann-quote">"${escapeHtml(ann.text.slice(0, 80))}${ann.text.length > 80 ? '…' : ''}"</span>
-             </div>
-             <div class="feedback-ann-comment">${escapeHtml(ann.comment)}</div>
-           </div>`).join('')}
-       </div>`;
+  const isEmptyFeedback = !f.overall_score && !f.tr_score && !f.lr_score;
+  if (isEmptyFeedback) {
+    $('#app').innerHTML = `
+      <div class="container">
+        <button class="btn-back" onclick="navigate('/shared-pool/${sub.shared_pool_id}')">← Kho đề</button>
+        <div class="pending-feedback" style="margin-top:32px">
+          <div class="pending-feedback-icon">⚠️</div>
+          <div class="pending-feedback-text">
+            <h4>AI chưa chấm được bài này</h4>
+            <p>Kết quả trả về trống. Hãy thử chấm lại.</p>
+            <button class="btn-primary" onclick="retryAiGrading('${sub.id}')">Chấm lại AI</button>
+          </div>
+        </div>
+        <div class="section-label" style="margin-top:24px">Bài làm của bạn</div>
+        <div class="submitted-content">${escapeHtml(sub.writing_content || '')}</div>
+      </div>`;
+    return;
+  }
+
+  const overallScore = f.overall_score ?? sub.overall_score;
+  const criteriaHtml = [
+    renderAiCriterionCard('📝', 'Task Response / Task Achievement', f.tr_score, f.tr),
+    renderAiCriterionCard('🔗', 'Coherence and Cohesion', f.cc_score, f.cc),
+    renderAiCriterionCard('📚', 'Lexical Resource', f.lr_score, f.lr),
+    renderAiCriterionCard('📐', 'Grammatical Range and Accuracy', f.gra_score, f.gra),
+  ].join('');
+
+  const overallColor = bandColor(overallScore);
 
   $('#app').innerHTML = `
     <div class="assignment-page">
       <div class="assignment-toolbar">
         <button class="btn-back" onclick="navigate('/shared-pool/${sub.shared_pool_id}')">← Kho đề</button>
         <div class="assignment-toolbar-title">${skillBadge(sub.skill)} ${escapeHtml(sub.title || '')} <small style="color:var(--gray-400)">${modeLabel}</small></div>
-        <div class="score-chip"><span class="score-chip-val">${score ?? '—'}</span><span class="score-chip-label">/9.0</span></div>
+        <div class="score-chip" style="--chip-color:${overallColor}"><span class="score-chip-val">${overallScore ?? '—'}</span><span class="score-chip-label">/9.0</span></div>
       </div>
       <div class="assignment-content">
-        <div class="content-pane" id="feedback-content-pane">
-          ${overallBlock}
-          <div class="section-label"${overall ? ' style="margin-top:20px"' : ''}>Bài làm của bạn
-            ${annotations.length > 0 ? '<span class="feedback-hint">Bôi vàng = nhận xét · Bấm số để xem</span>' : ''}
-          </div>
-          <div class="submitted-content feedback-essay">${buildAnnotatedHtml(sub.writing_content || '', annotations)}</div>
+        <div class="content-pane">
+          <div class="section-label">Bài làm của bạn</div>
+          <div class="submitted-content">${escapeHtml(sub.writing_content || '')}</div>
           <div style="font-size:12px;color:var(--gray-400);margin-top:8px;text-align:right">${wordCount} từ</div>
         </div>
-        <div class="answer-pane">${annSidebar}</div>
+        <div class="answer-pane">
+          <div class="ai-overall-card" style="--chip-color:${overallColor}">
+            <div class="ai-overall-head">
+              <span class="ai-overall-label">Overall</span>
+              <span class="ai-band-chip" style="--chip-color:${overallColor}">${overallScore ?? '—'}/9</span>
+            </div>
+            ${f.overall_comment ? `<div class="ai-overall-comment">${renderSafeMarkdown(f.overall_comment)}</div>` : ''}
+          </div>
+          ${criteriaHtml}
+          <button class="btn-retry-ai" onclick="retryAiGrading('${sub.id}')">↻ Chấm lại AI</button>
+        </div>
       </div>
     </div>`;
 }
 
 function _renderSharedSpeakingResult(sub) {
-  const feedback = sub.ai_feedback;
-  const isGraded = sub.overall_score != null || (feedback?.annotations?.length > 0) || feedback?.overall;
+  const f = sub.ai_feedback;
   const modeLabel = sub.mode === 'real_test' ? '🎯 Thi thật' : '📝 Luyện tập';
   const audioUrls = sub.speaking_audio_urls || [];
+  const audioHtml = audioUrls.map((a, i) => `
+    <div style="margin-bottom:8px">
+      ${audioUrls.length > 1 ? `<div style="font-size:12px;color:var(--gray-400);margin-bottom:4px">${escapeHtml(a.name || ('Phần ' + (i+1)))}</div>` : ''}
+      <audio controls src="${escapeHtml(a.url || '')}" style="width:100%;height:36px"></audio>
+    </div>`).join('');
 
-  if (!isGraded) {
-    const audioHtml = audioUrls.map((a, i) => `
-      <div style="margin-bottom:8px">
-        ${audioUrls.length > 1 ? `<div style="font-size:12px;color:var(--gray-400);margin-bottom:4px">${escapeHtml(a.name || ('Phần ' + (i+1)))}</div>` : ''}
-        <audio controls src="${escapeHtml(a.url || '')}" style="width:100%"></audio>
-      </div>`).join('');
+  if (!f) {
     $('#app').innerHTML = `
       <div class="container">
         <button class="btn-back" onclick="navigate('/shared-pool/${sub.shared_pool_id}')">← Kho đề</button>
@@ -6403,55 +6661,63 @@ function _renderSharedSpeakingResult(sub) {
           </div>
         </div>
         <div class="pending-feedback">
-          <div class="pending-feedback-icon">⏳</div>
-          <div class="pending-feedback-text"><h4>Đang chấm AI...</h4><p>AI đang xử lý bài thu âm của bạn. Vui lòng tải lại sau.</p></div>
+          <div class="pending-feedback-icon"><span class="spinner" style="width:28px;height:28px;border-width:3px;display:inline-block"></span></div>
+          <div class="pending-feedback-text"><h4>Đang chấm AI...</h4><p>Trang sẽ tự cập nhật khi có kết quả.</p></div>
         </div>
         ${audioHtml ? `<div class="section-label">Bài thu âm của bạn</div><div class="submitted-content" style="padding:16px">${audioHtml}</div>` : ''}
       </div>`;
     return;
   }
 
-  const annotations = (feedback?.annotations || []).sort((a, b) => a.start - b.start);
-  const overall = feedback?.overall || '';
-  const score = sub.overall_score ?? feedback?.score;
-  const overallBlock = overall ? `<div class="section-label">Nhận xét tổng thể</div><div class="feedback-overall">${escapeHtml(overall)}</div>` : '';
-  const annSidebar = annotations.length === 0
-    ? `<div style="color:var(--gray-400);font-size:13px;text-align:center;padding-top:48px">Không có nhận xét theo đoạn</div>`
-    : `<div class="section-label">Nhận xét theo đoạn</div>
-       <div class="feedback-annotations">
-         ${annotations.map((ann, i) => `
-           <div class="feedback-ann-card feedback-ann-clickable" onclick="scrollToFeedbackMark(${i})">
-             <div class="feedback-ann-header">
-               <span class="feedback-ann-number">${i + 1}</span>
-               <span class="feedback-ann-quote">"${escapeHtml(ann.text.slice(0, 80))}${ann.text.length > 80 ? '…' : ''}"</span>
-             </div>
-             <div class="feedback-ann-comment">${escapeHtml(ann.comment)}</div>
-           </div>`).join('')}
-       </div>`;
+  const isEmptyFeedback = !f.overall_score && !f.lr_score && !f.gra_score;
+  if (isEmptyFeedback) {
+    $('#app').innerHTML = `
+      <div class="container">
+        <button class="btn-back" onclick="navigate('/shared-pool/${sub.shared_pool_id}')">← Kho đề</button>
+        <div class="pending-feedback" style="margin-top:32px">
+          <div class="pending-feedback-icon">⚠️</div>
+          <div class="pending-feedback-text">
+            <h4>AI chưa chấm được bài này</h4>
+            <p>Kết quả trả về trống. Hãy thử chấm lại.</p>
+            <button class="btn-primary" onclick="retryAiGrading('${sub.id}')">Chấm lại AI</button>
+          </div>
+        </div>
+        ${audioHtml ? `<div class="section-label" style="margin-top:24px">Bài thu âm</div><div class="submitted-content" style="padding:16px">${audioHtml}</div>` : ''}
+      </div>`;
+    return;
+  }
 
-  const audioHtml = audioUrls.map((a, i) => `
-    <div style="margin-bottom:8px">
-      ${audioUrls.length > 1 ? `<div style="font-size:12px;color:var(--gray-400);margin-bottom:4px">${escapeHtml(a.name || ('Phần ' + (i+1)))}</div>` : ''}
-      <audio controls src="${escapeHtml(a.url || '')}" style="width:100%;height:36px"></audio>
-    </div>`).join('');
+  const overallScore = f.overall_score ?? sub.overall_score;
+  const overallColor = bandColor(overallScore);
 
   $('#app').innerHTML = `
     <div class="assignment-page">
       <div class="assignment-toolbar">
         <button class="btn-back" onclick="navigate('/shared-pool/${sub.shared_pool_id}')">← Kho đề</button>
         <div class="assignment-toolbar-title">${skillBadge(sub.skill)} ${escapeHtml(sub.title || '')} <small style="color:var(--gray-400)">${modeLabel}</small></div>
-        <div class="score-chip"><span class="score-chip-val">${score ?? '—'}</span><span class="score-chip-label">/9.0</span></div>
+        <div class="score-chip" style="--chip-color:${overallColor}"><span class="score-chip-val">${overallScore ?? '—'}</span><span class="score-chip-label">/9.0</span></div>
       </div>
       <div class="assignment-content">
-        <div class="content-pane" id="feedback-content-pane">
-          ${overallBlock}
-          ${audioHtml ? `<div class="section-label"${overall ? ' style="margin-top:20px"' : ''}>Audio ghi âm của bạn</div><div style="margin-bottom:16px">${audioHtml}</div>` : ''}
-          <div class="section-label">Transcript (AI Generated)
-            ${annotations.length > 0 ? '<span class="feedback-hint">Bôi vàng = nhận xét · Bấm số để xem</span>' : ''}
-          </div>
-          <div class="submitted-content feedback-essay">${buildAnnotatedHtml(sub.speaking_script || '', annotations)}</div>
+        <div class="content-pane">
+          ${audioHtml ? `<div class="section-label">Bài thu âm của bạn</div><div style="margin-bottom:16px">${audioHtml}</div>` : ''}
+          <div class="section-label">Transcript (AI Generated)</div>
+          <div class="submitted-content">${escapeHtml(sub.speaking_script || '')}</div>
         </div>
-        <div class="answer-pane">${annSidebar}</div>
+        <div class="answer-pane">
+          <div class="ai-overall-card" style="--chip-color:${overallColor}">
+            <div class="ai-overall-head">
+              <span class="ai-overall-label">Overall (ước tính)</span>
+              <span class="ai-band-chip" style="--chip-color:${overallColor}">${overallScore ?? '—'}/9</span>
+            </div>
+            ${f.overall_comment ? `<div class="ai-overall-comment">${renderSafeMarkdown(f.overall_comment)}</div>` : ''}
+            <div class="ai-overall-note">⚠️ Ước tính dựa trên Từ vựng và Ngữ pháp từ transcript. Chưa tính Fluency và Phát âm.</div>
+          </div>
+          ${renderAiCriterionCard('📚', 'Lexical Resource', f.lr_score, f.lr)}
+          ${renderAiCriterionCard('📐', 'Grammatical Range and Accuracy', f.gra_score, f.gra)}
+          ${f.fc_advice ? renderAiAdviceCard('🗣️', 'Fluency and Coherence', f.fc_advice) : ''}
+          ${f.pron_advice ? renderAiAdviceCard('🔊', 'Pronunciation', f.pron_advice) : ''}
+          <button class="btn-retry-ai" onclick="retryAiGrading('${sub.id}')">↻ Chấm lại AI</button>
+        </div>
       </div>
     </div>`;
 }

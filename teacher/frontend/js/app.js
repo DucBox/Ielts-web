@@ -160,7 +160,7 @@ function pruneTeacherQuestionDrafts() {
   try {
     for (let i = localStorage.length - 1; i >= 0; i--) {
       const key = localStorage.key(i);
-      if (!key || !key.startsWith(QUESTION_DRAFT_PREFIX)) continue;
+      if (!key || (!key.startsWith(QUESTION_DRAFT_PREFIX) && !key.startsWith(SP_DRAFT_PREFIX))) continue;
       try {
         const raw = localStorage.getItem(key);
         if (!raw) continue;
@@ -364,6 +364,124 @@ document.addEventListener('click', e => {
   const hit = e.target.closest('.chip-remove, .vocab-remove, .vocab-edit, .btn-clear-location');
   if (!hit || !isQuestionDraftTarget(hit)) return;
   setTimeout(scheduleQuestionDraftSave, 0);
+});
+
+// ── Shared Pool Draft Autosave ─────────────────────────────────────────────
+const SP_DRAFT_PREFIX = 'ielts_teacher_sp_draft:';
+let _spDraftContext = null;
+let _spDraftTimer = null;
+let _spDraftDebounceTimer = null;
+let _suspendSpDraftSave = false;
+
+function getSpDraftKey(mode, id = '') {
+  return `${SP_DRAFT_PREFIX}${mode}:${id || 'new'}`;
+}
+
+function snapshotCurrentSpDraft() {
+  const titleInput = $('#sp-title');
+  if (!titleInput) return null;
+  const skill = $('#sp-skill')?.value || _spDraftContext?.skill || '';
+  const contentBlocks = normalizeContentBlocksForEditor(_contentBlocks);
+  return {
+    mode: _spDraftContext?.mode || 'new',
+    sp_id: _spDraftContext?.spId || '',
+    title: titleInput.value.trim(),
+    skill,
+    time_limit_minutes: $('#sp-time-limit')?.value.trim() || '',
+    tags: getChipValues($('#sp-tags-chip')),
+    content_blocks: contentBlocks,
+    questions_data: (skill === 'reading' || skill === 'listening') ? collectAnswerGrid() : [],
+    vocabulary: Array.isArray(_vocabItems) ? _vocabItems.map(item => ({ ...item })) : [],
+    script: skill === 'listening' ? (($('#listening-script')?.value || '').trim()) : '',
+  };
+}
+
+function flushSpDraftSave() {
+  if (_spDraftDebounceTimer) { clearTimeout(_spDraftDebounceTimer); _spDraftDebounceTimer = null; }
+  if (_suspendSpDraftSave || !_spDraftContext) return;
+  const snapshot = snapshotCurrentSpDraft();
+  if (!hasMeaningfulQuestionDraft(snapshot)) { clearQuestionDraft(_spDraftContext.key); return; }
+  saveQuestionDraft(_spDraftContext.key, snapshot);
+}
+
+function scheduleSpDraftSave() {
+  if (_suspendSpDraftSave || !_spDraftContext) return;
+  if (_spDraftDebounceTimer) clearTimeout(_spDraftDebounceTimer);
+  _spDraftDebounceTimer = setTimeout(() => {
+    _spDraftDebounceTimer = null;
+    flushSpDraftSave();
+  }, QUESTION_DRAFT_SAVE_DEBOUNCE_MS);
+}
+
+function stopSpDraftAutosave() {
+  flushSpDraftSave();
+  if (_spDraftTimer) clearInterval(_spDraftTimer);
+  if (_spDraftDebounceTimer) clearTimeout(_spDraftDebounceTimer);
+  _spDraftTimer = null;
+  _spDraftDebounceTimer = null;
+  _spDraftContext = null;
+}
+
+function startSpDraftAutosave(mode, spId = '', skill = '') {
+  stopSpDraftAutosave();
+  _spDraftContext = { mode, spId, key: getSpDraftKey(mode, spId), skill };
+  _spDraftTimer = setInterval(flushSpDraftSave, QUESTION_DRAFT_SAVE_INTERVAL_MS);
+}
+
+function restoreSpDraftIntoForm(mode, spId = '', fallbackSkill = '') {
+  const draft = loadQuestionDraft(getSpDraftKey(mode, spId));
+  if (!draft) return false;
+  _suspendSpDraftSave = true;
+  try {
+    const titleInput = $('#sp-title');
+    if (titleInput) titleInput.value = draft.title || '';
+
+    const timeLimitInput = $('#sp-time-limit');
+    if (timeLimitInput && draft.time_limit_minutes) timeLimitInput.value = draft.time_limit_minutes;
+
+    const nextSkill = draft.skill || fallbackSkill || '';
+    const skillSelect = $('#sp-skill');
+    if (skillSelect && nextSkill) {
+      skillSelect.value = nextSkill;
+      const draftQ = {
+        skill: nextSkill,
+        content_blocks: draft.content_blocks || [],
+        content_text: '',
+        questions_data: draft.questions_data || [],
+        vocabulary: draft.vocabulary || [],
+        script: draft.script || '',
+      };
+      onSharedSkillChange(nextSkill, draftQ);
+    }
+
+    const tagContainer = $('#sp-tags-chip');
+    const tagInput = $('#sp-tag-input');
+    if (tagContainer && tagInput) setQuestionChipValues(tagContainer, tagInput, draft.tags || []);
+    attachChipListeners($('#sp-tag-input'), $('#sp-tags-chip'));
+
+    return true;
+  } finally {
+    _suspendSpDraftSave = false;
+  }
+}
+
+function isSpDraftTarget(target) {
+  return !!(_spDraftContext && target instanceof Element && target.closest('#app .form-card'));
+}
+
+document.addEventListener('input', e => {
+  if (isSpDraftTarget(e.target)) scheduleSpDraftSave();
+}, true);
+
+document.addEventListener('change', e => {
+  if (isSpDraftTarget(e.target)) scheduleSpDraftSave();
+}, true);
+
+document.addEventListener('click', e => {
+  if (!(e.target instanceof Element)) return;
+  const hit = e.target.closest('.chip-remove, .vocab-remove, .vocab-edit, .btn-clear-location');
+  if (!hit || !isSpDraftTarget(hit)) return;
+  setTimeout(scheduleSpDraftSave, 0);
 });
 
 function formatDate(iso) {
@@ -731,6 +849,7 @@ function navigate(hash) {
 
 function router() {
   stopQuestionDraftAutosave();
+  stopSpDraftAutosave();
   const hash = window.location.hash.slice(1) || '/classes';
   try {
     hideTableFloatToolbar();
@@ -2631,6 +2750,15 @@ function renderGradingPage(sub) {
     <div class="grading-layout">
       <!-- Left: writing content with highlights -->
       <div class="grading-content-panel">
+        ${(sub.content_blocks?.length || sub.content_text) ? `
+        <details class="grading-question-details">
+          <summary class="grading-panel-label grading-question-summary">
+            📋 Đề bài <span class="grading-select-hint">Nhấn để mở/thu gọn</span>
+          </summary>
+          <div class="grading-question-body">
+            ${renderRichQuestionContentHTML(sub.content_blocks, sub.content_text || '')}
+          </div>
+        </details>` : ''}
         ${mediaHtml}
         <div class="grading-panel-label">
           📝 ${sub.skill === 'speaking' ? 'Transcript AI' : 'Bài làm'}
@@ -3228,6 +3356,8 @@ async function submitAssign(btn) {
 
 let _currentSkillFilter = '';
 let _allQuestions = [];
+let _allFolders = [];
+let _currentFolderFilter = null; // null=tất cả | 'root'=chưa phân loại | uuid=thư mục cụ thể
 let _questionSearch = '';
 let _questionTagFilter = '';
 let _allClasses = [];
@@ -3240,13 +3370,186 @@ let _cachedStudents = [];
 async function showQuestions() {
   setLoading('Đang tải kho đề...');
   try {
-    _allQuestions = await api.get('/questions');
+    [_allQuestions, _allFolders] = await Promise.all([
+      api.get('/questions'),
+      api.get('/question-folders'),
+    ]);
     renderQuestions();
   } catch (e) {
     toast('Lỗi tải kho đề: ' + (e.error || e.message), 'error');
     renderRouteError('Không tải được kho đề', e, '/questions');
   }
 }
+
+// ─── Folder helpers ───────────────────────────────────────────────────────────
+
+function _getFolderSubtreeIds(folderId) {
+  const ids = new Set([folderId]);
+  const queue = [folderId];
+  while (queue.length) {
+    const cur = queue.shift();
+    for (const f of _allFolders) {
+      if (f.parent_id === cur) { ids.add(f.id); queue.push(f.id); }
+    }
+  }
+  return ids;
+}
+
+function _getFilteredQuestions() {
+  let list = _allQuestions;
+  if (_currentFolderFilter === 'root') {
+    list = list.filter(q => !q.folder_id);
+  } else if (_currentFolderFilter) {
+    const ids = _getFolderSubtreeIds(_currentFolderFilter);
+    list = list.filter(q => ids.has(q.folder_id));
+  }
+  if (_currentSkillFilter) list = list.filter(q => q.skill === _currentSkillFilter);
+  if (_questionSearch) {
+    const s = _questionSearch.toLowerCase();
+    list = list.filter(q =>
+      q.title.toLowerCase().includes(s) ||
+      (Array.isArray(q.tags) && q.tags.some(t => t.toLowerCase().includes(s)))
+    );
+  }
+  if (_questionTagFilter) list = list.filter(q => Array.isArray(q.tags) && q.tags.includes(_questionTagFilter));
+  return list;
+}
+
+function _buildFolderSidebar() {
+  const allCount  = _allQuestions.length;
+  const rootCount = _allQuestions.filter(q => !q.folder_id).length;
+  return `
+    <div class="folder-sidebar-header">
+      <span class="folder-sidebar-title">Thư mục</span>
+      <button class="btn-icon folder-add-root" title="Thêm thư mục" onclick="createFolderPrompt(null)">&#xff0b;</button>
+    </div>
+    <div class="folder-item ${_currentFolderFilter === null ? 'active' : ''}" onclick="setFolderFilter(null)">
+      <span class="folder-icon">🗂</span>
+      <span class="folder-name">Tất cả</span>
+      <span class="folder-count">${allCount}</span>
+    </div>
+    <div class="folder-item ${_currentFolderFilter === 'root' ? 'active' : ''}" onclick="setFolderFilter('root')">
+      <span class="folder-icon">📄</span>
+      <span class="folder-name">Chưa phân loại</span>
+      <span class="folder-count">${rootCount}</span>
+    </div>
+    ${_allFolders.filter(f => !f.parent_id).length > 0 ? '<div class="folder-divider"></div>' : ''}
+    ${_buildFolderTreeItems(null, 0)}
+  `;
+}
+
+function _buildFolderTreeItems(parentId, depth) {
+  return _allFolders
+    .filter(f => f.parent_id === parentId)
+    .sort((a, b) => (a.display_order - b.display_order) || a.name.localeCompare(b.name))
+    .map(f => {
+      const ids   = _getFolderSubtreeIds(f.id);
+      const count = _allQuestions.filter(q => ids.has(q.folder_id)).length;
+      const isActive    = _currentFolderFilter === f.id;
+      const hasChildren = _allFolders.some(c => c.parent_id === f.id);
+      const safeName    = escapeHtml(f.name).replace(/'/g, '&#39;');
+      return `
+        <div class="folder-item ${isActive ? 'active' : ''}" style="padding-left:${12 + depth * 14}px"
+             onclick="setFolderFilter('${f.id}')">
+          <span class="folder-icon">${hasChildren ? '📂' : '📁'}</span>
+          <span class="folder-name">${escapeHtml(f.name)}</span>
+          <span class="folder-count">${count}</span>
+          <span class="folder-item-actions" onclick="event.stopPropagation()">
+            <button class="folder-action-btn" title="Thêm thư mục con" onclick="createFolderPrompt('${f.id}')">&#xff0b;</button>
+            <button class="folder-action-btn" title="Đổi tên" onclick="renameFolderPrompt('${f.id}','${safeName}')">&#x270f;</button>
+            <button class="folder-action-btn danger" title="Xoá" onclick="deleteFolderConfirm('${f.id}','${safeName}')">&#x1f5d1;</button>
+          </span>
+        </div>
+        ${_buildFolderTreeItems(f.id, depth + 1)}`;
+    }).join('');
+}
+
+function setFolderFilter(v) { _currentFolderFilter = v; renderQuestions(); }
+window.setFolderFilter = setFolderFilter;
+
+async function createFolderPrompt(parentId) {
+  const name = window.prompt(parentId ? 'Tên thư mục con:' : 'Tên thư mục mới:');
+  if (!name?.trim()) return;
+  try {
+    const folder = await api.post('/question-folders', { name: name.trim(), parent_id: parentId });
+    _allFolders.push(folder);
+    renderQuestions();
+    toast('Đã tạo thư mục "' + folder.name + '"');
+  } catch (e) { toast('Lỗi: ' + (e.error || e.message), 'error'); }
+}
+window.createFolderPrompt = createFolderPrompt;
+
+async function renameFolderPrompt(id, currentName) {
+  const name = window.prompt('Đổi tên thư mục:', currentName);
+  if (!name?.trim() || name.trim() === currentName) return;
+  try {
+    const folder = await api.patch(`/question-folders/${id}`, { name: name.trim() });
+    const idx = _allFolders.findIndex(f => f.id === id);
+    if (idx >= 0) _allFolders[idx] = folder;
+    renderQuestions();
+  } catch (e) { toast('Lỗi: ' + (e.error || e.message), 'error'); }
+}
+window.renameFolderPrompt = renameFolderPrompt;
+
+async function deleteFolderConfirm(id, name) {
+  const childCount = _allFolders.filter(f => f.parent_id === id).length;
+  const qCount     = _allQuestions.filter(q => q.folder_id === id).length;
+  let msg = `Xoá thư mục "${name}"?`;
+  if (childCount > 0) msg += `\n• ${childCount} thư mục con cũng sẽ bị xoá.`;
+  if (qCount     > 0) msg += `\n• ${qCount} đề sẽ được chuyển về Chưa phân loại.`;
+  if (!confirm(msg)) return;
+  try {
+    await api.delete(`/question-folders/${id}`);
+    const subtree = _getFolderSubtreeIds(id);
+    _allFolders   = _allFolders.filter(f => !subtree.has(f.id));
+    _allQuestions.forEach(q => { if (subtree.has(q.folder_id)) q.folder_id = null; });
+    if (subtree.has(_currentFolderFilter)) _currentFolderFilter = null;
+    renderQuestions();
+    toast('Đã xoá thư mục');
+  } catch (e) { toast('Lỗi: ' + (e.error || e.message), 'error'); }
+}
+window.deleteFolderConfirm = deleteFolderConfirm;
+
+function openMoveQuestionModal(questionId) {
+  const q = _allQuestions.find(x => x.id === questionId);
+  if (!q) return;
+  const buildOpts = (parentId, depth) =>
+    _allFolders
+      .filter(f => f.parent_id === parentId)
+      .sort((a, b) => (a.display_order - b.display_order) || a.name.localeCompare(b.name))
+      .map(f => `
+        <option value="${f.id}" ${q.folder_id === f.id ? 'selected' : ''}>
+          ${'　'.repeat(depth)}${escapeHtml(f.name)}
+        </option>${buildOpts(f.id, depth + 1)}`).join('');
+  openModal('Di chuyển đề vào thư mục', `
+    <div style="margin-bottom:8px;font-size:13px;color:var(--gray-500)">${escapeHtml(q.title)}</div>
+    <div class="form-group">
+      <label class="form-label">Chọn thư mục đích</label>
+      <select id="move-folder-select" class="form-input">
+        <option value="" ${!q.folder_id ? 'selected' : ''}>📄 Chưa phân loại (gốc)</option>
+        ${buildOpts(null, 0)}
+      </select>
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+      <button class="btn btn-outline" onclick="closeModal()">Huỷ</button>
+      <button class="btn btn-primary" onclick="confirmMoveQuestion('${questionId}')">Di chuyển</button>
+    </div>
+  `);
+}
+window.openMoveQuestionModal = openMoveQuestionModal;
+
+async function confirmMoveQuestion(questionId) {
+  const folderId = document.getElementById('move-folder-select')?.value || null;
+  try {
+    await api.patch(`/questions/${questionId}`, { folder_id: folderId || null });
+    const q = _allQuestions.find(x => x.id === questionId);
+    if (q) q.folder_id = folderId || null;
+    closeModal();
+    renderQuestions();
+    toast('Đã di chuyển đề');
+  } catch (e) { toast('Lỗi: ' + (e.error || e.message), 'error'); }
+}
+window.confirmMoveQuestion = confirmMoveQuestion;
 
 function _buildQuestionTableRows(filtered) {
   if (filtered.length === 0) {
@@ -3283,6 +3586,8 @@ function _buildQuestionTableRows(filtered) {
           <div class="td-actions">
             <button class="btn-icon" title="Xem / Sửa"
               onclick="navigate('/questions/${q.id}')">✏️</button>
+            <button class="btn-icon" title="Di chuyển vào thư mục"
+              onclick="openMoveQuestionModal('${q.id}')">📁</button>
             <button class="btn-icon" title="Sao chép đề"
               onclick="duplicateQuestion('${q.id}', this)">📋</button>
             <button class="btn-icon danger" title="Xoá đề"
@@ -3563,28 +3868,15 @@ async function previewAsStudent(id) {
 window.previewAsStudent = previewAsStudent;
 
 function renderQuestions() {
-  const allQuestions = _allQuestions;
-  let filtered = _currentSkillFilter
-    ? allQuestions.filter(q => q.skill === _currentSkillFilter)
-    : allQuestions;
-  if (_questionSearch) {
-    const s = _questionSearch.toLowerCase();
-    filtered = filtered.filter(q =>
-      q.title.toLowerCase().includes(s) ||
-      (Array.isArray(q.tags) && q.tags.some(t => t.toLowerCase().includes(s)))
-    );
-  }
-  if (_questionTagFilter) {
-    filtered = filtered.filter(q =>
-      Array.isArray(q.tags) && q.tags.includes(_questionTagFilter)
-    );
-  }
+  const filtered = _getFilteredQuestions();
 
-  // If the questions page is already rendered, only update tbody + skill tabs
-  // to avoid destroying the search input and losing focus.
-  const existingTbody = $('#app')?.querySelector('table tbody');
-  if (existingTbody) {
-    existingTbody.innerHTML = _buildQuestionTableRows(filtered);
+  // Partial update: sidebar + tbody + tabs — avoids destroying search input focus
+  const existingLayout = $('#app')?.querySelector('.question-bank-layout');
+  if (existingLayout) {
+    existingLayout.querySelector('.folder-sidebar').innerHTML = _buildFolderSidebar();
+    existingLayout.querySelector('table tbody').innerHTML = _buildQuestionTableRows(filtered);
+    const sub = existingLayout.querySelector('.page-subtitle');
+    if (sub) sub.textContent = `Tổng cộng ${_allQuestions.length} đề thi`;
     document.querySelectorAll('.skill-tab').forEach(btn => {
       btn.classList.toggle('active', btn.textContent.trim().includes(
         _currentSkillFilter
@@ -3592,14 +3884,11 @@ function renderQuestions() {
           : 'Tất cả'
       ));
     });
-    // Update tag filter bar
-    const toolbar = $('#app')?.querySelector('.list-toolbar');
+    const toolbar = existingLayout.querySelector('.list-toolbar');
     if (toolbar) {
       let bar = toolbar.querySelector('.tag-filter-bar');
       if (_questionTagFilter && !bar) {
-        bar = document.createElement('div');
-        bar.className = 'tag-filter-bar';
-        toolbar.appendChild(bar);
+        bar = document.createElement('div'); bar.className = 'tag-filter-bar'; toolbar.appendChild(bar);
       }
       if (bar) {
         bar.innerHTML = _questionTagFilter
@@ -3611,57 +3900,55 @@ function renderQuestions() {
     return;
   }
 
-  // Full initial render
+  // Full initial render — two-panel layout
   $('#app').innerHTML = `
     <div class="page-header">
       <div>
         <div class="page-title">Kho đề</div>
-        <div class="page-subtitle">Tổng cộng ${allQuestions.length} đề thi</div>
+        <div class="page-subtitle">Tổng cộng ${_allQuestions.length} đề thi</div>
       </div>
-      <button class="btn btn-primary" onclick="navigate('/questions/new')">
-        + Tạo đề mới
-      </button>
+      <button class="btn btn-primary" onclick="navigate('/questions/new')">+ Tạo đề mới</button>
     </div>
 
-    <div class="list-toolbar">
-      <input id="question-search-input" class="form-input search-input"
-        placeholder="🔍 Tìm theo tên đề hoặc tag..."
-        value="${escapeHtml(_questionSearch)}" />
-      ${_questionTagFilter ? `<div class="tag-filter-bar">Lọc tag: <span class="tag-chip tag-chip-active">${escapeHtml(_questionTagFilter)}<button class="tag-chip-remove" onclick="setQuestionTagFilter('')">×</button></span></div>` : ''}
-    </div>
+    <div class="question-bank-layout">
+      <div class="folder-sidebar">${_buildFolderSidebar()}</div>
 
-    <div class="skill-tabs">
-      ${[['', 'Tất cả'], ['reading','📖 Reading'], ['listening','🎧 Listening'],
-         ['writing','✍️ Writing'], ['speaking','🎤 Speaking']].map(([s, label]) => `
-        <button class="skill-tab ${_currentSkillFilter === s ? 'active' : ''}"
-          onclick="setSkillFilter('${s}')">
-          ${label}
-        </button>`).join('')}
-    </div>
+      <div class="question-main">
+        <div class="list-toolbar">
+          <input id="question-search-input" class="form-input search-input"
+            placeholder="🔍 Tìm theo tên đề hoặc tag..."
+            value="${escapeHtml(_questionSearch)}" />
+          ${_questionTagFilter ? `<div class="tag-filter-bar">Lọc tag: <span class="tag-chip tag-chip-active">${escapeHtml(_questionTagFilter)}<button class="tag-chip-remove" onclick="setQuestionTagFilter('')">×</button></span></div>` : ''}
+        </div>
 
-    <div class="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>Kỹ năng</th>
-            <th>Tiêu đề <span style="font-size:11px;font-weight:400;color:var(--gray-400)">(click để xem nhanh)</span></th>
-            <th>Tags</th>
-            <th>Chi tiết</th>
-            <th>Ngày tạo</th>
-            <th>Thao tác</th>
-          </tr>
-        </thead>
-        <tbody>${_buildQuestionTableRows(filtered)}</tbody>
-      </table>
+        <div class="skill-tabs">
+          ${[['', 'Tất cả'], ['reading','📖 Reading'], ['listening','🎧 Listening'],
+             ['writing','✍️ Writing'], ['speaking','🎤 Speaking']].map(([s, label]) => `
+            <button class="skill-tab ${_currentSkillFilter === s ? 'active' : ''}"
+              onclick="setSkillFilter('${s}')">${label}</button>`).join('')}
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Kỹ năng</th>
+                <th>Tiêu đề <span style="font-size:11px;font-weight:400;color:var(--gray-400)">(click để xem nhanh)</span></th>
+                <th>Tags</th>
+                <th>Chi tiết</th>
+                <th>Ngày tạo</th>
+                <th>Thao tác</th>
+              </tr>
+            </thead>
+            <tbody>${_buildQuestionTableRows(filtered)}</tbody>
+          </table>
+        </div>
+      </div>
     </div>`;
 
-  // Attach listener after DOM is created so input keeps focus while typing
   const searchInput = document.getElementById('question-search-input');
   if (searchInput) {
-    searchInput.addEventListener('input', () => {
-      _questionSearch = searchInput.value;
-      renderQuestions();
-    });
+    searchInput.addEventListener('input', () => { _questionSearch = searchInput.value; renderQuestions(); });
     if (_questionSearch) searchInput.focus();
   }
 }
@@ -6480,6 +6767,7 @@ function _buildSharedPoolRows(list) {
       <td>${q.attempt_count || 0}</td>
       <td>${formatDate(q.created_at)}</td>
       <td style="white-space:nowrap">
+        <button class="btn btn-sm btn-outline" onclick="showSharedPoolStats('${q.id}','${escapeHtml(q.title)}')">📊 Thống kê</button>
         <button class="btn btn-sm btn-outline" onclick="navigate('/shared-pool/${q.id}')">✏️ Sửa</button>
         <button class="btn btn-sm btn-outline" style="color:var(--red)" onclick="deleteSharedQuestion('${q.id}','${escapeHtml(q.title)}')">🗑</button>
       </td>
@@ -6500,6 +6788,246 @@ async function deleteSharedQuestion(id, title) {
 }
 window.deleteSharedQuestion = deleteSharedQuestion;
 
+// ─── Shared Pool Stats Modal ────────────────────────────────────────────────
+
+let _sharedStatsModal = null;
+let _sharedStatsChart = null;
+let _sharedStatsRows = [];
+let _sharedStatsMode = 'avg';
+
+async function showSharedPoolStats(id, title) {
+  if (_sharedStatsModal) { _sharedStatsModal.remove(); _sharedStatsModal = null; }
+  if (_sharedStatsChart) { try { _sharedStatsChart.destroy(); } catch {} _sharedStatsChart = null; }
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal modal-wide" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <h3>📊 Thống kê: ${escapeHtml(title)}</h3>
+        <button class="modal-close" onclick="closeSharedStatsModal()">×</button>
+      </div>
+      <div class="modal-body sp-stats-body">
+        <div style="text-align:center;padding:40px 0"><div class="spinner"></div><p style="color:var(--gray-400);margin-top:12px">Đang tải thống kê...</p></div>
+      </div>
+    </div>`;
+  overlay.addEventListener('click', e => { if (e.target === overlay) closeSharedStatsModal(); });
+  document.body.appendChild(overlay);
+  _sharedStatsModal = overlay;
+
+  let rows;
+  try {
+    rows = await api.get(`/shared-pool/${id}/stats`);
+  } catch (e) {
+    overlay.querySelector('.sp-stats-body').innerHTML =
+      `<p style="color:var(--red);text-align:center">Lỗi tải thống kê: ${escapeHtml(e.error || e.message)}</p>`;
+    return;
+  }
+
+  _sharedStatsRows = rows;
+  _sharedStatsMode = 'avg';
+  _renderSharedStatsBody(overlay.querySelector('.sp-stats-body'));
+}
+
+function closeSharedStatsModal() {
+  if (_sharedStatsChart) { try { _sharedStatsChart.destroy(); } catch {} _sharedStatsChart = null; }
+  if (_sharedStatsModal) { _sharedStatsModal.remove(); _sharedStatsModal = null; }
+}
+
+function _groupSharedStatsByStudent(rows) {
+  const studentMap = new Map();
+  for (const r of rows) {
+    if (!studentMap.has(r.student_id)) {
+      studentMap.set(r.student_id, {
+        student_id: r.student_id,
+        student_name: r.student_name || '',
+        class_names: r.class_names || '—',
+        attempts: [],
+      });
+    }
+    studentMap.get(r.student_id).attempts.push(r);
+  }
+  const students = [...studentMap.values()];
+  for (const st of students) {
+    const scores = st.attempts.map(a => a.overall_score).filter(s => s != null).map(Number);
+    st.avg = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : null;
+    st.max = scores.length ? Math.max(...scores) : null;
+    st.count = st.attempts.length;
+  }
+  return students;
+}
+
+function _renderSharedStatsBody(bodyEl) {
+  const rows = _sharedStatsRows;
+  const students = _groupSharedStatsByStudent(rows);
+  const allScores = rows.map(r => r.overall_score).filter(s => s != null).map(Number);
+
+  const mean = arr => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null;
+  const median = arr => {
+    if (!arr.length) return null;
+    const s = [...arr].sort((a, b) => a - b);
+    const m = Math.floor(s.length / 2);
+    return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+  };
+  const fmt = v => v != null ? Number(v).toFixed(1) : '—';
+
+  bodyEl.innerHTML = `
+    <div class="sp-stats-summary">
+      <div class="sp-stats-kpi"><div class="sp-stats-kpi-val">${rows.length}</div><div class="sp-stats-kpi-lbl">Tổng lượt làm</div></div>
+      <div class="sp-stats-kpi"><div class="sp-stats-kpi-val">${students.length}</div><div class="sp-stats-kpi-lbl">Học sinh</div></div>
+      <div class="sp-stats-kpi"><div class="sp-stats-kpi-val">${fmt(mean(allScores))}</div><div class="sp-stats-kpi-lbl">Điểm TB</div></div>
+      <div class="sp-stats-kpi"><div class="sp-stats-kpi-val">${fmt(allScores.length ? Math.max(...allScores) : null)}</div><div class="sp-stats-kpi-lbl">Cao nhất</div></div>
+      <div class="sp-stats-kpi"><div class="sp-stats-kpi-val">${fmt(allScores.length ? Math.min(...allScores) : null)}</div><div class="sp-stats-kpi-lbl">Thấp nhất</div></div>
+      <div class="sp-stats-kpi"><div class="sp-stats-kpi-val">${fmt(median(allScores))}</div><div class="sp-stats-kpi-lbl">Trung vị</div></div>
+    </div>
+
+    <div class="sp-stats-chart-section">
+      <div class="sp-stats-chart-header">
+        <span class="sp-stats-section-title">Phổ điểm</span>
+        <div class="sp-stats-mode-toggle">
+          <button class="sp-stats-mode-btn ${_sharedStatsMode === 'avg' ? 'active' : ''}" onclick="setSharedStatsMode('avg')">Trung bình / HS</button>
+          <button class="sp-stats-mode-btn ${_sharedStatsMode === 'max' ? 'active' : ''}" onclick="setSharedStatsMode('max')">Điểm cao nhất / HS</button>
+        </div>
+      </div>
+      <div class="sp-stats-chart-wrap">
+        <canvas id="sp-stats-chart"></canvas>
+      </div>
+    </div>
+
+    <div class="sp-stats-section-title" style="margin:20px 0 10px">Kết quả từng học sinh</div>
+    ${students.length === 0
+      ? '<p style="color:var(--gray-400);text-align:center;padding:24px 0">Chưa có học sinh nào làm bài.</p>'
+      : `<div class="sp-stats-table-wrap">
+          <table class="sp-stats-table">
+            <thead><tr>
+              <th>Học sinh</th><th>Lớp</th><th>Số lần</th>
+              <th>Điểm TB</th><th>Cao nhất</th><th></th>
+            </tr></thead>
+            <tbody>
+              ${students.map(st => `
+                <tr class="sp-stats-student-row" data-sid="${st.student_id}">
+                  <td>
+                    <span class="sp-stats-avatar">${escapeHtml((st.student_name || '?').charAt(0).toUpperCase())}</span>
+                    ${escapeHtml(st.student_name)}
+                  </td>
+                  <td class="sp-stats-cell-muted">${escapeHtml(st.class_names)}</td>
+                  <td>${st.count}</td>
+                  <td><span class="stats-score-badge">${fmt(st.avg)}</span></td>
+                  <td><span class="stats-score-badge">${fmt(st.max)}</span></td>
+                  <td>
+                    <button class="btn btn-sm btn-outline sp-expand-btn"
+                      onclick="toggleSharedStudentDetail('${st.student_id}')">Chi tiết ▾</button>
+                  </td>
+                </tr>
+                <tr class="sp-stats-detail-row hidden" id="sp-detail-${st.student_id}">
+                  <td colspan="6" style="padding:0 0 0 40px">
+                    <div class="sp-stats-detail-inner">
+                      <table class="sp-stats-detail-table">
+                        <thead><tr><th>#</th><th>Chế độ</th><th>Ngày nộp</th><th>Điểm</th></tr></thead>
+                        <tbody>
+                          ${[...st.attempts].sort((a, b) => new Date(a.submitted_at) - new Date(b.submitted_at)).map((a, i) => `
+                            <tr>
+                              <td>${i + 1}</td>
+                              <td>${a.mode === 'real_test' ? '🎯 Thi thật' : '📝 Luyện tập'}</td>
+                              <td>${formatDateTime(a.submitted_at)}</td>
+                              <td><span class="stats-score-badge">${a.overall_score != null ? Number(a.overall_score).toFixed(1) : '—'}</span></td>
+                            </tr>`).join('')}
+                        </tbody>
+                      </table>
+                    </div>
+                  </td>
+                </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>`}
+    <div style="display:flex;justify-content:flex-end;margin-top:20px;padding-top:16px;border-top:1px solid var(--border)">
+      <button class="btn btn-outline" onclick="closeSharedStatsModal()">Đóng</button>
+    </div>
+  `;
+
+  _buildSharedStatsChart(students);
+}
+
+function _buildSharedStatsChart(students) {
+  if (_sharedStatsChart) { try { _sharedStatsChart.destroy(); } catch {} _sharedStatsChart = null; }
+  const canvas = document.getElementById('sp-stats-chart');
+  if (!canvas) return;
+
+  const scores = students
+    .map(s => _sharedStatsMode === 'avg' ? s.avg : s.max)
+    .filter(s => s != null)
+    .map(Number);
+
+  // Bucket into IELTS half-bands: 1.0, 1.5, ..., 9.0 → 17 buckets
+  const buckets = [];
+  for (let b = 1; b <= 9; b += 0.5) buckets.push(b);
+  const counts = new Array(buckets.length).fill(0);
+  for (const s of scores) {
+    const rounded = Math.round(s * 2) / 2; // snap to nearest 0.5
+    const idx = buckets.indexOf(Math.min(9, Math.max(1, rounded)));
+    if (idx >= 0) counts[idx]++;
+  }
+
+  const colors = buckets.map(b => {
+    if (b >= 7) return { bg: '#16a34a99', border: '#16a34a' };
+    if (b >= 5) return { bg: '#ca8a0499', border: '#ca8a04' };
+    return { bg: '#dc262699', border: '#dc2626' };
+  });
+
+  _sharedStatsChart = new Chart(canvas, {
+    type: 'bar',
+    data: {
+      labels: buckets.map(b => b % 1 === 0 ? String(b) : b.toFixed(1)),
+      datasets: [{
+        label: _sharedStatsMode === 'avg' ? 'Điểm TB / HS' : 'Điểm cao nhất / HS',
+        data: counts,
+        backgroundColor: colors.map(c => c.bg),
+        borderColor: colors.map(c => c.border),
+        borderWidth: 1,
+        borderRadius: 4,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            title: ctx => `Band ${ctx[0].label}`,
+            label: ctx => `${ctx.raw} học sinh`,
+          },
+        },
+      },
+      scales: {
+        x: { title: { display: true, text: 'Band IELTS' }, grid: { display: false } },
+        y: { title: { display: true, text: 'Số học sinh' }, beginAtZero: true, ticks: { stepSize: 1 } },
+      },
+    },
+  });
+}
+
+function setSharedStatsMode(mode) {
+  _sharedStatsMode = mode;
+  document.querySelectorAll('.sp-stats-mode-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.textContent.includes(mode === 'avg' ? 'Trung bình' : 'Cao nhất'));
+  });
+  _buildSharedStatsChart(_groupSharedStatsByStudent(_sharedStatsRows));
+}
+
+function toggleSharedStudentDetail(studentId) {
+  const row = document.getElementById(`sp-detail-${studentId}`);
+  const btn = document.querySelector(`.sp-stats-student-row[data-sid="${studentId}"] .sp-expand-btn`);
+  if (!row) return;
+  const nowHidden = row.classList.toggle('hidden');
+  if (btn) btn.textContent = nowHidden ? 'Chi tiết ▾' : 'Thu gọn ▴';
+}
+
+window.showSharedPoolStats = showSharedPoolStats;
+window.closeSharedStatsModal = closeSharedStatsModal;
+window.setSharedStatsMode = setSharedStatsMode;
+window.toggleSharedStudentDetail = toggleSharedStudentDetail;
+
 // ─── Shared Pool Form (create / edit) ──────────────────────────────────────
 
 let _sharedEditingId = null;
@@ -6513,6 +7041,9 @@ async function showSharedPoolForm() {
   _audioUploadName = ''; _audioUploadSize = 0; _audioUploading = false;
   _editingVocabIndex = -1;
   renderSharedPoolFormPage('Tạo đề luyện tập mới', null);
+  const restored = restoreSpDraftIntoForm('new');
+  startSpDraftAutosave('new');
+  if (restored) toast('Đã khôi phục bản nháp chưa lưu trong 15 phút gần nhất.', 'info');
 }
 
 async function showSharedPoolDetail({ id }) {
@@ -6529,6 +7060,9 @@ async function showSharedPoolDetail({ id }) {
   _audioUploadKey = null; _audioUploadName = ''; _audioUploadSize = 0; _audioUploading = false;
   _editingVocabIndex = -1;
   renderSharedPoolFormPage('Sửa đề luyện tập', q);
+  const restored = restoreSpDraftIntoForm('edit', id, q.skill);
+  startSpDraftAutosave('edit', id, q.skill);
+  if (restored) toast('Đã khôi phục bản nháp chưa lưu trong 15 phút gần nhất.', 'info');
 
   // Load and show stats dashboard below form
   try {
@@ -6664,9 +7198,13 @@ async function submitSharedPoolQuestion() {
 
     if (_sharedEditingId) {
       await api.patch(`/shared-pool/${_sharedEditingId}`, body);
+      stopSpDraftAutosave();
+      clearQuestionDraft(getSpDraftKey('edit', _sharedEditingId));
       toast('Đã lưu thay đổi', 'success');
     } else {
       await api.post('/shared-pool', body);
+      stopSpDraftAutosave();
+      clearQuestionDraft(getSpDraftKey('new'));
       toast('Đã tạo đề luyện tập! 🎉', 'success');
     }
     navigate('/shared-pool');

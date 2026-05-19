@@ -1307,134 +1307,118 @@ function autoGrade(studentAnswers, questionsData) {
 
 // ─── AI Feedback helpers ──────────────────────────────────────────────────────
 
-const IELTS_SYSTEM_PROMPT = `You are a senior IELTS examiner with 15+ years of experience. Your task is to assess a student's response and provide concise, actionable feedback for the teacher's reference.
-
-Evaluate EXACTLY TWO criteria:
-1. Lexical Resource (LR) — vocabulary range, accuracy, collocation, and appropriacy
-2. Grammatical Range and Accuracy (GRA) — range and accuracy of grammar structures, punctuation
-
----
-
-## IELTS Band Descriptors — Lexical Resource (LR)
-
-Band 9: Full flexibility and precise use. Wide range used accurately and naturally with very sophisticated control. Minor errors extremely rare.
-Band 8: Wide resource, fluent and flexible. Skilful use of uncommon/idiomatic items. Occasional inaccuracies in word choice/collocation; minimal spelling errors.
-Band 7: Sufficient for flexibility and precision. Some less common/idiomatic items used. Awareness of style/collocation evident, though inappropriacies occur. Few spelling/word-form errors.
-Band 6: Generally adequate. Meaning clear despite restricted range or imprecision. Risk-takers may use wider vocab with higher inaccuracy. Some spelling/word-form errors but do not impede communication.
-Band 5: Limited but minimally adequate. Simple vocabulary accurate but range limited; frequent lapses in appropriacy; noticeable spelling errors that may cause difficulty.
-Band 4: Limited and inadequate. Basic vocabulary, possibly repetitive; inappropriate lexical chunks; errors may impede meaning.
-Band 3: Inadequate. Very limited control of word choice/spelling; errors predominate, severely impeding meaning.
-Band 2: Extremely limited. Few recognisable strings; no apparent control of word formation/spelling.
-Band 1: No resource except isolated words.
-
-## IELTS Band Descriptors — Grammatical Range and Accuracy (GRA)
-
-Band 9: Structures precise and accurate at all times. Wide range, flexibly used. Errors extremely rare.
-Band 8: Wide range, flexibly and accurately used. Majority of sentences error-free. Occasional non-systematic errors; well-managed punctuation.
-Band 7: Variety of complex structures used with flexibility. Error-free sentences frequent. Few errors persist but do not impede communication.
-Band 6: Mix of simple and complex sentence forms, limited flexibility. Errors in complex structures; rarely impede communication. Basic sentences fairly controlled.
-Band 5: Limited, repetitive range. Complex sentences attempted but faulty; greatest accuracy on simple sentences. Errors may cause difficulty; faulty punctuation.
-Band 4: Very limited range. Simple sentences predominate. Grammatical errors frequent; may impede meaning. Punctuation often faulty or inadequate.
-Band 3: Sentence forms attempted but grammatical/punctuation errors predominate; prevents most meaning from coming through.
-Band 2: Little or no evidence of sentence forms.
-Band 1: No rateable language.
-
----
-
-## Analysis Requirements
-
-For each criterion, your feedback MUST include:
-1. **Band justification** — explain specifically why this band was awarded
-2. **Strengths** — 1–2 specific things the student did well, with direct quotes from the text when useful
-3. **Errors & weaknesses** — list specific errors found, quoting the exact wrong phrase and suggesting a correction (e.g., "❌ 'very much informations' → ✅ 'a great deal of information'")
-4. **Improvement tips** — 1–2 concrete, actionable suggestions the teacher can use to coach the student
-
----
-
-## Output format (strict JSON only, no markdown outside JSON):
-{
-  "lr_score": <number 0–9 in 0.5 steps>,
-  "lr": {
-    "band_justification_md": "<Vietnamese markdown, 1 short paragraph>",
-    "strengths_md": "<Vietnamese markdown bullet list with 1-2 bullets>",
-    "errors_md": "<Vietnamese markdown bullet list with specific wrong phrase → correction pairs, or '- Không thấy lỗi nổi bật.'>",
-    "tips_md": "<Vietnamese markdown bullet list with 1-2 coaching tips>"
-  },
-  "gra_score": <number 0–9 in 0.5 steps>,
-  "gra": {
-    "band_justification_md": "<Vietnamese markdown, 1 short paragraph>",
-    "strengths_md": "<Vietnamese markdown bullet list with 1-2 bullets>",
-    "errors_md": "<Vietnamese markdown bullet list with specific wrong phrase → correction pairs, or '- Không thấy lỗi nổi bật.'>",
-    "tips_md": "<Vietnamese markdown bullet list with 1-2 coaching tips>"
-  }
-}
-
-Critical rules:
-- Scores MUST be multiples of 0.5 between 0 and 9. Be calibrated and honest — do not inflate.
-- ALL feedback text MUST be in Vietnamese.
-- Quote exact phrases from the student's text when that evidence is useful and clear (use double quotes around quotes).
-- Markdown is allowed ONLY inside the *_md string fields. Use **bold**, *italic*, bullet lists, and inline code sparingly. Do not output HTML.
-- Keep feedback concise and practical — usually around 80-140 Vietnamese words per criterion is enough.
-- You MUST first check whether the student actually answered the task/topic. If the response is completely off-topic or answers the wrong prompt (for example, describing a person when the task asks for a place), clearly state "Sai đề" or "Lạc đề" in the feedback.
-- If the response is completely off-topic / wrong-task, assign 0.0 for both LR and GRA, briefly explain why it is wrong-task, and do not give normal band justification as if the task had been answered correctly.
-- This analysis is for the teacher's reference only, not shown directly to students.
-- Output ONLY valid JSON. Absolutely no text before or after the JSON object.`;
-
-const AI_FEEDBACK_RESPONSE_SCHEMA = {
+// ── Shared criterion sub-object schema ───────────────────────────────────────
+const CRITERION_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['lr_score', 'lr', 'gra_score', 'gra'],
+  required: ['band_justification', 'strengths', 'errors', 'tips'],
   properties: {
-    lr_score: { type: 'number' },
-    lr: {
-      type: 'object',
-      additionalProperties: false,
-      required: ['band_justification_md', 'strengths_md', 'errors_md', 'tips_md'],
-      properties: {
-        band_justification_md: { type: 'string' },
-        strengths_md: { type: 'string' },
-        errors_md: { type: 'string' },
-        tips_md: { type: 'string' },
-      },
-    },
-    gra_score: { type: 'number' },
-    gra: {
-      type: 'object',
-      additionalProperties: false,
-      required: ['band_justification_md', 'strengths_md', 'errors_md', 'tips_md'],
-      properties: {
-        band_justification_md: { type: 'string' },
-        strengths_md: { type: 'string' },
-        errors_md: { type: 'string' },
-        tips_md: { type: 'string' },
-      },
-    },
+    band_justification: { type: 'string' },
+    strengths:          { type: 'string' },
+    errors:             { type: 'string' },
+    tips:               { type: 'string' },
   },
 };
 
+// ── Writing AI schema (4 criteria + overall) ────────────────────────────────
+const WRITING_AI_SYSTEM_PROMPT = `You are a senior IELTS examiner with 15+ years of experience assessing IELTS Writing responses.
+
+Evaluate the student's writing on ALL FOUR official IELTS Writing criteria:
+1. Task Response (TR) — addressing all parts of the task, developing a clear position, supporting ideas
+2. Coherence and Cohesion (CC) — logical organisation, paragraphing, use of cohesive devices
+3. Lexical Resource (LR) — vocabulary range, accuracy, collocation, word formation
+4. Grammatical Range and Accuracy (GRA) — range and accuracy of grammar structures, punctuation
+
+For each criterion return a score (0–9, multiples of 0.5) and an object with FOUR fields:
+- band_justification: 1–2 sentences explaining why this band was awarded (Vietnamese)
+- strengths: bullet list of 1–2 specific strengths, quoting the student's text when helpful (Vietnamese)
+- errors: bullet list of key errors with correction format ❌ "wrong" → ✅ "correct"; use "- Không thấy lỗi nổi bật." if none (Vietnamese)
+- tips: bullet list of 1–2 concrete, actionable coaching tips (Vietnamese)
+
+overall_score = average of the four criteria scores rounded to nearest 0.5.
+overall_comment = 1–2 sentence summary highlighting the most important improvement area (Vietnamese).
+
+Critical rules:
+- Scores MUST be multiples of 0.5 between 0 and 9. Be calibrated — do not inflate.
+- ALL text MUST be in Vietnamese.
+- Use plain bullet lists (- item) for strengths/errors/tips fields. No markdown headers inside fields.
+- If the response is completely off-topic, assign 0.0 to all criteria and briefly explain in band_justification.
+- Output ONLY valid JSON. No text before or after the JSON object.`;
+
+const WRITING_AI_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['tr_score', 'tr', 'cc_score', 'cc', 'lr_score', 'lr', 'gra_score', 'gra', 'overall_score', 'overall_comment'],
+  properties: {
+    tr_score:       { type: 'number' },
+    tr:             CRITERION_SCHEMA,
+    cc_score:       { type: 'number' },
+    cc:             CRITERION_SCHEMA,
+    lr_score:       { type: 'number' },
+    lr:             CRITERION_SCHEMA,
+    gra_score:      { type: 'number' },
+    gra:            CRITERION_SCHEMA,
+    overall_score:  { type: 'number' },
+    overall_comment:{ type: 'string' },
+  },
+};
+
+// ── Speaking AI schema (LR + GRA scored; FC + Pron advice only; overall) ────
+const SPEAKING_AI_SYSTEM_PROMPT = `You are a senior IELTS examiner with 15+ years of experience assessing IELTS Speaking.
+
+You are given an AI-generated transcript of the student's spoken response. Assess it as follows:
+
+SCORED criteria (band 0–9, multiples of 0.5) — return score + object with band_justification / strengths / errors / tips:
+1. Lexical Resource (LR) — vocabulary range, accuracy, collocation, appropriacy in speech
+2. Grammatical Range and Accuracy (GRA) — range and accuracy of grammar structures in speech
+
+ADVICE-ONLY criteria (single string with bullet-list advice, no score):
+3. fc_advice — Fluency and Coherence: practical advice based on text cues visible in transcript
+4. pron_advice — Pronunciation: general tips for Vietnamese speakers; note limitations of transcript-based assessment
+
+overall_score = average of LR and GRA scores rounded to nearest 0.5.
+overall_comment = 1–2 sentence summary (Vietnamese).
+
+Critical rules:
+- Scores MUST be multiples of 0.5 between 0 and 9.
+- ALL text MUST be in Vietnamese.
+- Use plain bullet lists (- item) for all list fields. No markdown headers inside fields.
+- Output ONLY valid JSON. No text before or after the JSON object.`;
+
+const SPEAKING_AI_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['lr_score', 'lr', 'gra_score', 'gra', 'fc_advice', 'pron_advice', 'overall_score', 'overall_comment'],
+  properties: {
+    lr_score:       { type: 'number' },
+    lr:             CRITERION_SCHEMA,
+    gra_score:      { type: 'number' },
+    gra:            CRITERION_SCHEMA,
+    fc_advice:      { type: 'string' },
+    pron_advice:    { type: 'string' },
+    overall_score:  { type: 'number' },
+    overall_comment:{ type: 'string' },
+  },
+};
+
+// ── Legacy schema (kept for existing regular-assignment AI feedback) ──────────
+const IELTS_SYSTEM_PROMPT = WRITING_AI_SYSTEM_PROMPT;
+const AI_FEEDBACK_RESPONSE_SCHEMA = WRITING_AI_SCHEMA;
+
 function buildWritingPrompt(questionText, writingContent) {
   return [
-    '## SKILL: IELTS Writing',
-    '',
     questionText ? `### Đề bài (Task Prompt):\n${questionText}` : '',
     '',
     `### Bài làm của học sinh:\n${writingContent}`,
-    '',
-    'Hãy phân tích kỹ bài viết trên theo 2 tiêu chí LR và GRA.',
-  ].filter(Boolean).join('\n');
+  ].filter(s => s !== undefined).join('\n');
 }
 
 function buildSpeakingPrompt(questionText, speakingScript) {
   return [
-    '## SKILL: IELTS Speaking',
-    '',
     questionText ? `### Câu hỏi / Chủ đề:\n${questionText}` : '',
     '',
-    `### Transcript (được tạo tự động bằng AI STT):\n${speakingScript}`,
-    '',
-    'Lưu ý: Đây là transcript từ bài nói — có thể có lỗi nhận dạng nhỏ từ STT.',
-    'Hãy phân tích kỹ transcript trên theo 2 tiêu chí LR và GRA.',
-  ].join('\n');
+    `### Transcript (AI STT — có thể có lỗi nhận dạng nhỏ):\n${speakingScript}`,
+  ].filter(s => s !== undefined).join('\n');
 }
 
 function extractOutputText(aiData) {
@@ -1500,10 +1484,16 @@ function normalizeAiFeedbackPayload(feedback) {
 // ─── Shared pool AI helper ───────────────────────────────────────────────────
 async function callAiFeedback(skill, contentText, studentContent, env) {
   if (!env.OPENAI_API_KEY) throw Object.assign(new Error('Chưa cấu hình OPENAI_API_KEY'), { statusCode: 500 });
-  const prompt = skill === 'writing'
+  const isWriting = skill === 'writing';
+  const systemPrompt = isWriting ? WRITING_AI_SYSTEM_PROMPT : SPEAKING_AI_SYSTEM_PROMPT;
+  const schema      = isWriting ? WRITING_AI_SCHEMA         : SPEAKING_AI_SCHEMA;
+  const schemaName  = isWriting ? 'ielts_writing_feedback'  : 'ielts_speaking_feedback';
+  const prompt      = isWriting
     ? buildWritingPrompt(contentText, studentContent)
     : buildSpeakingPrompt(contentText, studentContent);
+
   const responsesUrl = getOpenAIEndpoint(env, '/v1/responses', 'responses');
+  console.log('[AI] calling', skill, responsesUrl, 'schema:', schemaName);
   const aiRes = await fetch(responsesUrl, {
     method: 'POST',
     headers: {
@@ -1512,23 +1502,34 @@ async function callAiFeedback(skill, contentText, studentContent, env) {
     },
     body: JSON.stringify({
       model: 'gpt-5-mini',
-      text: { format: { type: 'json_schema', name: 'ielts_ai_feedback', strict: true, schema: AI_FEEDBACK_RESPONSE_SCHEMA } },
+      text: { format: { type: 'json_schema', name: schemaName, strict: true, schema } },
       input: [
-        { role: 'developer', content: IELTS_SYSTEM_PROMPT },
+        { role: 'developer', content: systemPrompt },
         { role: 'user',      content: prompt },
       ],
     }),
   });
+  const responseText = await aiRes.text();
+  console.log('[AI] status:', aiRes.status, 'body:', responseText.slice(0, 600));
   if (!aiRes.ok) {
-    const text = await aiRes.text();
-    console.error('Shared pool AI error:', JSON.stringify({ endpoint: responsesUrl, error: parseOpenAIError(text) }));
+    console.error('[AI] error:', JSON.stringify({ skill, endpoint: responsesUrl, status: aiRes.status, body: responseText.slice(0, 400) }));
     throw Object.assign(new Error('Lỗi khi gọi AI'), { statusCode: 502 });
   }
-  const aiData  = await aiRes.json();
+  let aiData;
+  try { aiData = JSON.parse(responseText); } catch(e) {
+    console.error('[AI] JSON parse fail:', responseText.slice(0, 300));
+    throw new Error('AI response không phải JSON');
+  }
   const rawText = extractOutputText(aiData);
+  console.log('[AI] extracted text:', rawText.slice(0, 400));
   const jsonMatch = rawText.match(/\{[\s\S]*\}/);
-  const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : rawText);
-  return normalizeAiFeedbackPayload(parsed);
+  let parsed;
+  try { parsed = JSON.parse(jsonMatch ? jsonMatch[0] : rawText); } catch(e) {
+    console.error('[AI] inner JSON parse fail:', rawText.slice(0, 300));
+    throw new Error('AI trả về JSON không hợp lệ');
+  }
+  console.log('[AI] parsed keys:', Object.keys(parsed).join(', '));
+  return { ...parsed, skill, schema_version: 'v3', generated_at: new Date().toISOString() };
 }
 
 function buildSharedSpeakingKey(poolId, studentId, fileName) {
@@ -2408,19 +2409,66 @@ export default {
 
       // ── Question Pool ──────────────────────────────────────────────────────
 
+      // ── Question Folders ───────────────────────────────────────────────────
+
+      if (path === '/question-folders') {
+        if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
+        if (method === 'GET') {
+          const rows = await sql`SELECT * FROM question_folders ORDER BY display_order, name`;
+          return json(rows);
+        }
+        if (method === 'POST') {
+          const body = await request.json();
+          const name = String(body.name || '').trim();
+          if (!name) return err('Tên thư mục là bắt buộc', 400);
+          const parentId = body.parent_id || null;
+          const [folder] = await sql`
+            INSERT INTO question_folders (name, parent_id)
+            VALUES (${name}, ${parentId})
+            RETURNING *
+          `;
+          return json(folder, 201);
+        }
+      }
+
+      if ((p = matchPath('/question-folders/:id', path))) {
+        if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
+        if (method === 'PATCH') {
+          const body = await request.json();
+          const name  = body.name  !== undefined ? String(body.name  || '').trim() : null;
+          const order = body.display_order !== undefined ? Number(body.display_order) : null;
+          const [folder] = await sql`
+            UPDATE question_folders
+            SET name          = COALESCE(${name},  name),
+                display_order = COALESCE(${order}, display_order)
+            WHERE id = ${p.id}
+            RETURNING *
+          `;
+          if (!folder) return err('Không tìm thấy thư mục', 404);
+          return json(folder);
+        }
+        if (method === 'DELETE') {
+          const [existing] = await sql`SELECT id FROM question_folders WHERE id = ${p.id}`;
+          if (!existing) return err('Không tìm thấy thư mục', 404);
+          // Cascade: subfolders deleted, questions in any subfolder get folder_id = NULL via ON DELETE SET NULL
+          await sql`DELETE FROM question_folders WHERE id = ${p.id}`;
+          return json({ ok: true });
+        }
+      }
+
       if (path === '/questions') {
         if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
         if (method === 'GET') {
           const skill = url.searchParams.get('skill');
           const rows = skill
             ? await sql`
-                SELECT id, teacher_id, skill, title, content_url, content_text, content_blocks, questions_data, tags, script, created_at
+                SELECT id, teacher_id, skill, title, content_url, content_text, content_blocks, questions_data, tags, script, folder_id, created_at
                 FROM question_pool
                 WHERE skill = ${skill}::skill_type
                 ORDER BY created_at DESC
               `
             : await sql`
-                SELECT id, teacher_id, skill, title, content_url, content_text, content_blocks, questions_data, tags, script, created_at
+                SELECT id, teacher_id, skill, title, content_url, content_text, content_blocks, questions_data, tags, script, folder_id, created_at
                 FROM question_pool
                 ORDER BY created_at DESC
               `;
@@ -2582,6 +2630,9 @@ export default {
             : null;
           const shouldUpdateContentText = normalizedBlocks !== null || body.content_text !== undefined;
           const scriptVal = body.script !== undefined ? (body.script ?? null) : null;
+          // folder_id: undefined = don't touch, null/uuid = set value
+          const shouldUpdateFolder = body.folder_id !== undefined;
+          const folderIdVal = shouldUpdateFolder ? (body.folder_id || null) : null;
           const [row] = await sql`
             UPDATE question_pool
             SET title          = COALESCE(${body.title          ?? null}, title),
@@ -2590,7 +2641,8 @@ export default {
                 questions_data = COALESCE(${questionsDataJson}::jsonb,    questions_data),
                 vocabulary     = COALESCE(${vocabularyJson}::jsonb,       vocabulary),
                 tags           = COALESCE(${tagsArr},                     tags),
-                script         = COALESCE(${scriptVal},                   script)
+                script         = COALESCE(${scriptVal},                   script),
+                folder_id      = CASE WHEN ${shouldUpdateFolder} THEN ${folderIdVal}::uuid ELSE folder_id END
             WHERE id = ${p.id}
             RETURNING *
           `;
@@ -3559,11 +3611,11 @@ export default {
           const [row] = await sql`
             INSERT INTO shared_pool (skill, title, content_text, content_blocks, content_url, content_urls, questions_data, vocabulary, tags, script, time_limit_minutes)
             VALUES (
-              ${skill}, ${title}, ${content_text},
-              ${JSON.stringify(content_blocks)}::jsonb, ${content_url},
-              ${JSON.stringify(contentUrls)}::jsonb,
-              ${JSON.stringify(questions_data)}, ${JSON.stringify(vocabulary)},
-              ${tags}, ${script}, ${time_limit_minutes}
+              ${skill}, ${title}, ${content_text ?? ''},
+              ${JSON.stringify(content_blocks)}::jsonb, ${content_url ?? ''},
+              ${JSON.stringify(contentUrls ?? [])}::jsonb,
+              ${JSON.stringify(questions_data ?? [])}::jsonb, ${JSON.stringify(vocabulary ?? [])}::jsonb,
+              ${tags ?? []}, ${script ?? ''}, ${time_limit_minutes}
             )
             RETURNING *
           `;
@@ -3575,12 +3627,39 @@ export default {
         }
       }
 
+      // Teacher: force re-grade a stuck shared attempt
+      if ((p = matchPath('/shared-attempts/:id/retry-ai', path)) && method === 'POST') {
+        if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
+        const [sa] = await sql`
+          SELECT sa.*, sp.skill, sp.content_text
+          FROM shared_attempts sa
+          JOIN shared_pool sp ON sp.id = sa.shared_pool_id
+          WHERE sa.id = ${p.id}
+        `;
+        if (!sa) return err('Không tìm thấy attempt', 404);
+        if (sa.skill !== 'writing' && sa.skill !== 'speaking') return err('Skill này không cần AI chấm', 400);
+        if (!env.OPENAI_API_KEY) return err('Chưa cấu hình AI', 500);
+        const studentContent = sa.skill === 'writing' ? sa.writing_content : sa.speaking_script;
+        if (!studentContent?.trim()) return err('Bài làm trống', 400);
+        await sql`UPDATE shared_attempts SET ai_feedback = NULL WHERE id = ${sa.id}`;
+        ctx.waitUntil(
+          callAiFeedback(sa.skill, sa.content_text || '', studentContent, env)
+            .then(aiFeedback => sql`
+              UPDATE shared_attempts
+              SET ai_feedback   = ${JSON.stringify(aiFeedback)}::jsonb,
+                  overall_score = ${aiFeedback.overall_score ?? null}
+              WHERE id = ${sa.id}`)
+            .catch(e => console.error('Teacher retry AI error:', e))
+        );
+        return json({ status: 'queued', attempt_id: sa.id });
+      }
+
       if ((p = matchPath('/shared-pool/:id/stats', path)) && method === 'GET') {
         if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
         const rows = await sql`
-          SELECT sa.id, sa.mode, sa.overall_score, sa.max_score, sa.submitted_at,
+          SELECT sa.id, sa.student_id, sa.mode, sa.overall_score, sa.max_score, sa.submitted_at,
                  s.full_name AS student_name, s.username,
-                 (SELECT string_agg(c.name, ', ')
+                 (SELECT string_agg(c.class_name, ', ')
                   FROM student_classes sc JOIN classes c ON c.id = sc.class_id
                   WHERE sc.student_id = sa.student_id) AS class_names
           FROM shared_attempts sa
@@ -3657,7 +3736,7 @@ export default {
           SELECT sp.id, sp.skill, sp.title, sp.tags, sp.time_limit_minutes, sp.created_at,
                  COUNT(sa.id) FILTER (WHERE sa.mode = 'real_test')::int AS real_test_count,
                  MAX(sa.overall_score) FILTER (WHERE sa.mode = 'real_test') AS best_score,
-                 MAX(sp.questions_data->0->'answers') IS NULL AS is_open_ended
+                 (sp.questions_data->0->'answers') IS NULL AS is_open_ended
           FROM shared_pool sp
           LEFT JOIN shared_attempts sa ON sa.shared_pool_id = sp.id AND sa.student_id = ${studentId}
           GROUP BY sp.id
@@ -3670,6 +3749,9 @@ export default {
       if ((p = matchPath('/student/shared-pool/:id', path)) && method === 'GET') {
         const claims = await requireStudentAuth(request, env);
         if (!claims) return err('Unauthorized', 401);
+        const studentId = String(claims.student_id);
+        const [membership] = await sql`SELECT 1 FROM student_classes WHERE student_id = ${studentId} LIMIT 1`;
+        if (!membership) return err('Bạn chưa vào lớp nào', 403);
         const [row] = await sql`SELECT * FROM shared_pool WHERE id = ${p.id}`;
         if (!row) return err('Không tìm thấy đề', 404);
         return json(row);
@@ -3680,6 +3762,10 @@ export default {
         const claims = await requireStudentAuth(request, env);
         if (!claims) return err('Unauthorized', 401);
         const studentId = String(claims.student_id);
+
+        // Rate limit: 30 submits per student per 60s (DB flood protection)
+        if (await checkRateLimit(env.KV, `shared-submit:${studentId}`, 30, 60))
+          return err('Quá nhiều lần nộp — thử lại sau', 429);
 
         // Must be in at least one class
         const [membership] = await sql`SELECT 1 FROM student_classes WHERE student_id = ${studentId} LIMIT 1`;
@@ -3744,10 +3830,18 @@ export default {
         // Auto AI feedback for writing/speaking (fire-and-forget, update async)
         if ((poolQ.skill === 'writing' || poolQ.skill === 'speaking') && env.OPENAI_API_KEY) {
           const studentContent = poolQ.skill === 'writing' ? writingContent : speakingScript;
-          if (studentContent?.trim()) {
-            callAiFeedback(poolQ.skill, poolQ.content_text || '', studentContent, env)
-              .then(aiFeedback => sql`UPDATE shared_attempts SET ai_feedback = ${JSON.stringify(aiFeedback)}::jsonb WHERE id = ${attempt.id}`)
-              .catch(e => console.error('Shared pool AI feedback error:', e));
+          const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+          const aiOverLimit = await checkRateLimit(env.KV, `shared-ai:${ip}`, 20, 60);
+          if (studentContent?.trim() && !aiOverLimit) {
+            ctx.waitUntil(
+              callAiFeedback(poolQ.skill, poolQ.content_text || '', studentContent, env)
+                .then(aiFeedback => sql`
+                  UPDATE shared_attempts
+                  SET ai_feedback   = ${JSON.stringify(aiFeedback)}::jsonb,
+                      overall_score = ${aiFeedback.overall_score ?? null}
+                  WHERE id = ${attempt.id}`)
+                .catch(e => console.error('Shared pool AI feedback error:', e))
+            );
           }
         }
 
@@ -3782,6 +3876,51 @@ export default {
         `;
         if (!row) return err('Không tìm thấy kết quả', 404);
         return json(row);
+      }
+
+      // Retry AI grading for a stuck shared attempt (student-triggered)
+      if ((p = matchPath('/student/shared-attempts/:id/retry-ai', path)) && method === 'POST') {
+        const claims = await requireStudentAuth(request, env);
+        if (!claims) return err('Unauthorized', 401);
+        const studentId = String(claims.student_id);
+        // Rate limit: 5 retries per student per 60s (synchronous AI call — must protect aggressively)
+        if (await checkRateLimit(env.KV, `shared-retry-ai:${studentId}`, 5, 60))
+          return err('Quá nhiều yêu cầu — thử lại sau 1 phút', 429);
+        const [sa] = await sql`
+          SELECT sa.*, sp.skill, sp.content_text
+          FROM shared_attempts sa
+          JOIN shared_pool sp ON sp.id = sa.shared_pool_id
+          WHERE sa.id = ${p.id} AND sa.student_id = ${studentId}
+        `;
+        if (!sa) return err('Không tìm thấy kết quả', 404);
+        if (sa.skill !== 'writing' && sa.skill !== 'speaking') return err('Skill này không cần AI chấm', 400);
+        if (!env.OPENAI_API_KEY) return err('Chưa cấu hình AI', 500);
+        const studentContent = sa.skill === 'writing' ? sa.writing_content : sa.speaking_script;
+        if (!studentContent?.trim()) return err('Bài làm trống', 400);
+        // Synchronous: call AI and return full updated attempt (no polling needed)
+        let aiFeedback;
+        try {
+          aiFeedback = await callAiFeedback(sa.skill, sa.content_text || '', studentContent, env);
+        } catch (e) {
+          console.error('[retry-ai] callAiFeedback failed:', e.message);
+          return err(e.message || 'Lỗi khi gọi AI', 502);
+        }
+        const [updated] = await sql`
+          UPDATE shared_attempts
+          SET ai_feedback   = ${JSON.stringify(aiFeedback)}::jsonb,
+              overall_score = ${aiFeedback.overall_score ?? null}
+          WHERE id = ${sa.id}
+          RETURNING *
+        `;
+        // Return full attempt + pool data (same shape as GET /student/shared-attempts/:id)
+        const [full] = await sql`
+          SELECT sa.*, sp.skill, sp.title, sp.content_text, sp.content_blocks, sp.content_urls, sp.content_url,
+                 sp.questions_data, sp.vocabulary, sp.script, sp.time_limit_minutes
+          FROM shared_attempts sa
+          JOIN shared_pool sp ON sp.id = sa.shared_pool_id
+          WHERE sa.id = ${sa.id}
+        `;
+        return json(full);
       }
 
       // ── File serving (R2) ──────────────────────────────────────────────────

@@ -26,8 +26,8 @@ async function checkRateLimit(kv, key, limit, windowSecs) {
 function sanitizeHtml(html) {
   if (!html || typeof html !== 'string') return '';
   // Remove script, style, iframe, object, embed, form tags entirely
-  let s = html.replace(/<(script|style|iframe|object|embed|form|base|meta|link)[\s\S]*?<\/>/gi, '');
-  s = s.replace(/<(script|style|iframe|object|embed|form|base|meta|link)[^>]*>/gi, '');
+  let s = html.replace(/<(script|style|iframe|object|embed|form|base|meta|link)\b[\s\S]*?<\/\1>/gi, '');
+  s = s.replace(/<(script|style|iframe|object|embed|form|base|meta|link)\b[^>]*>/gi, '');
   // Remove dangerous event handlers and javascript: in attributes
   s = s.replace(/\s+on\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]*)/gi, '');
   s = s.replace(/\s+href\s*=\s*["']?\s*javascript:[^"'\s>]*/gi, '');
@@ -682,6 +682,44 @@ async function requireTeacherAuth(request, env) {
   const token = bearerToken || cookieToken;
   if (!token) return null;
   return verifyJWT(token, env.TEACHER_ACCESS_SECRET);
+}
+
+async function loadStudentAssignmentAccess(sql, assignmentId, studentId) {
+  const [row] = await sql`
+    SELECT
+      a.id,
+      a.class_id,
+      a.title,
+      a.deadline,
+      a.is_active,
+      a.mode,
+      q.skill,
+      q.title AS question_title,
+      q.content_text,
+      q.content_blocks,
+      q.content_url,
+      q.content_urls,
+      q.questions_data,
+      q.vocabulary,
+      jsonb_array_length(COALESCE(q.questions_data, '[]'::jsonb)) AS question_count
+    FROM assignments a
+    JOIN question_pool q ON q.id = a.question_id
+    JOIN student_classes sc ON sc.class_id = a.class_id
+    WHERE a.id = ${assignmentId}
+      AND sc.student_id = ${studentId}
+    LIMIT 1
+  `;
+  return row || null;
+}
+
+async function studentHasAnyClassMembership(sql, studentId) {
+  const [row] = await sql`
+    SELECT 1 AS ok
+    FROM student_classes
+    WHERE student_id = ${studentId}
+    LIMIT 1
+  `;
+  return !!row;
 }
 
 function getAppTimezone(env) {
@@ -1733,7 +1771,7 @@ export default {
         if (body.password !== env.TEACHER_ACCESS_PASSWORD)
           return err('Sai mật khẩu', 401);
         const token = await signJWT(
-          { teacher: true, exp: Date.now() + 8 * 60 * 60 * 1000 },
+          { teacher: true },
           env.TEACHER_ACCESS_SECRET,
         );
         return new Response(JSON.stringify({ ok: true, token }), {
@@ -1741,7 +1779,7 @@ export default {
           headers: {
             ...CORS,
             'Content-Type': 'application/json',
-            'Set-Cookie': `teacher_gate=${token}; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=${8 * 60 * 60}`,
+            'Set-Cookie': `teacher_gate=${token}; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=${10 * 365 * 24 * 60 * 60}`,
           },
         });
       }
@@ -2147,6 +2185,7 @@ export default {
       }
 
       if ((p = matchPath('/students/:id/reset-password', path)) && method === 'POST') {
+        if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
         const [student] = await sql`
           SELECT id, full_name, username
           FROM students
@@ -2318,6 +2357,9 @@ export default {
           const assignmentId = String(body?.assignment_id || '').trim();
           const studentId = String(claims.student_id);
           if (!assignmentId || !studentId) return err('assignment_id và student_id là bắt buộc', 400);
+          const assignment = await loadStudentAssignmentAccess(sql, assignmentId, studentId);
+          if (!assignment) return err('Học sinh không thuộc bài tập này', 403);
+          if (!assignment.is_active) return err('Bài tập đã đóng', 403);
           maxBytes = 50 * 1024 * 1024;
           key = buildStudentSpeakingKey(assignmentId, studentId, fileName);
         } else if (scope === 'student-shared-speaking') {
@@ -2326,6 +2368,10 @@ export default {
           const poolId   = String(body?.pool_id   || '').trim();
           const studentId = String(claims.student_id);
           if (!poolId || !studentId) return err('pool_id là bắt buộc', 400);
+          if (!await studentHasAnyClassMembership(sql, studentId))
+            return err('Học sinh chưa thuộc lớp nào', 403);
+          const [pool] = await sql`SELECT id FROM shared_pool WHERE id = ${poolId}`;
+          if (!pool) return err('Không tìm thấy đề luyện tập', 404);
           maxBytes = 50 * 1024 * 1024;
           key = buildSharedSpeakingKey(poolId, studentId, fileName);
         } else {
@@ -2352,6 +2398,7 @@ export default {
       }
 
       if (path === '/uploads/audio' && method === 'POST') {
+        if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
         const form = await request.formData();
         const file = form.get('audio');
         if (!file || typeof file === 'string') return err('Thiếu file audio', 400);
@@ -2574,13 +2621,16 @@ export default {
         if (!src) return err('Không tìm thấy đề', 404);
         const teacherId = await getTeacherId(sql);
         const [row] = await sql`
-          INSERT INTO question_pool (teacher_id, skill, title, content_text, content_blocks, content_url, content_urls, questions_data, vocabulary)
+          INSERT INTO question_pool (
+            teacher_id, skill, title, content_text, content_blocks, content_url, content_urls,
+            questions_data, vocabulary, tags, script, folder_id
+          )
           VALUES (
             ${teacherId}, ${src.skill}::skill_type, ${(src.title || '') + ' (Bản sao)'},
             ${src.content_text}, ${JSON.stringify(src.content_blocks || [])}::jsonb, ${src.content_url},
             ${JSON.stringify(src.content_urls || [])}::jsonb,
-            ${JSON.stringify(src.questions_data || [])},
-            ${JSON.stringify(src.vocabulary || [])}
+            ${JSON.stringify(src.questions_data || [])}, ${JSON.stringify(src.vocabulary || [])},
+            ${src.tags || []}, ${src.script ?? null}, ${src.folder_id ?? null}
           )
           RETURNING *
         `;
@@ -2804,14 +2854,7 @@ export default {
         if (!claims) return err('Unauthorized', 401);
 
         await autoCloseExpired(sql, { assignmentId: p.id });
-        const [assignment] = await sql`
-          SELECT a.id, a.title, a.deadline, a.is_active, a.mode,
-            q.skill, q.title AS question_title, q.content_text, q.content_blocks, q.content_url, q.content_urls,
-            jsonb_array_length(q.questions_data) AS question_count
-          FROM assignments a
-          JOIN question_pool q ON q.id = a.question_id
-          WHERE a.id = ${p.id}
-        `;
+        const assignment = await loadStudentAssignmentAccess(sql, p.id, String(claims.student_id));
         if (!assignment) return err('Không tìm thấy bài tập', 404);
         if (!assignment.is_active) return err('Bài tập đã đóng', 403);
         return json(assignment);
@@ -2821,12 +2864,7 @@ export default {
         const claims = await requireStudentAuth(request, env);
         if (!claims) return err('Unauthorized', 401);
 
-        const [row] = await sql`
-          SELECT a.title AS assignment_title, q.skill, q.vocabulary
-          FROM assignments a
-          JOIN question_pool q ON q.id = a.question_id
-          WHERE a.id = ${p.id}
-        `;
+        const row = await loadStudentAssignmentAccess(sql, p.id, String(claims.student_id));
         if (!row) return err('Không tìm thấy bài tập', 404);
         return json({ assignment_title: row.assignment_title, skill: row.skill, vocabulary: row.vocabulary || [] });
       }
@@ -2860,6 +2898,14 @@ export default {
 
         if (!studentId) return err('student_id là bắt buộc');
 
+        await autoCloseExpired(sql, { assignmentId: p.id });
+        const assignment = await loadStudentAssignmentAccess(sql, p.id, studentId);
+        if (!assignment) {
+          if (audioUploadKeys) for (const k of audioUploadKeys) await env.R2.delete(k.key).catch(() => {});
+          else if (directUploadKey) await env.R2.delete(directUploadKey).catch(() => {});
+          return err('Học sinh không thuộc bài tập này', 403);
+        }
+
         const [existing] = await sql`
           SELECT id FROM submissions WHERE assignment_id = ${p.id} AND student_id = ${studentId}
         `;
@@ -2867,19 +2913,6 @@ export default {
           if (audioUploadKeys) for (const k of audioUploadKeys) await env.R2.delete(k.key).catch(() => {});
           else if (directUploadKey) await env.R2.delete(directUploadKey).catch(() => {});
           return err('Bạn đã nộp bài này rồi', 409);
-        }
-
-        await autoCloseExpired(sql, { assignmentId: p.id });
-        const [assignment] = await sql`
-          SELECT q.skill, q.questions_data, a.is_active
-          FROM assignments a
-          JOIN question_pool q ON q.id = a.question_id
-          WHERE a.id = ${p.id}
-        `;
-        if (!assignment) {
-          if (audioUploadKeys) for (const k of audioUploadKeys) await env.R2.delete(k.key).catch(() => {});
-          else if (directUploadKey) await env.R2.delete(directUploadKey).catch(() => {});
-          return err('Không tìm thấy bài tập', 404);
         }
         if (!assignment.is_active) {
           if (audioUploadKeys) for (const k of audioUploadKeys) await env.R2.delete(k.key).catch(() => {});
@@ -3267,6 +3300,7 @@ export default {
 
       if (path === '/student/change-password' && method === 'POST') {
         const claims = await requireStudentAuth(request, env);
+        if (!claims) return err('Unauthorized', 401);
 
         const body = await request.json().catch(() => null);
         if (!body) return err('Invalid JSON', 400);
@@ -3322,13 +3356,8 @@ export default {
         if (!studentId || !assignmentId)    return err('student_id và assignment_id là bắt buộc', 400);
         if (!['retry_wrong','retry_full'].includes(attemptType)) return err('attempt_type không hợp lệ', 400);
 
-        // Load question to grade
-        const [assignment] = await sql`
-          SELECT q.questions_data FROM assignments a
-          JOIN question_pool q ON q.id = a.question_id
-          WHERE a.id = ${assignmentId}
-        `;
-        if (!assignment) return err('Không tìm thấy bài tập', 404);
+        const assignment = await loadStudentAssignmentAccess(sql, assignmentId, studentId);
+        if (!assignment) return err('Học sinh không thuộc bài tập này', 403);
 
         const qData = Array.isArray(assignment.questions_data) ? assignment.questions_data : [];
         let correctCount = 0;

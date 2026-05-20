@@ -1771,7 +1771,7 @@ export default {
         if (body.password !== env.TEACHER_ACCESS_PASSWORD)
           return err('Sai mật khẩu', 401);
         const token = await signJWT(
-          { teacher: true },
+          { teacher: true, exp: Date.now() + 24 * 60 * 60 * 1000 },
           env.TEACHER_ACCESS_SECRET,
         );
         return new Response(JSON.stringify({ ok: true, token }), {
@@ -1779,7 +1779,7 @@ export default {
           headers: {
             ...CORS,
             'Content-Type': 'application/json',
-            'Set-Cookie': `teacher_gate=${token}; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=${10 * 365 * 24 * 60 * 60}`,
+            'Set-Cookie': `teacher_gate=${token}; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=${24 * 60 * 60}`,
           },
         });
       }

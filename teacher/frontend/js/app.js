@@ -4912,7 +4912,7 @@ let _stickyPreviewObserver = null;
 let _stickyPreviewDismissed = false;
 
 function initStickyPreview() {
-  if (_stickyPreviewObserver) { _stickyPreviewObserver.disconnect(); _stickyPreviewObserver = null; }
+  if (_stickyPreviewObserver) { _stickyPreviewObserver(); _stickyPreviewObserver = null; }
   _stickyPreviewDismissed = false;
 
   let floatEl = document.getElementById('preview-sticky-float');

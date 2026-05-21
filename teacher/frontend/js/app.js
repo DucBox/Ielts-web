@@ -4923,11 +4923,29 @@ function initStickyPreview() {
     document.body.appendChild(floatEl);
   }
   floatEl.innerHTML = `
+    <div class="preview-sticky-resize-handle"></div>
     <div class="preview-sticky-float-header">
       <span class="content-composer-preview-title" style="margin:0">Xem trước nội dung</span>
       <button class="preview-sticky-close" onclick="dismissStickyPreview()" title="Ẩn">✕</button>
     </div>
     <div id="preview-sticky-float-body" class="content-composer-preview-body"></div>`;
+
+  const handle = floatEl.querySelector('.preview-sticky-resize-handle');
+  handle.addEventListener('mousedown', e => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = floatEl.offsetWidth;
+    const onMove = mv => {
+      const newW = Math.max(240, Math.min(window.innerWidth * 0.6, startW - (mv.clientX - startX)));
+      floatEl.style.width = newW + 'px';
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
 
   const srcBody = document.getElementById('content-composer-preview-body');
   const dstBody = document.getElementById('preview-sticky-float-body');

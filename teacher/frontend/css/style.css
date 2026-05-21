@@ -896,6 +896,7 @@ tbody tr:hover { background: var(--bg-surface-alt); }
   top: 16px;
   right: 24px;
   width: 320px;
+  min-width: 240px;
   max-height: calc(100vh - 32px);
   z-index: 200;
   background: #fcfcfd;
@@ -904,11 +905,23 @@ tbody tr:hover { background: var(--bg-surface-alt); }
   padding: 14px;
   box-shadow: 0 4px 24px rgba(0,0,0,.13);
   overflow: hidden;
+  position: relative;
 }
 .preview-sticky-float.is-visible { display: block; }
 .preview-sticky-float .content-composer-preview-body {
   max-height: calc(100vh - 80px);
 }
+.preview-sticky-resize-handle {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: ew-resize;
+  border-radius: 12px 0 0 12px;
+}
+.preview-sticky-resize-handle:hover,
+.preview-sticky-resize-handle:active { background: rgba(0,0,0,.06); }
 .preview-sticky-float-header {
   display: flex;
   align-items: center;

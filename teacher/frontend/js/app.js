@@ -4899,9 +4899,30 @@ function bindImageEditorEvents(host) {
 }
 
 function refreshContentComposerPreview() {
+  const html = renderRichQuestionContentHTML(_contentBlocks);
   const preview = document.getElementById('content-composer-preview-body');
-  if (!preview) return;
-  preview.innerHTML = renderRichQuestionContentHTML(_contentBlocks);
+  if (preview) preview.innerHTML = html;
+  const floatBody = document.getElementById('preview-sticky-float-body');
+  if (floatBody) floatBody.innerHTML = html;
+}
+
+let _stickyPreviewObserver = null;
+function initStickyPreview() {
+  if (_stickyPreviewObserver) { _stickyPreviewObserver.disconnect(); _stickyPreviewObserver = null; }
+  let floatEl = document.getElementById('preview-sticky-float');
+  if (!floatEl) {
+    floatEl = document.createElement('div');
+    floatEl.id = 'preview-sticky-float';
+    floatEl.className = 'preview-sticky-float';
+    floatEl.innerHTML = `<div class="content-composer-preview-title">Xem trước nội dung</div><div id="preview-sticky-float-body" class="content-composer-preview-body"></div>`;
+    document.body.appendChild(floatEl);
+  }
+  const originalPreview = document.querySelector('.content-composer-preview');
+  if (!originalPreview) return;
+  _stickyPreviewObserver = new IntersectionObserver(([entry]) => {
+    floatEl.classList.toggle('is-visible', !entry.isIntersecting && entry.boundingClientRect.top < 0);
+  }, { threshold: 0 });
+  _stickyPreviewObserver.observe(originalPreview);
 }
 
 function applyComposerCollapsedState() {
@@ -5323,6 +5344,7 @@ function initContentComposer(blocks, fallbackText = '') {
   _composerSavedRange = null;
   renderContentComposer();
   applyComposerCollapsedState();
+  initStickyPreview();
 }
 
 function openImagePicker() {

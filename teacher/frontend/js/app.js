@@ -4965,26 +4965,23 @@ function initStickyPreview() {
   const originalPreview = document.querySelector('.content-composer-preview');
   if (!originalPreview) return;
 
-  const updateVisibility = (outOfView) => {
+  const updateVisibility = () => {
+    const rect = originalPreview.getBoundingClientRect();
+    const outOfView = rect.bottom < 0;
     floatEl.classList.toggle('is-visible', outOfView && !_stickyPreviewDismissed);
     toggleBtn.classList.toggle('is-visible', outOfView && _stickyPreviewDismissed);
     if (!outOfView) _stickyPreviewDismissed = false;
   };
   window._updateStickyPreviewVisibility = updateVisibility;
 
-  _stickyPreviewObserver = new IntersectionObserver(([entry]) => {
-    updateVisibility(!entry.isIntersecting && entry.boundingClientRect.top < 0);
-  }, { threshold: 0 });
-  _stickyPreviewObserver.observe(originalPreview);
+  if (_stickyPreviewObserver) _stickyPreviewObserver();
+  window.addEventListener('scroll', updateVisibility, { passive: true });
+  _stickyPreviewObserver = () => window.removeEventListener('scroll', updateVisibility);
+  updateVisibility();
 }
 
 function updateStickyPreviewVisibility() {
-  if (window._updateStickyPreviewVisibility) {
-    const originalPreview = document.querySelector('.content-composer-preview');
-    if (!originalPreview) return;
-    const rect = originalPreview.getBoundingClientRect();
-    window._updateStickyPreviewVisibility(!originalPreview.checkVisibility?.() || rect.bottom < 0);
-  }
+  window._updateStickyPreviewVisibility?.();
 }
 
 function dismissStickyPreview() {

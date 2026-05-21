@@ -1218,7 +1218,7 @@ async function deliverQueuedStudentEmail(sql, env, { studentId, assignmentId, ev
 }
 
 async function processQueuedStudentEmails(sql, env, opts = {}) {
-  const limit = Math.max(1, Math.min(Number(opts.limit) || 50, 200));
+  const limit = Math.max(1, Math.min(Number(opts.limit) || 50, 300));
   const delayMs = Math.max(0, Math.min(Number(opts.delayMs) || 2000, 10000));
   const leaseMs = Math.max(delayMs + 30000, 60000);
   const ownerId = crypto.randomUUID();
@@ -4130,7 +4130,7 @@ export default {
       if (shouldEnqueueDeadlines) {
         await enqueueDeadline1DayEmails(sql);
       }
-      await processQueuedStudentEmails(sql, env, { limit: 25, delayMs: 2000 });
+      await processQueuedStudentEmails(sql, env, { limit: 300, delayMs: 2000 });
       logStudentEmail('scheduled_done', {
         cron: controller?.cron || null,
         scheduledTime,

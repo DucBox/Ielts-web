@@ -4912,7 +4912,7 @@ let _stickyPreviewObserver = null;
 let _stickyPreviewDismissed = false;
 
 function initStickyPreview() {
-  if (_stickyPreviewObserver) { _stickyPreviewObserver(); _stickyPreviewObserver = null; }
+  if (_stickyPreviewObserver) { _stickyPreviewObserver.disconnect(); _stickyPreviewObserver = null; }
   _stickyPreviewDismissed = false;
 
   let floatEl = document.getElementById('preview-sticky-float');
@@ -4923,29 +4923,11 @@ function initStickyPreview() {
     document.body.appendChild(floatEl);
   }
   floatEl.innerHTML = `
-    <div class="preview-sticky-resize-handle"></div>
     <div class="preview-sticky-float-header">
       <span class="content-composer-preview-title" style="margin:0">Xem trước nội dung</span>
       <button class="preview-sticky-close" onclick="dismissStickyPreview()" title="Ẩn">✕</button>
     </div>
     <div id="preview-sticky-float-body" class="content-composer-preview-body"></div>`;
-
-  const handle = floatEl.querySelector('.preview-sticky-resize-handle');
-  handle.addEventListener('mousedown', e => {
-    e.preventDefault();
-    const startX = e.clientX;
-    const startW = floatEl.offsetWidth;
-    const onMove = mv => {
-      const newW = Math.max(240, Math.min(window.innerWidth * 0.6, startW - (mv.clientX - startX)));
-      floatEl.style.width = newW + 'px';
-    };
-    const onUp = () => {
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup', onUp);
-    };
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
-  });
 
   const srcBody = document.getElementById('content-composer-preview-body');
   const dstBody = document.getElementById('preview-sticky-float-body');
@@ -4965,23 +4947,26 @@ function initStickyPreview() {
   const originalPreview = document.querySelector('.content-composer-preview');
   if (!originalPreview) return;
 
-  const updateVisibility = () => {
-    const rect = originalPreview.getBoundingClientRect();
-    const outOfView = rect.bottom < 0;
+  const updateVisibility = (outOfView) => {
     floatEl.classList.toggle('is-visible', outOfView && !_stickyPreviewDismissed);
     toggleBtn.classList.toggle('is-visible', outOfView && _stickyPreviewDismissed);
     if (!outOfView) _stickyPreviewDismissed = false;
   };
   window._updateStickyPreviewVisibility = updateVisibility;
 
-  if (_stickyPreviewObserver) _stickyPreviewObserver();
-  window.addEventListener('scroll', updateVisibility, { passive: true });
-  _stickyPreviewObserver = () => window.removeEventListener('scroll', updateVisibility);
-  updateVisibility();
+  _stickyPreviewObserver = new IntersectionObserver(([entry]) => {
+    updateVisibility(!entry.isIntersecting && entry.boundingClientRect.top < 0);
+  }, { threshold: 0 });
+  _stickyPreviewObserver.observe(originalPreview);
 }
 
 function updateStickyPreviewVisibility() {
-  window._updateStickyPreviewVisibility?.();
+  if (window._updateStickyPreviewVisibility) {
+    const originalPreview = document.querySelector('.content-composer-preview');
+    if (!originalPreview) return;
+    const rect = originalPreview.getBoundingClientRect();
+    window._updateStickyPreviewVisibility(!originalPreview.checkVisibility?.() || rect.bottom < 0);
+  }
 }
 
 function dismissStickyPreview() {

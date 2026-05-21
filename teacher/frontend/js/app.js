@@ -4929,6 +4929,10 @@ function initStickyPreview() {
     </div>
     <div id="preview-sticky-float-body" class="content-composer-preview-body"></div>`;
 
+  const srcBody = document.getElementById('content-composer-preview-body');
+  const dstBody = document.getElementById('preview-sticky-float-body');
+  if (srcBody && dstBody) dstBody.innerHTML = srcBody.innerHTML;
+
   let toggleBtn = document.getElementById('preview-sticky-toggle');
   if (!toggleBtn) {
     toggleBtn = document.createElement('button');

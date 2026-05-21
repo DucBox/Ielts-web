@@ -850,8 +850,8 @@ function navigate(hash) {
 function router() {
   stopQuestionDraftAutosave();
   stopSpDraftAutosave();
-  const floatEl = document.getElementById('preview-sticky-float');
-  if (floatEl) floatEl.classList.remove('is-visible');
+  document.getElementById('preview-sticky-float')?.classList.remove('is-visible');
+  document.getElementById('preview-sticky-toggle')?.classList.remove('is-visible');
   const hash = window.location.hash.slice(1) || '/classes';
   try {
     hideTableFloatToolbar();
@@ -4909,23 +4909,68 @@ function refreshContentComposerPreview() {
 }
 
 let _stickyPreviewObserver = null;
+let _stickyPreviewDismissed = false;
+
 function initStickyPreview() {
   if (_stickyPreviewObserver) { _stickyPreviewObserver.disconnect(); _stickyPreviewObserver = null; }
+  _stickyPreviewDismissed = false;
+
   let floatEl = document.getElementById('preview-sticky-float');
   if (!floatEl) {
     floatEl = document.createElement('div');
     floatEl.id = 'preview-sticky-float';
     floatEl.className = 'preview-sticky-float';
-    floatEl.innerHTML = `<div class="content-composer-preview-title">Xem trước nội dung</div><div id="preview-sticky-float-body" class="content-composer-preview-body"></div>`;
     document.body.appendChild(floatEl);
   }
+  floatEl.innerHTML = `
+    <div class="preview-sticky-float-header">
+      <span class="content-composer-preview-title" style="margin:0">Xem trước nội dung</span>
+      <button class="preview-sticky-close" onclick="dismissStickyPreview()" title="Ẩn">✕</button>
+    </div>
+    <div id="preview-sticky-float-body" class="content-composer-preview-body"></div>`;
+
+  let toggleBtn = document.getElementById('preview-sticky-toggle');
+  if (!toggleBtn) {
+    toggleBtn = document.createElement('button');
+    toggleBtn.id = 'preview-sticky-toggle';
+    toggleBtn.className = 'preview-sticky-toggle';
+    toggleBtn.title = 'Xem trước nội dung';
+    toggleBtn.innerHTML = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`;
+    toggleBtn.onclick = () => { _stickyPreviewDismissed = false; updateStickyPreviewVisibility(); };
+    document.body.appendChild(toggleBtn);
+  }
+
   const originalPreview = document.querySelector('.content-composer-preview');
   if (!originalPreview) return;
+
+  const updateVisibility = (outOfView) => {
+    floatEl.classList.toggle('is-visible', outOfView && !_stickyPreviewDismissed);
+    toggleBtn.classList.toggle('is-visible', outOfView && _stickyPreviewDismissed);
+    if (!outOfView) _stickyPreviewDismissed = false;
+  };
+  window._updateStickyPreviewVisibility = updateVisibility;
+
   _stickyPreviewObserver = new IntersectionObserver(([entry]) => {
-    floatEl.classList.toggle('is-visible', !entry.isIntersecting && entry.boundingClientRect.top < 0);
+    updateVisibility(!entry.isIntersecting && entry.boundingClientRect.top < 0);
   }, { threshold: 0 });
   _stickyPreviewObserver.observe(originalPreview);
 }
+
+function updateStickyPreviewVisibility() {
+  if (window._updateStickyPreviewVisibility) {
+    const originalPreview = document.querySelector('.content-composer-preview');
+    if (!originalPreview) return;
+    const rect = originalPreview.getBoundingClientRect();
+    window._updateStickyPreviewVisibility(!originalPreview.checkVisibility?.() || rect.bottom < 0);
+  }
+}
+
+function dismissStickyPreview() {
+  _stickyPreviewDismissed = true;
+  document.getElementById('preview-sticky-float')?.classList.remove('is-visible');
+  document.getElementById('preview-sticky-toggle')?.classList.add('is-visible');
+}
+window.dismissStickyPreview = dismissStickyPreview;
 
 function applyComposerCollapsedState() {
   const panel = document.getElementById('content-composer-editor-panel');

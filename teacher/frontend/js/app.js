@@ -850,6 +850,8 @@ function navigate(hash) {
 function router() {
   stopQuestionDraftAutosave();
   stopSpDraftAutosave();
+  const floatEl = document.getElementById('preview-sticky-float');
+  if (floatEl) floatEl.classList.remove('is-visible');
   const hash = window.location.hash.slice(1) || '/classes';
   try {
     hideTableFloatToolbar();

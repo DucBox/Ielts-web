@@ -62,14 +62,24 @@ const api = {
     return h;
   },
 
+  async _readJsonSafe(res) {
+    const text = await res.text();
+    if (!text) return null;
+    try {
+      return JSON.parse(text);
+    } catch {
+      return { error: text };
+    }
+  },
+
   // Centralized response handler — fires 'auth:expired' on 401 so app redirects to login
   async _handle(res) {
     if (res.status === 401) {
       window.dispatchEvent(new CustomEvent('auth:expired'));
-      throw await res.json();
+      throw (await this._readJsonSafe(res)) || { error: 'Unauthorized' };
     }
-    if (!res.ok) throw await res.json();
-    return res.json();
+    if (!res.ok) throw (await this._readJsonSafe(res)) || { error: 'Request failed' };
+    return this._readJsonSafe(res);
   },
 
   async get(path) {

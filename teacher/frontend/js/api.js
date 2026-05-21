@@ -74,6 +74,16 @@ const api = {
     }
   },
 
+  async _readJsonSafe(res) {
+    const text = await res.text();
+    if (!text) return null;
+    try {
+      return JSON.parse(text);
+    } catch {
+      return { error: text };
+    }
+  },
+
   async get(path) {
     const cached = this._readCache(path);
     if (cached) return cached;
@@ -81,8 +91,8 @@ const api = {
       headers: this._authHeaders(),
       credentials: 'include',
     });
-    if (!res.ok) { this._handle401(res); throw await res.json(); }
-    const data = await res.json();
+    if (!res.ok) { this._handle401(res); throw ((await this._readJsonSafe(res)) || { error: 'Request failed' }); }
+    const data = await this._readJsonSafe(res);
     this._writeCache(path, data);
     return data;
   },
@@ -94,9 +104,9 @@ const api = {
       body: JSON.stringify(data),
       credentials: 'include',
     });
-    if (!res.ok) { this._handle401(res); throw await res.json(); }
+    if (!res.ok) { this._handle401(res); throw ((await this._readJsonSafe(res)) || { error: 'Request failed' }); }
     this.clearCache();
-    return res.json();
+    return this._readJsonSafe(res);
   },
 
   async postForm(path, formData) {
@@ -106,9 +116,9 @@ const api = {
       body: formData,
       credentials: 'include',
     });
-    if (!res.ok) { this._handle401(res); throw await res.json(); }
+    if (!res.ok) { this._handle401(res); throw ((await this._readJsonSafe(res)) || { error: 'Request failed' }); }
     this.clearCache();
-    return res.json();
+    return this._readJsonSafe(res);
   },
 
   async patch(path, data) {
@@ -118,9 +128,9 @@ const api = {
       body: JSON.stringify(data),
       credentials: 'include',
     });
-    if (!res.ok) { this._handle401(res); throw await res.json(); }
+    if (!res.ok) { this._handle401(res); throw ((await this._readJsonSafe(res)) || { error: 'Request failed' }); }
     this.clearCache();
-    return res.json();
+    return this._readJsonSafe(res);
   },
 
   async delete(path) {
@@ -129,9 +139,9 @@ const api = {
       headers: this._authHeaders(),
       credentials: 'include',
     });
-    if (!res.ok) { this._handle401(res); throw await res.json(); }
+    if (!res.ok) { this._handle401(res); throw ((await this._readJsonSafe(res)) || { error: 'Request failed' }); }
     this.clearCache();
-    return res.json();
+    return this._readJsonSafe(res);
   },
 
   fileUrl(key) {

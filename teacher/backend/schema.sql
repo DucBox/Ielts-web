@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS question_pool (
   title TEXT NOT NULL,
   content_text TEXT,
   content_url TEXT,
+  content_urls JSONB NOT NULL DEFAULT '[]'::jsonb,
   questions_data JSONB NOT NULL DEFAULT '[]'::jsonb,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   vocabulary JSONB DEFAULT '[]'::jsonb,
@@ -62,7 +63,7 @@ CREATE TABLE IF NOT EXISTS question_pool (
 CREATE TABLE IF NOT EXISTS assignments (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   class_id UUID REFERENCES classes(id) ON DELETE CASCADE,
-  question_id UUID REFERENCES question_pool(id) ON DELETE CASCADE,
+  question_id UUID REFERENCES question_pool(id) ON DELETE RESTRICT,
   title TEXT NOT NULL,
   deadline TIMESTAMPTZ,
   is_active BOOLEAN DEFAULT TRUE,
@@ -78,6 +79,7 @@ CREATE TABLE IF NOT EXISTS submissions (
   student_answers JSONB,
   writing_content TEXT,
   speaking_audio_url TEXT,
+  speaking_audio_urls JSONB NOT NULL DEFAULT '[]'::jsonb,
   speaking_script TEXT,
   ai_feedback JSONB,
   teacher_feedback JSONB,
@@ -119,6 +121,7 @@ CREATE TABLE IF NOT EXISTS student_vocab (
   student_id UUID REFERENCES students(id) ON DELETE CASCADE,
   word TEXT NOT NULL,
   definition TEXT NOT NULL DEFAULT '',
+  pronunciation TEXT NOT NULL DEFAULT '',
   example TEXT NOT NULL DEFAULT '',
   source TEXT NOT NULL DEFAULT '',
   saved_at TIMESTAMPTZ DEFAULT NOW(),
@@ -151,6 +154,66 @@ CREATE TABLE IF NOT EXISTS student_email_dispatch_state (
   last_sent_at TIMESTAMPTZ,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS notifications (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  student_id UUID NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+  type TEXT NOT NULL CHECK (type IN ('score_released', 'deadline_reminder', 'new_assignment')),
+  ref_id UUID NOT NULL,
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  is_read BOOLEAN NOT NULL DEFAULT false,
+  day_bucket TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  read_at TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS r2_asset_refs (
+  r2_key TEXT PRIMARY KEY,
+  ref_count INT NOT NULL DEFAULT 1,
+  last_touched_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS shared_pool (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  skill TEXT NOT NULL CHECK (skill IN ('reading', 'listening', 'writing', 'speaking')),
+  title TEXT NOT NULL DEFAULT '',
+  content_text TEXT NOT NULL DEFAULT '',
+  content_blocks JSONB NOT NULL DEFAULT '[]'::jsonb,
+  content_url TEXT NOT NULL DEFAULT '',
+  content_urls JSONB NOT NULL DEFAULT '[]'::jsonb,
+  questions_data JSONB NOT NULL DEFAULT '[]'::jsonb,
+  vocabulary JSONB NOT NULL DEFAULT '[]'::jsonb,
+  tags TEXT[] NOT NULL DEFAULT '{}',
+  script TEXT NOT NULL DEFAULT '',
+  time_limit_minutes INTEGER,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS shared_attempts (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  student_id UUID NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+  shared_pool_id UUID NOT NULL REFERENCES shared_pool(id) ON DELETE CASCADE,
+  mode TEXT NOT NULL CHECK (mode IN ('practice', 'real_test')),
+  student_answers JSONB NOT NULL DEFAULT '[]'::jsonb,
+  writing_content TEXT NOT NULL DEFAULT '',
+  speaking_script TEXT NOT NULL DEFAULT '',
+  speaking_audio_urls JSONB NOT NULL DEFAULT '[]'::jsonb,
+  overall_score NUMERIC(5,2),
+  max_score INTEGER,
+  ai_feedback JSONB,
+  submitted_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS question_folders (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name TEXT NOT NULL,
+  parent_id UUID REFERENCES question_folders(id) ON DELETE CASCADE,
+  display_order INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE question_pool
+  ADD COLUMN IF NOT EXISTS folder_id UUID REFERENCES question_folders(id) ON DELETE SET NULL;
 
 INSERT INTO student_email_dispatch_state (singleton)
 VALUES (TRUE)
@@ -216,8 +279,31 @@ CREATE INDEX IF NOT EXISTS idx_vocab_sessions_student_practiced
 CREATE INDEX IF NOT EXISTS idx_student_email_events_status_created
   ON student_email_events (status, created_at DESC);
 
--- Default teacher. Teacher auth is intentionally not implemented for the
--- current single-teacher deployment model.
+CREATE INDEX IF NOT EXISTS idx_notifications_student_created
+  ON notifications (student_id, created_at DESC);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_deadline_dedup
+  ON notifications (student_id, ref_id, day_bucket)
+  WHERE type = 'deadline_reminder';
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_new_assignment_dedup
+  ON notifications (student_id, ref_id)
+  WHERE type = 'new_assignment';
+
+CREATE INDEX IF NOT EXISTS idx_r2_asset_refs_count
+  ON r2_asset_refs (ref_count)
+  WHERE ref_count <= 0;
+
+CREATE INDEX IF NOT EXISTS shared_attempts_student_id_idx
+  ON shared_attempts (student_id);
+
+CREATE INDEX IF NOT EXISTS shared_attempts_pool_id_idx
+  ON shared_attempts (shared_pool_id);
+
+CREATE INDEX IF NOT EXISTS idx_question_pool_folder
+  ON question_pool (folder_id);
+
+-- Default teacher row for the current single-teacher deployment model.
 INSERT INTO teachers (full_name, email)
 VALUES ('Giáo viên', 'teacher@local.dev')
 ON CONFLICT (email) DO NOTHING;

@@ -201,6 +201,90 @@ function repairImageTokensInBlocks(blocks) {
   return result;
 }
 
+function normalizeIndentMarkupHtml(html = '') {
+  if (!html) return '';
+  const tmp = document.createElement('div');
+  tmp.innerHTML = String(html);
+  const indentBlockTags = new Set(['DIV', 'P', 'LI', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'BLOCKQUOTE', 'PRE']);
+  const createIndentHtml = count => Array.from({ length: Math.max(1, Number(count) || 1) }, () =>
+    '<span class="document-editor-indent" contenteditable="false" data-indent="1">&nbsp;</span>'
+  ).join('');
+  const extractLeadingIndentInfo = (text = '') => {
+    let units = 0;
+    let consumedChars = 0;
+    let pendingSpaces = 0;
+    while (consumedChars < text.length) {
+      const ch = text[consumedChars];
+      if (ch === '\t') {
+        if (pendingSpaces) break;
+        units += 1;
+        consumedChars += 1;
+        continue;
+      }
+      if (ch === ' ' || ch === '\u00a0') {
+        pendingSpaces += 1;
+        consumedChars += 1;
+        if (pendingSpaces === 4) {
+          units += 1;
+          pendingSpaces = 0;
+        }
+        continue;
+      }
+      break;
+    }
+    consumedChars -= pendingSpaces;
+    return { units, consumedChars };
+  };
+  const normalizeLeadingIndentTextNodes = root => {
+    if (!root?.childNodes) return true;
+    let atLineStart = true;
+    Array.from(root.childNodes).forEach(node => {
+      if (node.nodeType === Node.TEXT_NODE) {
+        const raw = String(node.textContent || '');
+        if (atLineStart && raw) {
+          const { units, consumedChars } = extractLeadingIndentInfo(raw);
+          if (units > 0) {
+            const frag = document.createDocumentFragment();
+            frag.appendChild(document.createRange().createContextualFragment(createIndentHtml(units)));
+            const remainder = raw.slice(consumedChars);
+            if (remainder) frag.appendChild(document.createTextNode(remainder));
+            node.replaceWith(frag);
+            atLineStart = !remainder || !/[^\s\u00a0]/.test(remainder);
+            return;
+          }
+        }
+        if (/[^\s\u00a0]/.test(raw)) atLineStart = false;
+        return;
+      }
+      if (node.nodeType !== Node.ELEMENT_NODE) return;
+      if (node.tagName === 'BR') {
+        atLineStart = true;
+        return;
+      }
+      if (node.classList.contains('document-editor-indent')) return;
+      if (indentBlockTags.has(node.tagName)) {
+        normalizeLeadingIndentTextNodes(node);
+        atLineStart = true;
+        return;
+      }
+      atLineStart = normalizeLeadingIndentTextNodes(node);
+    });
+    return atLineStart;
+  };
+  tmp.querySelectorAll('span').forEach(span => {
+    const rawText = String(span.textContent || '').replace(/ /g, '').replace(/\n/g, '');
+    const hasOnlyNbsp = rawText && /^[\u00a0\t]+$/.test(rawText);
+    const inlineBlockStyle = /display\s*:\s*inline-block/i.test(span.getAttribute('style') || '');
+    if (!span.classList.contains('document-editor-indent') && !(inlineBlockStyle && hasOnlyNbsp)) return;
+    const indentUnits = Math.max(1, Math.round(rawText.length / 4) || 1);
+    span.replaceWith(document.createRange().createContextualFragment(
+      createIndentHtml(indentUnits)
+    ));
+  });
+  normalizeLeadingIndentTextNodes(tmp);
+  return tmp.innerHTML;
+}
+
 function normalizeQuestionContentBlocks(blocks, fallbackText = '') {
   const repaired = repairImageTokensInBlocks(Array.isArray(blocks) ? blocks : []);
   const normalized = repaired
@@ -208,7 +292,7 @@ function normalizeQuestionContentBlocks(blocks, fallbackText = '') {
         if (item?.type === 'image' && item?.url) {
           return { id: item.id || `cb-${index + 1}`, type: 'image', url: item.url, alt: item.alt || '', width: Number(item.width) || 100 };
         }
-        return { id: item?.id || `cb-${index + 1}`, type: 'text', html: item?.html ?? (item?.text ? escapeHtml(String(item.text)) : ''), text: String(item?.text || '') };
+        return { id: item?.id || `cb-${index + 1}`, type: 'text', html: normalizeIndentMarkupHtml(item?.html ?? (item?.text ? escapeHtml(String(item.text)) : '')), text: String(item?.text || '') };
       }).filter(Boolean);
   if (normalized.length > 0) return normalized;
   return [{ id: 'fallback-text', type: 'text', html: escapeHtml(fallbackText || ''), text: fallbackText || '' }];

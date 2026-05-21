@@ -794,6 +794,16 @@ tbody tr:hover { background: var(--bg-surface-alt); }
   font-style: italic;
   pointer-events: none;
 }
+.document-editor-indent {
+  display: inline-block;
+  width: 4ch;
+  min-width: 4ch;
+  white-space: nowrap;
+  vertical-align: baseline;
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
 .document-editor-image-token {
   position: relative;
   display: block;

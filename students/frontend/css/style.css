@@ -53,6 +53,16 @@ body {
 }
 
 .hidden { display: none !important; }
+.document-editor-indent {
+  display: inline-block;
+  width: 4ch;
+  min-width: 4ch;
+  white-space: nowrap;
+  vertical-align: baseline;
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
 
 /* ═══ HEADER ══════════════════════════════════════════════════════════════════ */
 .app-header {

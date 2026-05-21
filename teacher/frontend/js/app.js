@@ -4482,7 +4482,7 @@ function normalizeContentBlocksForEditor(blocks, fallbackText = '') {
         if (item?.type === 'image' && item?.url) {
           return { id: item.id || nextContentBlockId(), type: 'image', url: item.url, alt: item.alt || '', width: Number(item.width) || 100 };
         }
-        const html = item?.html ?? (item?.text ? textToEditorHtml(item.text) : '');
+        const html = normalizeIndentMarkupHtml(item?.html ?? (item?.text ? textToEditorHtml(item.text) : ''));
         const text = (() => { const t = document.createElement('div'); t.innerHTML = html; return t.textContent || ''; })();
         return { id: item?.id || nextContentBlockId(), type: 'text', html, text };
       }).filter(Boolean);
@@ -4609,6 +4609,104 @@ function setComposerStatus(message, type = '') {
   el.textContent = message;
 }
 
+const EDITOR_INDENT_NBSP_COUNT = 4;
+const EDITOR_INDENT_BLOCK_TAGS = new Set(['DIV', 'P', 'LI', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'BLOCKQUOTE', 'PRE']);
+
+function createEditorIndentHtml(count = 1) {
+  const safeCount = Math.max(1, Number(count) || 1);
+  return Array.from({ length: safeCount }, () =>
+    '<span class="document-editor-indent" contenteditable="false" data-indent="1">&nbsp;</span>'
+  ).join('');
+}
+
+function extractLeadingIndentInfo(text = '') {
+  let units = 0;
+  let consumedChars = 0;
+  let pendingSpaces = 0;
+  while (consumedChars < text.length) {
+    const ch = text[consumedChars];
+    if (ch === '\t') {
+      if (pendingSpaces) break;
+      units += 1;
+      consumedChars += 1;
+      continue;
+    }
+    if (ch === ' ' || ch === '\u00a0') {
+      pendingSpaces += 1;
+      consumedChars += 1;
+      if (pendingSpaces === EDITOR_INDENT_NBSP_COUNT) {
+        units += 1;
+        pendingSpaces = 0;
+      }
+      continue;
+    }
+    break;
+  }
+  consumedChars -= pendingSpaces;
+  return { units, consumedChars };
+}
+
+function normalizeLeadingIndentTextNodes(root) {
+  if (!root?.childNodes) return true;
+  let atLineStart = true;
+  Array.from(root.childNodes).forEach(node => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const raw = String(node.textContent || '');
+      if (atLineStart && raw) {
+        const { units, consumedChars } = extractLeadingIndentInfo(raw);
+        if (units > 0) {
+          const frag = document.createDocumentFragment();
+          const indentFrag = document.createRange().createContextualFragment(createEditorIndentHtml(units));
+          frag.appendChild(indentFrag);
+          const remainder = raw.slice(consumedChars);
+          if (remainder) frag.appendChild(document.createTextNode(remainder));
+          node.replaceWith(frag);
+          atLineStart = !remainder || !/[^\s\u00a0]/.test(remainder);
+          return;
+        }
+      }
+      if (/[^\s\u00a0]/.test(raw)) atLineStart = false;
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    if (node.tagName === 'BR') {
+      atLineStart = true;
+      return;
+    }
+    if (node.classList.contains('document-editor-indent')) return;
+    if (EDITOR_INDENT_BLOCK_TAGS.has(node.tagName)) {
+      normalizeLeadingIndentTextNodes(node);
+      atLineStart = true;
+      return;
+    }
+    atLineStart = normalizeLeadingIndentTextNodes(node);
+  });
+  return atLineStart;
+}
+
+function normalizeIndentTokensInElement(root) {
+  if (!root?.querySelectorAll) return;
+  root.querySelectorAll('span').forEach(span => {
+    const rawText = String(span.textContent || '').replace(/ /g, '').replace(/\n/g, '');
+    const hasOnlyNbsp = rawText && /^[\u00a0\t]+$/.test(rawText);
+    const inlineBlockStyle = /display\s*:\s*inline-block/i.test(span.getAttribute('style') || '');
+    const isIndentToken = span.classList.contains('document-editor-indent') || (inlineBlockStyle && hasOnlyNbsp);
+    if (!isIndentToken) return;
+    const indentUnits = Math.max(1, Math.round(rawText.length / EDITOR_INDENT_NBSP_COUNT) || 1);
+    const frag = document.createRange().createContextualFragment(createEditorIndentHtml(indentUnits));
+    span.replaceWith(frag);
+  });
+  normalizeLeadingIndentTextNodes(root);
+}
+
+function normalizeIndentMarkupHtml(html = '') {
+  if (!html) return '';
+  const tmp = document.createElement('div');
+  tmp.innerHTML = String(html);
+  normalizeIndentTokensInElement(tmp);
+  return tmp.innerHTML;
+}
+
 function textToEditorHtml(text = '') {
   const normalized = String(text || '').replace(/\r/g, '');
   return normalized ? escapeHtml(normalized).replace(/\n/g, '<br>') : '';
@@ -4648,6 +4746,7 @@ function syncContentBlocksFromEditor() {
 
   function flushHtml() {
     const clone = tmpDiv.cloneNode(true);
+    normalizeIndentTokensInElement(clone);
     clone.querySelectorAll('.editor-table-wrap').forEach(wrap => {
       const tbl = wrap.querySelector('.editor-table');
       if (tbl) { tbl.style.width = wrap.style.width || '100%'; wrap.replaceWith(tbl.cloneNode(true)); }
@@ -4821,12 +4920,11 @@ function renderContentComposer() {
   const host = document.getElementById('content-composer-host');
   if (!host) return;
   host.innerHTML = buildEditorDocumentHtml(_contentBlocks);
+  normalizeIndentTokensInElement(host);
   host.onkeydown = (e) => {
     if (e.key === 'Tab') {
       e.preventDefault();
-      // inline-block span: atomic unit immune to text-align:justify stretching.
-      // No matter how justify distributes space, this span's width never changes.
-      document.execCommand('insertHTML', false, '<span style="display:inline-block">&nbsp;&nbsp;&nbsp;&nbsp;</span>');
+      document.execCommand('insertHTML', false, createEditorIndentHtml(1));
       syncContentBlocksFromEditor();
       return;
     }
@@ -4935,6 +5033,7 @@ function applyFormat(cmd) {
 function applyJustify() {
   const host = document.getElementById('content-composer-host');
   if (!host) return;
+  normalizeIndentTokensInElement(host);
   const isOn = document.queryCommandState('justifyFull')
     || host.style.textAlign === 'justify';
   const val = isOn ? '' : 'justify';
@@ -5293,6 +5392,8 @@ async function handleComposerPaste(e) {
   range.collapse(false);
   sel.removeAllRanges();
   sel.addRange(range);
+  const host = document.getElementById('content-composer-host');
+  if (host) normalizeIndentTokensInElement(host);
   syncContentBlocksFromEditor();
   saveComposerRange();
 }

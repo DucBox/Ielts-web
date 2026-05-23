@@ -7080,17 +7080,20 @@ async function saveProfileName() {
   const name = input.value.trim();
   if (!name) { input.focus(); return; }
   input.disabled = true;
+  let ok = false;
   try {
     await api.patch('/student/me', { full_name: name });
-    _student = { ..._student, full_name: name };
-    if (_cachedStudent) _cachedStudent.full_name = name;
-    const headerEl = document.getElementById('header-student-name');
-    if (headerEl) headerEl.textContent = name;
-    renderProfile(window._cachedAssignments || [], window._cachedProfileData);
+    ok = true;
   } catch (e) {
     input.disabled = false;
     input.focus();
     alert(e?.error || 'Không thể cập nhật tên');
+  }
+  if (ok) {
+    _student = { ..._student, full_name: name };
+    const headerEl = document.getElementById('header-student-name');
+    if (headerEl) headerEl.textContent = name;
+    renderProfile(window._cachedAssignments || [], window._cachedProfileData);
   }
 }
 

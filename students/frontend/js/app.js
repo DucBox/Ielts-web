@@ -7090,7 +7090,7 @@ async function saveProfileName() {
     alert(e?.error || 'Không thể cập nhật tên');
   }
   if (ok) {
-    _student = { ..._student, full_name: name };
+    updateStudentState({ full_name: name });
     const headerEl = document.getElementById('header-student-name');
     if (headerEl) headerEl.textContent = name;
     renderProfile(window._cachedAssignments || [], window._cachedProfileData);

@@ -3539,7 +3539,13 @@ mark.student-note::after {
   font-size: 24px; font-weight: 800; color: #fff; flex-shrink: 0;
 }
 .profile-hero-info { flex: 1; min-width: 0; }
-.profile-name { font-size: 18px; font-weight: 800; color: var(--gray-800); }
+.profile-name { font-size: 18px; font-weight: 800; color: var(--gray-800); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.profile-name-edit-btn { background: none; border: none; cursor: pointer; color: var(--gray-400); padding: 2px; border-radius: 4px; display: inline-flex; align-items: center; flex-shrink: 0; }
+.profile-name-edit-btn:hover { color: var(--gray-700); background: var(--gray-100); }
+.profile-name-input { font-size: 16px; font-weight: 700; border: 1.5px solid var(--primary); border-radius: 6px; padding: 3px 8px; outline: none; width: 200px; }
+.profile-name-save-btn { font-size: 12px; font-weight: 600; background: var(--primary); color: #fff; border: none; border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+.profile-name-save-btn:hover { opacity: .88; }
+.profile-name-cancel-btn { font-size: 12px; background: none; border: 1px solid var(--gray-300); border-radius: 6px; padding: 4px 10px; cursor: pointer; color: var(--gray-500); }
 .profile-meta { font-size: 13px; color: var(--gray-500, var(--gray-400)); margin-top: 2px; }
 .profile-meta-row { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; font-size: 13px; margin-top: 4px; }
 .profile-streak { font-weight: 700; }

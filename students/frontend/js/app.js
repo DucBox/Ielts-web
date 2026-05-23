@@ -2683,7 +2683,12 @@ function renderProfile(assignments) {
       <div class="profile-hero">
         <div class="profile-avatar" style="background:${SKILL_COLOR.reading}">${initials}</div>
         <div class="profile-hero-info">
-          <div class="profile-name">${escapeHtml(_student.full_name)}</div>
+          <div class="profile-name">
+            <span id="profile-name-text">${escapeHtml(_student.full_name)}</span>
+            <button class="profile-name-edit-btn" onclick="startEditProfileName()" title="Đổi tên">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+            </button>
+          </div>
           <div class="profile-meta">Lớp ${escapeHtml(_selectedClass.class_name)}</div>
           <div class="profile-meta-row">
             <span class="profile-streak" style="color:${streakColor}">🔥 ${streak.current} ngày</span>
@@ -3072,7 +3077,12 @@ renderProfile = function(assignments, profileData) {
       <div class="profile-hero">
         <div class="profile-avatar" style="background:${skillColors.reading}">${initials}</div>
         <div class="profile-hero-info">
-          <div class="profile-name">${escapeHtml(_student.full_name)}</div>
+          <div class="profile-name">
+            <span id="profile-name-text">${escapeHtml(_student.full_name)}</span>
+            <button class="profile-name-edit-btn" onclick="startEditProfileName()" title="Đổi tên">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+            </button>
+          </div>
           <div class="profile-meta">Lớp ${escapeHtml(_selectedClass.class_name)}</div>
           <div class="profile-meta-row">
             <span class="profile-streak" style="color:${streakColor}">🔥 ${streak.current} ngày</span>
@@ -7044,6 +7054,48 @@ window.addEventListener('auth:expired', () => {
   navigate('/login');
 });
 window.addEventListener('pagehide', flushAutoSave);
+
+function startEditProfileName() {
+  const nameEl = document.getElementById('profile-name-text');
+  if (!nameEl) return;
+  const current = nameEl.textContent.trim();
+  const wrap = nameEl.closest('.profile-name');
+  wrap.innerHTML = `
+    <input id="profile-name-input" class="profile-name-input" value="${escapeHtml(current)}" maxlength="100" />
+    <button class="profile-name-save-btn" onclick="saveProfileName()">Lưu</button>
+    <button class="profile-name-cancel-btn" onclick="renderProfile(window._cachedAssignments||[],window._cachedProfileData)">Huỷ</button>
+  `;
+  const input = document.getElementById('profile-name-input');
+  input?.focus();
+  input?.select();
+  input?.addEventListener('keydown', e => {
+    if (e.key === 'Enter') saveProfileName();
+    if (e.key === 'Escape') renderProfile(window._cachedAssignments || [], window._cachedProfileData);
+  });
+}
+
+async function saveProfileName() {
+  const input = document.getElementById('profile-name-input');
+  if (!input) return;
+  const name = input.value.trim();
+  if (!name) { input.focus(); return; }
+  input.disabled = true;
+  try {
+    await api.patch('/student/me', { full_name: name });
+    _student = { ..._student, full_name: name };
+    if (_cachedStudent) _cachedStudent.full_name = name;
+    const headerEl = document.getElementById('header-student-name');
+    if (headerEl) headerEl.textContent = name;
+    renderProfile(window._cachedAssignments || [], window._cachedProfileData);
+  } catch (e) {
+    input.disabled = false;
+    input.focus();
+    alert(e?.error || 'Không thể cập nhật tên');
+  }
+}
+
+window.startEditProfileName = startEditProfileName;
+window.saveProfileName = saveProfileName;
 
 router();
 syncStudentProfileSummary();

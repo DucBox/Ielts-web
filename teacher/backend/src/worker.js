@@ -3518,6 +3518,18 @@ export default {
         }
       }
 
+      // PATCH /student/me — update student's own full_name
+      if (path === '/student/me' && method === 'PATCH') {
+        const claims = await requireStudentAuth(request, env);
+        if (!claims) return err('Unauthorized', 401);
+        const body = await request.json().catch(() => null);
+        const full_name = String(body?.full_name || '').trim();
+        if (!full_name) return err('Tên không được để trống', 400);
+        if (full_name.length > 100) return err('Tên quá dài', 400);
+        await sql`UPDATE students SET full_name = ${full_name} WHERE id = ${claims.student_id}::uuid`;
+        return json({ ok: true, full_name });
+      }
+
       // ── Student Vocab (DB-backed) ──────────────────────────────────────────
 
       if (path === '/student/vocab' && method === 'GET') {

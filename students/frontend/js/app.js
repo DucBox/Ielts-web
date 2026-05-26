@@ -809,9 +809,9 @@ function flushAutoSave() {
 
 // ── Assignment countdown timer ────────────────────────────────────────────────
 
-function startAssignmentCountdown(minutes, ctx) {
+function startAssignmentCountdown(secs, ctx) {
   stopAssignmentCountdown();
-  _assignSecsLeft = minutes * 60;
+  _assignSecsLeft = Math.floor(secs);
   _assignCountdownCtx = ctx;
   _updateAssignCountdownDisplay();
   _assignCountdownInterval = setInterval(() => {
@@ -1614,6 +1614,7 @@ function router() {
   stopAutoSave();
   stopTaskTimer();
   stopAssignmentCountdown();
+  _removeExamBeforeUnload();
   _stopAiFeedbackPoll();
   _activeAssignmentId = null;
   const hash = window.location.hash.slice(1) || '/home';
@@ -1649,7 +1650,22 @@ function router() {
   else showHome({});
 }
 
-window.addEventListener('hashchange', router);
+let _lastExamHash = null;
+window.addEventListener('hashchange', (e) => {
+  if (isExamActive()) {
+    const prevHash = new URL(e.oldURL).hash || '#/home';
+    _confirmLeaveExam().then(ok => {
+      if (ok) {
+        router();
+      } else {
+        // Revert hash without triggering another hashchange
+        history.replaceState(null, '', prevHash);
+      }
+    });
+    return;
+  }
+  router();
+});
 
 // ═══════════════════════════════════════════════════════════════════════════
 // PAGE: LOGIN
@@ -3839,7 +3855,20 @@ async function showAssignment({ id }) {
       return;
     } catch {}
 
-    renderAssignment(assignment);
+    // For exam mode with time limit: register/retrieve server-side start time
+    let remainingSec = null;
+    if (assignment.mode === 'exam' && assignment.time_limit_minutes) {
+      try {
+        const session = await api.post('/exam-sessions', { ref_type: 'assignment', ref_id: id });
+        const elapsed = (Date.now() - new Date(session.started_at).getTime()) / 1000;
+        remainingSec = Math.max(0, assignment.time_limit_minutes * 60 - elapsed);
+      } catch {
+        remainingSec = assignment.time_limit_minutes * 60;
+      }
+      // If time already expired on open → auto-submit immediately after render
+    }
+
+    renderAssignment(assignment, remainingSec);
   } catch (e) {
     const msg = String(e?.error || e?.message || '').toLowerCase();
     if (msg.includes('đóng') || msg.includes('không tìm thấy')) clearAllDrafts(id);
@@ -3848,10 +3877,10 @@ async function showAssignment({ id }) {
   }
 }
 
-function renderAssignment(a) {
+function renderAssignment(a, remainingSec = null) {
   _activeAssignmentId = a.id;
   stopAssignmentCountdown();
-  // Restore flag set from draft
+  _removeExamBeforeUnload();
   const flagDraft = loadDraft(a.id, 'flags');
   _flaggedSet = new Set(Array.isArray(flagDraft?.data) ? flagDraft.data : []);
 
@@ -3889,8 +3918,32 @@ function renderAssignment(a) {
       countdownEl.innerHTML = `<span class="assign-countdown-label">⏱ Còn lại</span><span class="assign-countdown" id="assign-countdown">--:--</span>`;
       if (submitBtn) toolbar.insertBefore(countdownEl, submitBtn);
       else toolbar.appendChild(countdownEl);
-      startAssignmentCountdown(a.time_limit_minutes, { assignmentId: a.id, skill, qCount });
+
+      const secs = remainingSec !== null ? remainingSec : a.time_limit_minutes * 60;
+      _installExamBeforeUnload();
+      if (secs <= 0) {
+        // Time already expired when student re-opens
+        autoSubmitAssignment({ assignmentId: a.id, skill, qCount });
+      } else {
+        startAssignmentCountdown(secs, { assignmentId: a.id, skill, qCount });
+      }
     }
+  }
+}
+
+let _examBeforeUnloadHandler = null;
+function _installExamBeforeUnload() {
+  _removeExamBeforeUnload();
+  _examBeforeUnloadHandler = e => {
+    e.preventDefault();
+    e.returnValue = 'Bạn đang trong bài kiểm tra — thời gian vẫn tiếp tục chạy nếu rời trang!';
+  };
+  window.addEventListener('beforeunload', _examBeforeUnloadHandler);
+}
+function _removeExamBeforeUnload() {
+  if (_examBeforeUnloadHandler) {
+    window.removeEventListener('beforeunload', _examBeforeUnloadHandler);
+    _examBeforeUnloadHandler = null;
   }
 }
 
@@ -4128,7 +4181,7 @@ async function submitAnswers(assignmentId, qCount, skill, btn, isAuto = false) {
     });
     await syncNotifUIAfterSubmit();
     clearAllDrafts(assignmentId);
-    stopAutoSave(); stopTaskTimer(); stopAssignmentCountdown();
+    stopAutoSave(); stopTaskTimer(); stopAssignmentCountdown(); _removeExamBeforeUnload();
     toast('Nộp bài thành công! 🎉');
     navigate(`/result/${assignmentId}`);
   } catch (e) {
@@ -4230,7 +4283,7 @@ async function submitWriting(assignmentId, btn, isAuto = false) {
     });
     await syncNotifUIAfterSubmit();
     clearAllDrafts(assignmentId);
-    stopAutoSave(); stopTaskTimer(); stopAssignmentCountdown();
+    stopAutoSave(); stopTaskTimer(); stopAssignmentCountdown(); _removeExamBeforeUnload();
     toast('Nộp bài thành công! 🎉');
     navigate(`/result/${assignmentId}`);
   } catch (e) {
@@ -4606,7 +4659,7 @@ async function submitSpeaking(assignmentId, btn, isAuto = false) {
     });
     await syncNotifUIAfterSubmit();
     clearAllDrafts(assignmentId);
-    stopAutoSave(); stopTaskTimer(); stopAssignmentCountdown();
+    stopAutoSave(); stopTaskTimer(); stopAssignmentCountdown(); _removeExamBeforeUnload();
     toast('Nộp bài thành công! 🎉');
     navigate(`/result/${assignmentId}`);
   } catch (e) {
@@ -5673,7 +5726,37 @@ window.submitChangePassword = submitChangePassword;
 
 // ═══ PAGE TRANSITIONS ═══
 const _origNavigate = navigate;
+
+function isExamActive() {
+  return _examBeforeUnloadHandler !== null;
+}
+
+async function _confirmLeaveExam() {
+  return confirmSubmit({
+    title: '⚠️ Bạn đang trong bài kiểm tra',
+    message: `<div style="line-height:1.6">
+      Thời gian vẫn <b>tiếp tục chạy</b> khi bạn rời trang.<br>
+      Nếu hết giờ, bài sẽ tự động nộp với những gì bạn đã làm.
+    </div>`,
+    confirmText: 'Vẫn rời trang',
+    cancelText: 'Tiếp tục làm bài',
+  });
+}
+
 function navigateWithTransition(hash) {
+  if (isExamActive()) {
+    _confirmLeaveExam().then(ok => {
+      if (!ok) return;
+      const app = document.getElementById('app');
+      if (app) {
+        app.classList.add('page-exit');
+        setTimeout(() => { app.classList.remove('page-exit'); _origNavigate(hash); }, 120);
+      } else {
+        _origNavigate(hash);
+      }
+    });
+    return;
+  }
   const app = document.getElementById('app');
   if (app) {
     app.classList.add('page-exit');
@@ -6224,6 +6307,19 @@ async function startSharedAttempt(poolId, mode) {
     _sharedCtx = { poolId, poolQ: q, mode };
     _speakingIsShared = q.skill === 'speaking';
     stopSharedCountdownTimer();
+    _removeExamBeforeUnload();
+
+    // For real_test with time limit: get server-side start time
+    let remainingSec = null;
+    if (mode === 'real_test' && q.time_limit_minutes) {
+      try {
+        const session = await api.post('/exam-sessions', { ref_type: 'shared_pool', ref_id: poolId });
+        const elapsed = (Date.now() - new Date(session.started_at).getTime()) / 1000;
+        remainingSec = Math.max(0, q.time_limit_minutes * 60 - elapsed);
+      } catch {
+        remainingSec = q.time_limit_minutes * 60;
+      }
+    }
 
     if (q.skill === 'reading')   renderSharedReading(q, mode);
     else if (q.skill === 'listening') renderSharedListening(q, mode);
@@ -6232,7 +6328,12 @@ async function startSharedAttempt(poolId, mode) {
     else { toast('Kỹ năng không hợp lệ', 'error'); navigate('/shared-pool'); }
 
     if (mode === 'real_test' && q.time_limit_minutes) {
-      startSharedCountdownTimer(q.time_limit_minutes);
+      _installExamBeforeUnload();
+      if (remainingSec <= 0) {
+        autoSubmitSharedAttempt();
+      } else {
+        startSharedCountdownTimer(remainingSec);
+      }
     }
   } catch (e) {
     toast('Lỗi tải đề: ' + (e.error || e.message), 'error');
@@ -6242,9 +6343,9 @@ async function startSharedAttempt(poolId, mode) {
 window.startSharedAttempt = startSharedAttempt;
 
 // ── Countdown timer ───────────────────────────────────────────────────────
-function startSharedCountdownTimer(minutes) {
+function startSharedCountdownTimer(secs) {
   stopSharedCountdownTimer();
-  _sharedSecsLeft = minutes * 60;
+  _sharedSecsLeft = secs;
   _updateSharedTimerDisplay();
   _sharedCountdownInterval = setInterval(() => {
     _sharedSecsLeft--;
@@ -6482,6 +6583,7 @@ async function confirmLeaveShared() {
   });
   if (ok) {
     stopSharedCountdownTimer();
+    _removeExamBeforeUnload();
     _sharedCtx = null;
     _speakingIsShared = false;
     // startSharedAttempt doesn't change the hash, so it stays at #/shared-pool/:id.

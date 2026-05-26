@@ -1776,6 +1776,7 @@ function renderStatsTab(container, data) {
                               <th class="sortable" onclick="sortStatsSubTable('${st.id}','score')">Điểm ${makeSortIcon('score',_statsSubSortCol,_statsSubSortDir)}</th>
                               <th class="sortable" onclick="sortStatsSubTable('${st.id}','submitted_at')">Ngày nộp ${makeSortIcon('submitted_at',_statsSubSortCol,_statsSubSortDir)}</th>
                               <th class="sortable" onclick="sortStatsSubTable('${st.id}','on_time')">Đúng hạn ${makeSortIcon('on_time',_statsSubSortCol,_statsSubSortDir)}</th>
+                              <th>Overtime</th>
                             </tr></thead>
                             <tbody id="stats-sub-tbody-${st.id}">${buildStatsSubRows(st.submissions.filter(s => filteredAssignmentIds.has(s.assignment_id)))}</tbody>
                           </table>
@@ -2086,6 +2087,7 @@ function buildStatsSubRows(subs) {
     <td><span class="stats-score-badge">${s.overall_score !== null ? Number(s.overall_score).toFixed(1) : '—'}</span></td>
     <td style="color:var(--gray-400);font-size:12px">${formatDate(s.submitted_at)}</td>
     <td>${s.on_time === null ? '—' : s.on_time ? '<span class="stats-ontime-pill good">Đúng hạn</span>' : '<span class="stats-ontime-pill bad">Muộn</span>'}</td>
+    <td>${s.is_overtime ? '<span class="stats-overtime-pill">⏰ Overtime</span>' : '—'}</td>
   </tr>`).join('');
 }
 

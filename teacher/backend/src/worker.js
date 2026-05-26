@@ -1875,7 +1875,7 @@ export default {
             SELECT
               sub.id, sub.student_id, sub.assignment_id,
               sub.overall_score::float AS overall_score,
-              sub.submitted_at, sub.status,
+              sub.submitted_at, sub.status, sub.is_overtime,
               q.skill, a.deadline, a.is_active, a.title AS assignment_title,
               s.full_name AS student_name
             FROM submissions sub
@@ -1988,6 +1988,7 @@ export default {
             is_active: sub.is_active,
             deadline: sub.deadline,
             on_time: sub.deadline ? new Date(sub.submitted_at) <= new Date(sub.deadline) : null,
+            is_overtime: sub.is_overtime ?? false,
           });
         }
         const perStudent = Object.values(studentMap).map(st => ({
@@ -3003,15 +3004,29 @@ export default {
           overallScore = autoGrade(studentAnswers, assignment.questions_data);
         }
 
+        // Determine overtime: exam mode with time limit, check against exam_sessions
+        let isOvertime = false;
+        if (assignment.mode === 'exam' && assignment.time_limit_minutes) {
+          const [session] = await sql`
+            SELECT started_at FROM exam_sessions
+            WHERE student_id = ${studentId} AND ref_type = 'assignment' AND ref_id = ${p.id}
+          `;
+          if (session) {
+            const elapsedSec = (Date.now() - new Date(session.started_at).getTime()) / 1000;
+            const limitSec   = assignment.time_limit_minutes * 60 + 30; // 30s grace
+            isOvertime = elapsedSec > limitSec;
+          }
+        }
+
         try {
           const [submission] = await sql`
             INSERT INTO submissions
-              (assignment_id, student_id, student_answers, writing_content, speaking_script, speaking_audio_url, speaking_audio_urls, overall_score)
+              (assignment_id, student_id, student_answers, writing_content, speaking_script, speaking_audio_url, speaking_audio_urls, overall_score, is_overtime)
             VALUES (
               ${p.id}, ${studentId},
               ${studentAnswers ? JSON.stringify(studentAnswers) : null},
               ${writingContent}, ${speakingScript}, ${speakingAudioUrl},
-              ${JSON.stringify(speakingAudioUrls)}::jsonb, ${overallScore}
+              ${JSON.stringify(speakingAudioUrls)}::jsonb, ${overallScore}, ${isOvertime}
             )
             RETURNING *
           `;
@@ -3298,6 +3313,41 @@ export default {
           ORDER BY a.created_at DESC
         `;
         return json(rows);
+      }
+
+      // POST /exam-sessions — record (or retrieve) when student first opened an exam
+      if (path === '/exam-sessions' && method === 'POST') {
+        const claims = await requireStudentAuth(request, env);
+        if (!claims) return err('Unauthorized', 401);
+        const studentId = String(claims.student_id);
+        const body = await request.json().catch(() => null);
+        if (!body?.ref_type || !body?.ref_id) return err('ref_type và ref_id là bắt buộc', 400);
+        if (!['assignment', 'shared_pool'].includes(body.ref_type)) return err('ref_type không hợp lệ', 400);
+
+        // Verify student has access to this ref
+        if (body.ref_type === 'assignment') {
+          const [row] = await sql`
+            SELECT a.time_limit_minutes FROM assignments a
+            JOIN student_classes sc ON sc.class_id = a.class_id
+            WHERE a.id = ${body.ref_id} AND sc.student_id = ${studentId} LIMIT 1
+          `;
+          if (!row) return err('Không tìm thấy bài tập', 404);
+        } else {
+          const [row] = await sql`SELECT id, time_limit_minutes FROM shared_pool WHERE id = ${body.ref_id}`;
+          if (!row) return err('Không tìm thấy đề', 404);
+        }
+
+        // ON CONFLICT DO NOTHING keeps the original started_at
+        await sql`
+          INSERT INTO exam_sessions (student_id, ref_type, ref_id)
+          VALUES (${studentId}, ${body.ref_type}, ${body.ref_id})
+          ON CONFLICT (student_id, ref_type, ref_id) DO NOTHING
+        `;
+        const [session] = await sql`
+          SELECT started_at FROM exam_sessions
+          WHERE student_id = ${studentId} AND ref_type = ${body.ref_type} AND ref_id = ${body.ref_id}
+        `;
+        return json({ started_at: session.started_at });
       }
 
       if (path === '/student/change-password' && method === 'POST') {
@@ -3857,15 +3907,29 @@ export default {
           maxScore     = Array.isArray(poolQ.questions_data) ? poolQ.questions_data.length : null;
         }
 
+        // Determine overtime for real_test with time limit
+        let isOvertime = false;
+        if (mode === 'real_test' && poolQ.time_limit_minutes) {
+          const [session] = await sql`
+            SELECT started_at FROM exam_sessions
+            WHERE student_id = ${studentId} AND ref_type = 'shared_pool' AND ref_id = ${p.id}
+          `;
+          if (session) {
+            const elapsedSec = (Date.now() - new Date(session.started_at).getTime()) / 1000;
+            const limitSec   = poolQ.time_limit_minutes * 60 + 30; // 30s grace
+            isOvertime = elapsedSec > limitSec;
+          }
+        }
+
         const [attempt] = await sql`
           INSERT INTO shared_attempts
-            (student_id, shared_pool_id, mode, student_answers, writing_content, speaking_script, speaking_audio_urls, overall_score, max_score)
+            (student_id, shared_pool_id, mode, student_answers, writing_content, speaking_script, speaking_audio_urls, overall_score, max_score, is_overtime)
           VALUES (
             ${studentId}, ${p.id}, ${mode},
             ${JSON.stringify(studentAnswers || [])}::jsonb,
             ${writingContent || ''}, ${speakingScript || ''},
             ${JSON.stringify(speakingAudioUrls)}::jsonb,
-            ${overallScore}, ${maxScore}
+            ${overallScore}, ${maxScore}, ${isOvertime}
           )
           RETURNING *
         `;

@@ -693,6 +693,7 @@ async function loadStudentAssignmentAccess(sql, assignmentId, studentId) {
       a.deadline,
       a.is_active,
       a.mode,
+      a.time_limit_minutes,
       q.skill,
       q.title AS question_title,
       q.content_text,
@@ -1885,7 +1886,7 @@ export default {
             ORDER BY sub.submitted_at ASC
           `,
           sql`
-            SELECT a.id, a.title, a.deadline, a.is_active, a.mode, q.skill
+            SELECT a.id, a.title, a.deadline, a.is_active, a.mode, a.time_limit_minutes, q.skill
             FROM assignments a
             JOIN question_pool q ON q.id = a.question_id
             WHERE a.class_id = ${classId}
@@ -2025,7 +2026,7 @@ export default {
         const perAssignment = allAssignments.map(a => {
           const d = assignMap[a.id];
           return {
-            id: d.id, title: d.title, skill: d.skill, mode: a.mode,
+            id: d.id, title: d.title, skill: d.skill, mode: a.mode, time_limit_minutes: a.time_limit_minutes ?? null,
             deadline: d.deadline, is_active: d.is_active,
             submitted: d.submitted, total: d.total,
             avg_score: avg(d.scores),
@@ -2763,10 +2764,11 @@ export default {
           if (!body.class_id || !body.question_id || !body.title)
             return err('class_id, question_id, title là bắt buộc');
           const assignMode = body.mode === 'practice' ? 'practice' : 'exam';
+          const timeLimitMinutes = (assignMode === 'exam' && body.time_limit_minutes) ? Number(body.time_limit_minutes) : null;
           const [question] = await sql`SELECT skill FROM question_pool WHERE id = ${body.question_id}`;
           const [row] = await sql`
-            INSERT INTO assignments (class_id, question_id, title, deadline, is_active, mode)
-            VALUES (${body.class_id}, ${body.question_id}, ${body.title}, ${body.deadline ?? null}, true, ${assignMode})
+            INSERT INTO assignments (class_id, question_id, title, deadline, is_active, mode, time_limit_minutes)
+            VALUES (${body.class_id}, ${body.question_id}, ${body.title}, ${body.deadline ?? null}, true, ${assignMode}, ${timeLimitMinutes})
             RETURNING *
           `;
           // Notify all students in the class about the new assignment
@@ -3283,7 +3285,7 @@ export default {
 
         await autoCloseExpired(sql, { classId });
         const rows = await sql`
-          SELECT a.id, a.title, a.deadline, a.is_active, a.created_at,
+          SELECT a.id, a.title, a.deadline, a.is_active, a.created_at, a.mode, a.time_limit_minutes,
             q.skill, q.title AS question_title, q.content_text, q.content_blocks, q.content_url,
             jsonb_array_length(COALESCE(q.vocabulary, '[]'::jsonb)) AS vocab_count,
             sub.id AS submission_id, sub.overall_score, sub.status AS submission_status,

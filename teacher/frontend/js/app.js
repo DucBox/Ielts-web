@@ -1822,6 +1822,7 @@ function renderStatsTab(container, data) {
               <th class="sortable" onclick="sortAssignTable('skill')">Kỹ năng ${atsi('skill')}</th>
               <th class="sortable" onclick="sortAssignTable('title')">Tên bài tập ${atsi('title')}</th>
               <th class="sortable" onclick="sortAssignTable('mode')">Chế độ ${atsi('mode')}</th>
+              <th>Thời gian</th>
               <th class="sortable" onclick="sortAssignTable('submitted_rate')">Tỷ lệ nộp ${atsi('submitted_rate')}</th>
               <th class="sortable" onclick="sortAssignTable('avg_score')">Điểm TB ${atsi('avg_score')}</th>
               <th class="sortable" onclick="sortAssignTable('on_time')">Đúng hạn ${atsi('on_time')}</th>
@@ -1836,6 +1837,7 @@ function renderStatsTab(container, data) {
                   <td>${skillBadge(a.skill)}</td>
                   <td style="font-weight:600">${escapeHtml(a.title)}</td>
                   <td>${a.mode === 'practice' ? '<span class="stats-mode-chip practice">🎧 Luyện tập</span>' : '<span class="stats-mode-chip exam">📝 Kiểm tra</span>'}</td>
+                  <td>${a.time_limit_minutes ? `${a.time_limit_minutes} phút` : '<span style="color:var(--text-muted)">—</span>'}</td>
                   <td>
                     <div class="stats-mini-bar-wrap">
                       <div class="stats-mini-bar" style="width:${submittedPct}%"></div>
@@ -3531,10 +3533,22 @@ async function openAssignModal(classId, className, preSelectedId = null) {
         </label>
       </div>
     </div>
+    <div class="form-group" id="assign-time-limit-group">
+      <label class="form-label">Thời gian làm bài <span class="form-hint-inline">(chỉ áp dụng cho Kiểm tra)</span></label>
+      <div style="display:flex;align-items:center;gap:8px">
+        <input id="assign-time-limit" class="form-input" type="number" min="1" max="300" placeholder="Không giới hạn" style="width:140px" />
+        <span style="color:var(--gray-400);font-size:13px">phút — hết giờ tự động nộp bài</span>
+      </div>
+    </div>
     <div class="modal-footer">
       <button class="btn btn-outline" onclick="closeModal()">Hủy</button>
       <button class="btn btn-primary" onclick="submitAssign(this)">Giao bài</button>
     </div>`);
+
+  document.querySelectorAll('input[name="assign-mode"]').forEach(radio => {
+    radio.addEventListener('change', _syncAssignTimeLimitVisibility);
+  });
+  _syncAssignTimeLimitVisibility();
 
   try {
     _questions = await api.get('/questions');
@@ -3663,12 +3677,21 @@ function selectQuestion(id, el) {
   el.querySelector('input[type=radio]').checked = true;
 }
 
+function _syncAssignTimeLimitVisibility() {
+  const modeEl = document.querySelector('input[name="assign-mode"]:checked');
+  const isExam = !modeEl || modeEl.value !== 'practice';
+  const group = $('#assign-time-limit-group');
+  if (group) group.style.display = isExam ? '' : 'none';
+}
+
 async function submitAssign(btn) {
   const title = $('#assign-title')?.value.trim();
   const deadlineRaw = $('#assign-deadline')?.value;
   const deadline = deadlineRaw ? new Date(deadlineRaw).toISOString() : null;
   const modeEl = document.querySelector('input[name="assign-mode"]:checked');
   const mode = modeEl?.value === 'practice' ? 'practice' : 'exam';
+  const timeLimitRaw = $('#assign-time-limit')?.value.trim();
+  const timeLimitMinutes = (mode === 'exam' && timeLimitRaw) ? Number(timeLimitRaw) : null;
 
   if (!title) { toast('Vui lòng nhập tên bài tập', 'error'); return; }
   if (!_selectedQuestionId) { toast('Vui lòng chọn một đề từ kho', 'error'); return; }
@@ -3681,6 +3704,7 @@ async function submitAssign(btn) {
       title,
       deadline:    deadline || null,
       mode,
+      time_limit_minutes: timeLimitMinutes,
     });
     closeModal();
     toast('Giao bài thành công! 🎉');

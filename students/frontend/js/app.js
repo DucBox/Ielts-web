@@ -447,6 +447,9 @@ let _match         = null; // matching: { cards, firstSelected, wrongCount, star
 let _taskTimer       = null;       // setInterval id for count-up timer
 let _taskStartTime   = 0;
 let _autoSaveTimer   = null;
+let _assignCountdownInterval = null;
+let _assignSecsLeft  = 0;
+let _assignCountdownCtx = null; // { assignmentId, skill, qCount }
 let _autoSaveFn      = null;
 let _autoSaveDebounceTimer = null;
 let _flaggedSet      = new Set();  // q_no flagged for review
@@ -802,6 +805,57 @@ function flushAutoSave() {
     _autoSaveDebounceTimer = null;
   }
   try { _autoSaveFn?.(); } catch {}
+}
+
+// ── Assignment countdown timer ────────────────────────────────────────────────
+
+function startAssignmentCountdown(minutes, ctx) {
+  stopAssignmentCountdown();
+  _assignSecsLeft = minutes * 60;
+  _assignCountdownCtx = ctx;
+  _updateAssignCountdownDisplay();
+  _assignCountdownInterval = setInterval(() => {
+    _assignSecsLeft--;
+    _updateAssignCountdownDisplay();
+    if (_assignSecsLeft <= 0) {
+      const ctx = _assignCountdownCtx;
+      stopAssignmentCountdown();
+      autoSubmitAssignment(ctx);
+    }
+  }, 1000);
+}
+
+function stopAssignmentCountdown() {
+  if (_assignCountdownInterval) {
+    clearInterval(_assignCountdownInterval);
+    _assignCountdownInterval = null;
+  }
+  _assignCountdownCtx = null;
+}
+
+function _updateAssignCountdownDisplay() {
+  const el = document.getElementById('assign-countdown');
+  if (!el) return;
+  const mins = Math.floor(_assignSecsLeft / 60);
+  const secs = _assignSecsLeft % 60;
+  el.textContent = `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  el.classList.toggle('timer-urgent', _assignSecsLeft <= 60);
+}
+
+async function autoSubmitAssignment(ctx) {
+  const { assignmentId, skill, qCount } = ctx || {};
+  if (!assignmentId) return;
+  toast('⏰ Hết giờ! Đang tự động nộp bài...', 'warning');
+  const btn = document.getElementById('submit-btn');
+  if (btn) btn.disabled = true;
+
+  if (skill === 'reading' || skill === 'listening') {
+    await submitAnswers(assignmentId, qCount, skill, btn, true);
+  } else if (skill === 'writing') {
+    await submitWriting(assignmentId, btn, true);
+  } else if (skill === 'speaking') {
+    await submitSpeaking(assignmentId, btn, true);
+  }
 }
 
 function showSavedIndicator() {
@@ -1559,6 +1613,7 @@ function router() {
   flushAutoSave();
   stopAutoSave();
   stopTaskTimer();
+  stopAssignmentCountdown();
   _stopAiFeedbackPoll();
   _activeAssignmentId = null;
   const hash = window.location.hash.slice(1) || '/home';
@@ -3795,24 +3850,27 @@ async function showAssignment({ id }) {
 
 function renderAssignment(a) {
   _activeAssignmentId = a.id;
+  stopAssignmentCountdown();
   // Restore flag set from draft
   const flagDraft = loadDraft(a.id, 'flags');
   _flaggedSet = new Set(Array.isArray(flagDraft?.data) ? flagDraft.data : []);
 
   const skill = a.skill;
+  const qCount = a.question_count || 0;
   if      (skill === 'reading')   renderReading(a);
   else if (skill === 'listening') renderListening(a);
   else if (skill === 'writing')   renderWriting(a);
   else if (skill === 'speaking')  renderSpeaking(a);
 
-  // B1.3 — count-up timer in toolbar
   const toolbar = document.querySelector('.assignment-toolbar');
   if (toolbar) {
+    const submitBtn = toolbar.querySelector('#submit-btn');
+
+    // B1.3 — count-up timer
     const timerEl = document.createElement('div');
     timerEl.id = 'task-timer';
     timerEl.className = 'task-timer';
     timerEl.title = 'Thời gian bạn đã làm bài';
-    const submitBtn = toolbar.querySelector('#submit-btn');
     if (submitBtn) toolbar.insertBefore(timerEl, submitBtn);
     else toolbar.appendChild(timerEl);
 
@@ -3823,6 +3881,16 @@ function renderAssignment(a) {
     else toolbar.appendChild(saveEl);
 
     startTaskTimer(a.id);
+
+    // Countdown timer for exam mode with time limit
+    if (a.mode === 'exam' && a.time_limit_minutes) {
+      const countdownEl = document.createElement('div');
+      countdownEl.className = 'assign-countdown-wrap';
+      countdownEl.innerHTML = `<span class="assign-countdown-label">⏱ Còn lại</span><span class="assign-countdown" id="assign-countdown">--:--</span>`;
+      if (submitBtn) toolbar.insertBefore(countdownEl, submitBtn);
+      else toolbar.appendChild(countdownEl);
+      startAssignmentCountdown(a.time_limit_minutes, { assignmentId: a.id, skill, qCount });
+    }
   }
 }
 
@@ -4029,7 +4097,7 @@ function restoreNotes(aid) {
   }
 }
 
-async function submitAnswers(assignmentId, qCount, skill, btn) {
+async function submitAnswers(assignmentId, qCount, skill, btn, isAuto = false) {
   const answers = [];
   for (let i = 1; i <= qCount; i++) {
     answers.push({ q_no: i, answer: ($(`#ans-${i}`)?.value || '').trim() });
@@ -4038,18 +4106,20 @@ async function submitAnswers(assignmentId, qCount, skill, btn) {
   const unanswered = qCount - answered;
   const flagged = _flaggedSet.size;
 
-  // B1.9 — always confirm before submit
-  const ok = await confirmSubmit({
-    title: 'Xác nhận nộp bài',
-    message: `
-      <ul class="submit-confirm-stats">
-        <li>✅ Đã trả lời: <b>${answered} / ${qCount}</b></li>
-        ${unanswered > 0 ? `<li>❌ Còn <b>${unanswered}</b> câu chưa làm</li>` : ''}
-        ${flagged > 0 ? `<li>🚩 Đang đánh dấu xem lại <b>${flagged}</b> câu</li>` : ''}
-      </ul>
-      <div style="margin-top:8px;color:var(--gray-600);font-size:13px">Sau khi nộp bài bạn không thể chỉnh sửa.</div>`,
-  });
-  if (!ok) return;
+  if (!isAuto) {
+    // B1.9 — always confirm before submit
+    const ok = await confirmSubmit({
+      title: 'Xác nhận nộp bài',
+      message: `
+        <ul class="submit-confirm-stats">
+          <li>✅ Đã trả lời: <b>${answered} / ${qCount}</b></li>
+          ${unanswered > 0 ? `<li>❌ Còn <b>${unanswered}</b> câu chưa làm</li>` : ''}
+          ${flagged > 0 ? `<li>🚩 Đang đánh dấu xem lại <b>${flagged}</b> câu</li>` : ''}
+        </ul>
+        <div style="margin-top:8px;color:var(--gray-600);font-size:13px">Sau khi nộp bài bạn không thể chỉnh sửa.</div>`,
+    });
+    if (!ok) return;
+  }
 
   btnLoading(btn);
   try {
@@ -4058,7 +4128,7 @@ async function submitAnswers(assignmentId, qCount, skill, btn) {
     });
     await syncNotifUIAfterSubmit();
     clearAllDrafts(assignmentId);
-    stopAutoSave(); stopTaskTimer();
+    stopAutoSave(); stopTaskTimer(); stopAssignmentCountdown();
     toast('Nộp bài thành công! 🎉');
     navigate(`/result/${assignmentId}`);
   } catch (e) {
@@ -4135,21 +4205,23 @@ function scheduleWritingDraftSave(aid) {
   scheduleAutoSave(() => persistWritingDraft(aid));
 }
 
-async function submitWriting(assignmentId, btn) {
+async function submitWriting(assignmentId, btn, isAuto = false) {
   const content = ($('#writing-answer')?.value || '').trim();
-  if (!content) { toast('Vui lòng viết bài trước khi nộp', 'error'); return; }
+  if (!content && !isAuto) { toast('Vui lòng viết bài trước khi nộp', 'error'); return; }
   const wc = countWords(content);
-  // B1.9 — always confirm before submit
-  const okW = await confirmSubmit({
-    title: 'Xác nhận nộp bài Writing',
-    message: `
-      <ul class="submit-confirm-stats">
-        <li>📝 Số từ: <b>${wc}</b>${wc < 150 ? ' <span style="color:var(--danger)">⚠ Dưới mức tối thiểu</span>' : ''}</li>
-      </ul>
-      ${wc < 50 ? `<div style="color:var(--danger);margin-top:4px">Bài quá ngắn — tối thiểu 150 từ (Task 1) hoặc 250 từ (Task 2).</div>` : ''}
-      <div style="margin-top:8px;color:var(--gray-600);font-size:13px">Sau khi nộp bạn không thể chỉnh sửa.</div>`,
-  });
-  if (!okW) return;
+  if (!isAuto) {
+    // B1.9 — always confirm before submit
+    const okW = await confirmSubmit({
+      title: 'Xác nhận nộp bài Writing',
+      message: `
+        <ul class="submit-confirm-stats">
+          <li>📝 Số từ: <b>${wc}</b>${wc < 150 ? ' <span style="color:var(--danger)">⚠ Dưới mức tối thiểu</span>' : ''}</li>
+        </ul>
+        ${wc < 50 ? `<div style="color:var(--danger);margin-top:4px">Bài quá ngắn — tối thiểu 150 từ (Task 1) hoặc 250 từ (Task 2).</div>` : ''}
+        <div style="margin-top:8px;color:var(--gray-600);font-size:13px">Sau khi nộp bạn không thể chỉnh sửa.</div>`,
+    });
+    if (!okW) return;
+  }
 
   btnLoading(btn);
   try {
@@ -4158,7 +4230,7 @@ async function submitWriting(assignmentId, btn) {
     });
     await syncNotifUIAfterSubmit();
     clearAllDrafts(assignmentId);
-    stopAutoSave(); stopTaskTimer();
+    stopAutoSave(); stopTaskTimer(); stopAssignmentCountdown();
     toast('Nộp bài thành công! 🎉');
     navigate(`/result/${assignmentId}`);
   } catch (e) {
@@ -4510,17 +4582,19 @@ function putSpeakingAudioDirect(uploadUrl, file, contentType, onProgress) {
   });
 }
 
-async function submitSpeaking(assignmentId, btn) {
+async function submitSpeaking(assignmentId, btn, isAuto = false) {
   const doneSlots = _speakingSlots.filter(s => s.status === 'done');
-  if (doneSlots.length === 0) {
+  if (doneSlots.length === 0 && !isAuto) {
     toast('Vui lòng thu âm hoặc upload ít nhất 1 file audio', 'error'); return;
   }
-  const ok = await confirmSubmit({
-    title: 'Xác nhận nộp bài Speaking',
-    message: `<div>Bạn đã sẵn sàng nộp bài thu âm?</div>
-              <div style="margin-top:8px;color:var(--gray-600);font-size:13px">Sau khi nộp bạn không thể thu âm lại.</div>`,
-  });
-  if (!ok) return;
+  if (!isAuto) {
+    const ok = await confirmSubmit({
+      title: 'Xác nhận nộp bài Speaking',
+      message: `<div>Bạn đã sẵn sàng nộp bài thu âm?</div>
+                <div style="margin-top:8px;color:var(--gray-600);font-size:13px">Sau khi nộp bạn không thể thu âm lại.</div>`,
+    });
+    if (!ok) return;
+  }
 
   btnLoading(btn);
   try {
@@ -4532,7 +4606,7 @@ async function submitSpeaking(assignmentId, btn) {
     });
     await syncNotifUIAfterSubmit();
     clearAllDrafts(assignmentId);
-    stopAutoSave(); stopTaskTimer();
+    stopAutoSave(); stopTaskTimer(); stopAssignmentCountdown();
     toast('Nộp bài thành công! 🎉');
     navigate(`/result/${assignmentId}`);
   } catch (e) {

@@ -2812,7 +2812,7 @@ export default {
           if (deliverableStudentIds.length > 0) {
             ctx?.waitUntil?.(processQueuedStudentEmails(sql, env, {
               limit: immediateEmailDispatchLimit,
-              delayMs: 2000,
+              delayMs: 1000,
             }));
           }
           return json(row, 201);
@@ -3230,7 +3230,7 @@ export default {
                 email: asgn.student_email,
               });
               if (normalizeStudentEmail(asgn.student_email)) {
-                ctx?.waitUntil?.(processQueuedStudentEmails(sql, env, { limit: 1, delayMs: 2000 }));
+                ctx?.waitUntil?.(processQueuedStudentEmails(sql, env, { limit: 1, delayMs: 1000 }));
               }
             }
           }
@@ -4142,7 +4142,7 @@ export default {
       if (shouldEnqueueDeadlines) {
         await enqueueDeadline1DayEmails(sql);
       }
-      await processQueuedStudentEmails(sql, env, { limit: 300, delayMs: 2000 });
+      await processQueuedStudentEmails(sql, env, { limit: 300, delayMs: 1000 });
       logStudentEmail('scheduled_done', {
         cron: controller?.cron || null,
         scheduledTime,

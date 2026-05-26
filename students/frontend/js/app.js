@@ -727,7 +727,7 @@ function startNotifPolling() {
   });
   _notifPollTimer = setInterval(() => {
     refreshNotifBadge().then(() => syncMissingEmailUI());
-  }, 30000);
+  }, 1800000);
 }
 
 function stopNotifPolling() {

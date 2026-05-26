@@ -3322,7 +3322,7 @@ export default {
         const studentId = String(claims.student_id);
         const body = await request.json().catch(() => null);
         if (!body?.ref_type || !body?.ref_id) return err('ref_type và ref_id là bắt buộc', 400);
-        if (!['assignment', 'shared_pool'].includes(body.ref_type)) return err('ref_type không hợp lệ', 400);
+        if (!['assignment', 'shared_pool', 'composite_section'].includes(body.ref_type)) return err('ref_type không hợp lệ', 400);
 
         // Verify student has access to this ref
         if (body.ref_type === 'assignment') {
@@ -3332,6 +3332,14 @@ export default {
             WHERE a.id = ${body.ref_id} AND sc.student_id = ${studentId} LIMIT 1
           `;
           if (!row) return err('Không tìm thấy bài tập', 404);
+        } else if (body.ref_type === 'composite_section') {
+          const [row] = await sql`
+            SELECT cs.id FROM composite_sections cs
+            JOIN composite_assignments ca ON ca.id = cs.composite_id
+            JOIN student_classes sc ON sc.class_id = ca.class_id
+            WHERE cs.id = ${body.ref_id} AND sc.student_id = ${studentId} LIMIT 1
+          `;
+          if (!row) return err('Không tìm thấy section', 404);
         } else {
           const [row] = await sql`SELECT id, time_limit_minutes FROM shared_pool WHERE id = ${body.ref_id}`;
           if (!row) return err('Không tìm thấy đề', 404);
@@ -4184,6 +4192,357 @@ export default {
           WHERE id = ${p.id}::uuid AND student_id = ${studentId}::uuid
         `;
         return json({ ok: true });
+      }
+
+      // ══════════════════════════════════════════════════════════════════════════
+      // COMPOSITE ASSIGNMENTS
+      // ══════════════════════════════════════════════════════════════════════════
+
+      // ── Teacher: list + create ────────────────────────────────────────────────
+      if (path === '/composite-assignments') {
+        if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
+
+        if (method === 'GET') {
+          const classId = url.searchParams.get('class_id');
+          if (!classId) return err('class_id là bắt buộc', 400);
+          const rows = await sql`
+            SELECT ca.*,
+              (SELECT COUNT(DISTINCT cs2.student_id)
+               FROM composite_submissions cs2
+               JOIN composite_sections sec2 ON sec2.id = cs2.section_id
+               WHERE sec2.composite_id = ca.id)::int AS submission_count,
+              (SELECT json_agg(json_build_object(
+                'id', sec.id, 'label', sec.label, 'skill', sec.skill,
+                'time_limit_minutes', sec.time_limit_minutes
+              ) ORDER BY sec.display_order)
+               FROM composite_sections sec WHERE sec.composite_id = ca.id) AS sections
+            FROM composite_assignments ca
+            WHERE ca.class_id = ${classId}
+            ORDER BY ca.created_at DESC
+          `;
+          return json(rows);
+        }
+
+        if (method === 'POST') {
+          const body = await request.json().catch(() => null);
+          if (!body?.class_id || !body?.title || !Array.isArray(body.sections) || body.sections.length === 0)
+            return err('class_id, title, sections là bắt buộc', 400);
+          const mode = body.mode === 'practice' ? 'practice' : 'exam';
+
+          const [composite] = await sql`
+            INSERT INTO composite_assignments (class_id, title, mode, deadline, is_active)
+            VALUES (${body.class_id}, ${body.title}, ${mode}, ${body.deadline ?? null}, true)
+            RETURNING *
+          `;
+
+          // Insert sections, computing question_offset cumulatively for R/L sections
+          let offset = 0;
+          for (let i = 0; i < body.sections.length; i++) {
+            const sec = body.sections[i];
+            if (!sec.label || !sec.skill || !sec.question_id) continue;
+            const [q] = await sql`
+              SELECT jsonb_array_length(COALESCE(questions_data, '[]'::jsonb)) AS qcount
+              FROM question_pool WHERE id = ${sec.question_id}
+            `;
+            const qcount = q?.qcount || 0;
+            const isObjective = sec.skill === 'reading' || sec.skill === 'listening';
+            await sql`
+              INSERT INTO composite_sections (composite_id, label, skill, question_id, time_limit_minutes, question_offset, display_order)
+              VALUES (${composite.id}, ${sec.label}, ${sec.skill}, ${sec.question_id},
+                ${sec.time_limit_minutes ?? null}, ${offset}, ${i})
+            `;
+            if (isObjective) offset += qcount;
+          }
+
+          // Notify students in the class
+          const classStudents = await sql`
+            SELECT sc.student_id FROM student_classes sc WHERE sc.class_id = ${body.class_id}
+          `;
+          const studentIds = classStudents.map(r => r.student_id);
+          if (studentIds.length > 0) {
+            const notifMeta = JSON.stringify({ title: body.title, skill: 'composite', deadline: body.deadline ?? null });
+            await sql`
+              WITH input_rows AS (SELECT UNNEST(${studentIds}::uuid[]) AS student_id)
+              INSERT INTO notifications (student_id, type, ref_id, metadata)
+              SELECT student_id, 'new_assignment', ${composite.id}, ${notifMeta}::jsonb
+              FROM input_rows ON CONFLICT DO NOTHING
+            `;
+          }
+          return json(composite, 201);
+        }
+      }
+
+      // ── Teacher: stats (must be before /:id) ─────────────────────────────────
+      if ((p = matchPath('/composite-assignments/:id/stats', path)) && method === 'GET') {
+        if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
+        const [composite] = await sql`SELECT * FROM composite_assignments WHERE id = ${p.id}`;
+        if (!composite) return err('Không tìm thấy', 404);
+
+        const sections = await sql`
+          SELECT cs.id, cs.label, cs.skill, cs.time_limit_minutes, cs.question_offset, cs.display_order,
+            q.title AS question_title, q.questions_data
+          FROM composite_sections cs
+          JOIN question_pool q ON q.id = cs.question_id
+          WHERE cs.composite_id = ${p.id}
+          ORDER BY cs.display_order
+        `;
+        const students = await sql`
+          SELECT s.id AS student_id, s.full_name, s.username
+          FROM student_classes sc JOIN students s ON s.id = sc.student_id
+          WHERE sc.class_id = ${composite.class_id}
+          ORDER BY s.full_name
+        `;
+        const submissions = await sql`
+          SELECT csub.*, sec.skill, sec.label AS section_label
+          FROM composite_submissions csub
+          JOIN composite_sections sec ON sec.id = csub.section_id
+          WHERE sec.composite_id = ${p.id}
+        `;
+        const subMap = {};
+        for (const sub of submissions) {
+          if (!subMap[sub.student_id]) subMap[sub.student_id] = {};
+          subMap[sub.student_id][sub.section_id] = sub;
+        }
+        const perStudent = students.map(s => ({
+          student_id: s.student_id,
+          full_name:  s.full_name,
+          username:   s.username,
+          sections:   sections.map(sec => ({
+            section_id: sec.id,
+            label:      sec.label,
+            skill:      sec.skill,
+            submission: subMap[s.student_id]?.[sec.id] ?? null,
+          })),
+        }));
+        return json({ composite, sections, perStudent });
+      }
+
+      // ── Teacher: get / update / delete ───────────────────────────────────────
+      if ((p = matchPath('/composite-assignments/:id', path))) {
+        if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
+
+        if (method === 'GET') {
+          const [composite] = await sql`SELECT * FROM composite_assignments WHERE id = ${p.id}`;
+          if (!composite) return err('Không tìm thấy', 404);
+          const sections = await sql`
+            SELECT cs.*,
+              jsonb_array_length(COALESCE(q.questions_data, '[]'::jsonb)) AS question_count,
+              q.title AS question_title
+            FROM composite_sections cs
+            JOIN question_pool q ON q.id = cs.question_id
+            WHERE cs.composite_id = ${p.id}
+            ORDER BY cs.display_order
+          `;
+          return json({ ...composite, sections });
+        }
+
+        if (method === 'PATCH') {
+          const body = await request.json().catch(() => null);
+          const updates = {};
+          if (body?.is_active !== undefined) updates.is_active = body.is_active;
+          if (body?.deadline  !== undefined) updates.deadline  = body.deadline;
+          if (body?.title     !== undefined) updates.title     = body.title;
+          if (Object.keys(updates).length === 0) return err('Không có trường nào cần cập nhật');
+          const fields = Object.keys(updates);
+          const vals   = Object.values(updates);
+          const setClauses = fields.map((f, i) => `${f} = $${i + 1}`).join(', ');
+          const [row] = await sql(`UPDATE composite_assignments SET ${setClauses} WHERE id = $${fields.length + 1} RETURNING *`, [...vals, p.id]);
+          return json(row);
+        }
+
+        if (method === 'DELETE') {
+          const audios = await sql`
+            SELECT audio_key FROM composite_submissions
+            WHERE composite_id = ${p.id} AND audio_key IS NOT NULL
+          `;
+          for (const a of audios) await env.R2.delete(a.audio_key).catch(() => {});
+          await sql`DELETE FROM composite_assignments WHERE id = ${p.id}`;
+          return json({ ok: true });
+        }
+      }
+
+      // ── Teacher: grade composite submission (writing/speaking) ────────────────
+      if ((p = matchPath('/composite-submissions/:id/score', path)) && method === 'PATCH') {
+        if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
+        const body = await request.json().catch(() => null);
+        const updateFields = [], updateVals = [];
+        if (body?.score    !== undefined) { updateFields.push('score');    updateVals.push(Number(body.score)); }
+        if (body?.feedback !== undefined) { updateFields.push('feedback'); updateVals.push(String(body.feedback)); }
+        if (updateFields.length === 0) return err('score hoặc feedback là bắt buộc');
+        const setClauses = updateFields.map((f, i) => `${f} = $${i + 1}`).join(', ');
+        const [row] = await sql(`UPDATE composite_submissions SET ${setClauses} WHERE id = $${updateFields.length + 1} RETURNING *`, [...updateVals, p.id]);
+        if (!row) return err('Không tìm thấy bài nộp', 404);
+        return json(row);
+      }
+
+      // ── Student: list composite assignments ───────────────────────────────────
+      if (path === '/student/composite-assignments' && method === 'GET') {
+        const claims = await requireStudentAuth(request, env);
+        if (!claims) return err('Unauthorized', 401);
+        const classId   = url.searchParams.get('class_id');
+        if (!classId) return err('class_id là bắt buộc', 400);
+        const studentId = String(claims.student_id);
+        const [membership] = await sql`
+          SELECT 1 FROM student_classes WHERE student_id = ${studentId} AND class_id = ${classId}
+        `;
+        if (!membership) return err('Học sinh không thuộc lớp này', 403);
+
+        const composites = await sql`
+          SELECT ca.*,
+            (SELECT json_agg(json_build_object(
+              'id', sec.id, 'label', sec.label, 'skill', sec.skill,
+              'time_limit_minutes', sec.time_limit_minutes, 'display_order', sec.display_order,
+              'submitted', CASE WHEN csub.id IS NOT NULL THEN true ELSE false END,
+              'score', csub.score
+            ) ORDER BY sec.display_order)
+            FROM composite_sections sec
+            LEFT JOIN composite_submissions csub
+              ON csub.section_id = sec.id AND csub.student_id = ${studentId}
+            WHERE sec.composite_id = ca.id) AS sections
+          FROM composite_assignments ca
+          WHERE ca.class_id = ${classId}
+          ORDER BY ca.created_at DESC
+        `;
+        return json(composites);
+      }
+
+      // ── Student: composite detail (questions + student submissions) ───────────
+      if ((p = matchPath('/student/composite-assignments/:id', path)) && method === 'GET') {
+        const claims = await requireStudentAuth(request, env);
+        if (!claims) return err('Unauthorized', 401);
+        const studentId = String(claims.student_id);
+        const [composite] = await sql`SELECT * FROM composite_assignments WHERE id = ${p.id}`;
+        if (!composite) return err('Không tìm thấy', 404);
+        const [membership] = await sql`
+          SELECT 1 FROM student_classes WHERE student_id = ${studentId} AND class_id = ${composite.class_id}
+        `;
+        if (!membership) return err('Học sinh không thuộc lớp này', 403);
+        const sections = await sql`
+          SELECT cs.id, cs.label, cs.skill, cs.time_limit_minutes, cs.question_offset, cs.display_order,
+            q.title AS question_title, q.content_text, q.content_blocks, q.content_url, q.content_urls,
+            q.questions_data, q.script,
+            jsonb_array_length(COALESCE(q.questions_data, '[]'::jsonb)) AS question_count,
+            csub.id AS submission_id, csub.answers, csub.content, csub.audio_url,
+            csub.score, csub.feedback, csub.submitted_at, csub.is_overtime
+          FROM composite_sections cs
+          JOIN question_pool q ON q.id = cs.question_id
+          LEFT JOIN composite_submissions csub
+            ON csub.section_id = cs.id AND csub.student_id = ${studentId}
+          WHERE cs.composite_id = ${p.id}
+          ORDER BY cs.display_order
+        `;
+        return json({ ...composite, sections });
+      }
+
+      // ── Student: submit composite section ─────────────────────────────────────
+      if ((p = matchPath('/student/composite-sections/:id/submit', path)) && method === 'POST') {
+        const claims = await requireStudentAuth(request, env);
+        if (!claims) return err('Unauthorized', 401);
+        const studentId = String(claims.student_id);
+
+        const [section] = await sql`
+          SELECT cs.*, ca.class_id, ca.is_active, ca.deadline, ca.mode,
+            q.questions_data, q.skill AS q_skill
+          FROM composite_sections cs
+          JOIN composite_assignments ca ON ca.id = cs.composite_id
+          JOIN question_pool q ON q.id = cs.question_id
+          WHERE cs.id = ${p.id}
+        `;
+        if (!section) return err('Không tìm thấy section', 404);
+
+        const [membership] = await sql`
+          SELECT 1 FROM student_classes WHERE student_id = ${studentId} AND class_id = ${section.class_id}
+        `;
+        if (!membership) return err('Học sinh không thuộc lớp này', 403);
+        if (!section.is_active) return err('Bài tập đã đóng', 403);
+        if (section.deadline && new Date(section.deadline) < new Date()) return err('Đã hết hạn nộp bài', 403);
+
+        const [existing] = await sql`
+          SELECT id FROM composite_submissions WHERE section_id = ${p.id} AND student_id = ${studentId}
+        `;
+        if (existing) return err('Bạn đã nộp phần này rồi', 409);
+
+        const ct = request.headers.get('Content-Type') || '';
+        let answers = null, content = null, audioUrl = null, audioKey = null;
+        let directUploadKey = null, audioUploadKeys = null;
+
+        if (ct.includes('multipart/form-data')) {
+          const form = await request.formData();
+          const audioFile = form.get('audio');
+          if (audioFile && audioFile.size > 0) {
+            if (audioFile.size > 50 * 1024 * 1024) return err('File quá lớn — tối đa 50MB', 413);
+            if (!isAudioContentType(audioFile.type)) return err('Chỉ chấp nhận file âm thanh', 415);
+            if (!env.OPENAI_API_KEY) return err('Chưa cấu hình OPENAI_API_KEY', 500);
+            const openaiForm = new FormData();
+            openaiForm.append('file', audioFile, audioFile.name || 'audio.webm');
+            openaiForm.append('model', 'gpt-4o-mini-transcribe');
+            openaiForm.append('response_format', 'json');
+            const sttUrl = getOpenAIEndpoint(env, '/v1/audio/transcriptions', 'stt');
+            const aiRes = await fetch(sttUrl, { method: 'POST', headers: { 'Authorization': `Bearer ${getOpenAIAuthToken(env, sttUrl, 'stt')}` }, body: openaiForm });
+            if (!aiRes.ok) { const t = await aiRes.text(); if (isUnsupportedRegionOpenAIError(t)) return err('Dịch vụ nhận diện giọng nói đang bị chặn', 502); return err('Không thể nhận diện giọng nói', 500); }
+            content = (await aiRes.json()).text || '';
+            audioKey = `speaking/${section.composite_id}/${studentId}-${crypto.randomUUID()}-${sanitizeFileName(audioFile.name)}`;
+            await env.R2.put(audioKey, audioFile.stream(), { httpMetadata: { contentType: audioFile.type } });
+            audioUrl = buildR2PublicUrl(env, audioKey);
+          }
+        } else {
+          const body = await request.json().catch(() => null);
+          answers         = body?.answers         ?? null;
+          content         = body?.content         ?? null;
+          directUploadKey = body?.audio_upload_key ?? null;
+          audioUploadKeys = Array.isArray(body?.audio_upload_keys) && body.audio_upload_keys.length > 0
+            ? body.audio_upload_keys : null;
+        }
+
+        // Handle R2 pre-uploaded audio for speaking
+        if (section.skill === 'speaking' && (directUploadKey || audioUploadKeys) && !content) {
+          const r2Key = directUploadKey || audioUploadKeys[0]?.key;
+          try {
+            content  = (await transcribeR2Audio(env, r2Key)).text || '';
+            audioUrl = buildR2PublicUrl(env, r2Key);
+            audioKey = r2Key;
+          } catch (sttErr) {
+            if (directUploadKey) await env.R2.delete(directUploadKey).catch(() => {});
+            else if (audioUploadKeys) for (const k of audioUploadKeys) await env.R2.delete(k.key).catch(() => {});
+            return err(sttErr.message || 'Không thể nhận diện giọng nói', sttErr.statusCode || 500);
+          }
+        }
+
+        // Auto-grade reading/listening
+        let score = null;
+        if ((section.skill === 'reading' || section.skill === 'listening') && answers) {
+          score = autoGrade(answers, section.questions_data);
+        }
+
+        // Overtime detection
+        let isOvertime = false;
+        if (section.mode === 'exam' && section.time_limit_minutes) {
+          const [session] = await sql`
+            SELECT started_at FROM exam_sessions
+            WHERE student_id = ${studentId} AND ref_type = 'composite_section' AND ref_id = ${p.id}
+          `;
+          if (session) {
+            const elapsedSec = (Date.now() - new Date(session.started_at).getTime()) / 1000;
+            isOvertime = elapsedSec > section.time_limit_minutes * 60 + 30;
+          }
+        }
+
+        try {
+          const [submission] = await sql`
+            INSERT INTO composite_submissions
+              (composite_id, section_id, student_id, answers, content, audio_url, audio_key, score, is_overtime)
+            VALUES (
+              ${section.composite_id}, ${p.id}, ${studentId},
+              ${answers ? JSON.stringify(answers) : null}::jsonb,
+              ${content}, ${audioUrl}, ${audioKey}, ${score}, ${isOvertime}
+            )
+            RETURNING *
+          `;
+          return json(submission, 201);
+        } catch (dbErr) {
+          if (audioKey && !directUploadKey && !audioUploadKeys) await env.R2.delete(audioKey).catch(() => {});
+          throw dbErr;
+        }
       }
 
       return err('Not found', 404);

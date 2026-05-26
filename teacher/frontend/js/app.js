@@ -819,11 +819,12 @@ const routes = {
   '/questions':        showQuestions,
   '/questions/new':    showQuestionForm,
   '/questions/:id':    showQuestionDetail,
-  '/shared-pool':      showSharedPool,
-  '/shared-pool/new':  showSharedPoolForm,
-  '/shared-pool/:id':  showSharedPoolDetail,
-  '/inbox':            showInbox,
-  '/profile-fields':   showProfileFields,
+  '/shared-pool':          showSharedPool,
+  '/shared-pool/new':      showSharedPoolForm,
+  '/shared-pool/:id':      showSharedPoolDetail,
+  '/composite/:id':        showCompositeSubmissions,
+  '/inbox':                showInbox,
+  '/profile-fields':       showProfileFields,
 };
 
 const routeLoadingMessages = {
@@ -1191,10 +1192,12 @@ async function submitCreateClass(btn) {
 async function showClassDetail({ id }) {
   setLoading('Đang tải thông tin lớp...');
   try {
-    const [cls, students] = await Promise.all([
+    const [cls, students, composites] = await Promise.all([
       api.get(`/classes/${id}`),
       api.get(`/classes/${id}/students`),
+      api.get(`/composite-assignments?class_id=${id}`).catch(() => []),
     ]);
+    cls.composites = composites || [];
     _cachedCls = cls;
     _cachedStudents = students;
     _classDetailTab = 'assignments';
@@ -2201,14 +2204,20 @@ function renderClassDetail(cls, students = []) {
           ${cls.description ? `<span>📝 ${escapeHtml(cls.description)}</span>` : ''}
         </div>
       </div>
-      <button class="btn btn-primary"
-        onclick="openAssignModal('${cls.id}', '${clsNameSafe}')">
-        + Giao bài mới
-      </button>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-outline"
+          onclick="openCompositeModal('${cls.id}', '${clsNameSafe}')">
+          📋 Giao đề tổng hợp
+        </button>
+        <button class="btn btn-primary"
+          onclick="openAssignModal('${cls.id}', '${clsNameSafe}')">
+          + Giao bài mới
+        </button>
+      </div>
     </div>
 
     <div class="tab-bar">
-      <button class="tab-btn active" data-tab="assignments" onclick="switchClassTab('assignments')">📋 Bài tập (${cls.assignments.length})</button>
+      <button class="tab-btn active" data-tab="assignments" onclick="switchClassTab('assignments')">📋 Bài tập (${cls.assignments.length + (cls.composites?.length || 0)})</button>
       <button class="tab-btn" data-tab="students" onclick="switchClassTab('students')">👤 Học sinh (${students.length})</button>
       <button class="tab-btn" data-tab="stats" onclick="switchClassTab('stats')">📊 Thống kê</button>
     </div>
@@ -2238,6 +2247,51 @@ function renderClassDetail(cls, students = []) {
           <tbody id="assign-tbody">${assignRows}</tbody>
         </table>
       </div>
+      ${cls.composites && cls.composites.length > 0 ? `
+      <div style="margin-top:24px">
+        <div class="section-title" style="margin-bottom:8px">📋 Đề tổng hợp</div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>Tên đề</th>
+              <th>Phần</th>
+              <th>Hạn nộp</th>
+              <th>Mở/Đóng</th>
+              <th>Thao tác</th>
+            </tr></thead>
+            <tbody>
+              ${cls.composites.map(ca => {
+                const overdue = isOverdue(ca.deadline) && ca.is_active;
+                const skillIcons = { reading:'📖', listening:'🎧', writing:'✍️', speaking:'🎤' };
+                const secBadges = (ca.sections||[]).map(s => `<span class="badge" style="background:var(--surface);border:1px solid var(--border);font-size:11px">${skillIcons[s.skill]||''} ${escapeHtml(s.label)}</span>`).join(' ');
+                const subCount = ca.submission_count || 0;
+                const pct = cls.student_count > 0 ? Math.round(subCount / cls.student_count * 100) : 0;
+                return `<tr>
+                  <td style="font-weight:600">${escapeHtml(ca.title)}</td>
+                  <td style="font-size:12px">${secBadges}</td>
+                  <td><span class="deadline${overdue?' overdue':''}">${overdue?'⚠️ ':''}${formatDateTime(ca.deadline)}</span></td>
+                  <td>
+                    <label class="toggle">
+                      <input type="checkbox" ${ca.is_active?'checked':''}
+                        onchange="toggleComposite('${ca.id}', this.checked)" />
+                      <span class="toggle-slider"></span>
+                    </label>
+                  </td>
+                  <td>
+                    <div class="td-actions">
+                      <button class="btn btn-sm btn-outline" onclick="navigate('/composite/${ca.id}')">
+                        <span class="sub-progress-wrap"><span class="sub-progress-bar" style="width:${pct}%"></span></span>
+                        📊 ${subCount}/${cls.student_count} nộp
+                      </button>
+                      <button class="btn-icon danger" title="Xoá" onclick="deleteComposite('${ca.id}', '${cls.id}', this)">🗑</button>
+                    </div>
+                  </td>
+                </tr>`;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>` : ''}
     </div>
 
     <div id="tab-students" class="tab-content" style="display:none">
@@ -7908,6 +7962,352 @@ function renderSharedPoolStats(stats, poolId) {
 window.showSharedPool       = showSharedPool;
 window.showSharedPoolForm   = showSharedPoolForm;
 window.showSharedPoolDetail = showSharedPoolDetail;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// COMPOSITE ASSIGNMENTS (teacher)
+// ═══════════════════════════════════════════════════════════════════════════
+
+let _compositeClassId = '';
+let _compositeSections = []; // [{label, skill, question_id, question_title, time_limit_minutes, qsearch}]
+
+function openCompositeModal(classId, className) {
+  _compositeClassId = classId;
+  _compositeSections = [];
+  const clsNameSafe = String(className).replace(/'/g, "\\'");
+  openModal(`Giao đề tổng hợp cho lớp "${clsNameSafe}"`, `
+    <div class="form-group">
+      <label class="form-label">Tên đề <span style="color:var(--danger)">*</span></label>
+      <input id="composite-title" class="form-input" placeholder="VD: Đề tổng hợp tháng 5" />
+    </div>
+    <div class="form-group">
+      <label class="form-label">Hạn nộp bài</label>
+      <input id="composite-deadline" class="form-input" type="datetime-local" />
+    </div>
+    <div class="form-group">
+      <label class="form-label">Chế độ bài tập</label>
+      <div class="assign-mode-options">
+        <label class="assign-mode-option">
+          <input type="radio" name="composite-mode" value="exam" checked />
+          <span class="assign-mode-label"><span class="assign-mode-icon">📝</span>
+            <span><strong>Kiểm tra</strong><span class="assign-mode-desc">Đếm giờ từng phần, không tua audio</span></span>
+          </span>
+        </label>
+        <label class="assign-mode-option">
+          <input type="radio" name="composite-mode" value="practice" />
+          <span class="assign-mode-label"><span class="assign-mode-icon">🎧</span>
+            <span><strong>Luyện tập</strong><span class="assign-mode-desc">Không giới hạn thời gian, thoải mái</span></span>
+          </span>
+        </label>
+      </div>
+    </div>
+    <div class="form-group">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <label class="form-label" style="margin:0">Các phần thi <span style="color:var(--danger)">*</span></label>
+        <button class="btn btn-sm btn-outline" onclick="addCompositeSection()">+ Thêm phần</button>
+      </div>
+      <div id="composite-sections-container"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="closeModal()">Hủy</button>
+      <button class="btn btn-primary" onclick="submitComposite(this)">Giao đề</button>
+    </div>`);
+
+  if (!_questions || _questions.length === 0) {
+    api.get('/questions').then(qs => { _questions = qs; }).catch(() => {});
+  }
+}
+window.openCompositeModal = openCompositeModal;
+
+function _renderCompositeSections() {
+  const container = document.getElementById('composite-sections-container');
+  if (!container) return;
+  if (_compositeSections.length === 0) {
+    container.innerHTML = `<div style="padding:16px;text-align:center;color:var(--gray-400);font-size:13px;border:1.5px dashed var(--border);border-radius:8px">Nhấn "+ Thêm phần" để thêm kỹ năng vào đề</div>`;
+    return;
+  }
+  const skillIcons = { reading:'📖', listening:'🎧', writing:'✍️', speaking:'🎤' };
+  const skillLabels = { reading:'Reading', listening:'Listening', writing:'Writing', speaking:'Speaking' };
+  container.innerHTML = _compositeSections.map((sec, idx) => `
+    <div class="composite-section-card" style="border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:8px;background:var(--bg-card)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <strong style="font-size:13px">Phần ${idx + 1}</strong>
+        <button class="btn-icon danger" onclick="removeCompositeSection(${idx})">×</button>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
+        <div>
+          <label class="form-label" style="font-size:12px">Tên phần *</label>
+          <input class="form-input" style="font-size:13px" placeholder="VD: Bài đọc 1"
+            value="${escapeHtml(sec.label)}"
+            oninput="_compositeSections[${idx}].label = this.value" />
+        </div>
+        <div>
+          <label class="form-label" style="font-size:12px">Kỹ năng *</label>
+          <select class="form-input" style="font-size:13px" onchange="updateCompositeSectionSkill(${idx}, this.value)">
+            <option value="">-- Chọn --</option>
+            ${['reading','listening','writing','speaking'].map(s =>
+              `<option value="${s}" ${sec.skill===s?'selected':''}>${skillIcons[s]} ${skillLabels[s]}</option>`
+            ).join('')}
+          </select>
+        </div>
+      </div>
+      <div style="margin-bottom:8px">
+        <label class="form-label" style="font-size:12px">Thời gian (phút, để trống = không giới hạn)</label>
+        <input class="form-input" style="font-size:13px;width:140px" type="number" min="1" max="300"
+          placeholder="Không giới hạn"
+          value="${sec.time_limit_minutes ?? ''}"
+          oninput="_compositeSections[${idx}].time_limit_minutes = this.value ? Number(this.value) : null" />
+      </div>
+      <div>
+        <label class="form-label" style="font-size:12px">Đề *</label>
+        ${sec.question_id
+          ? `<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--surface);border-radius:6px;font-size:13px">
+              <span style="flex:1">${escapeHtml(sec.question_title)}</span>
+              <button class="btn-icon" onclick="_compositeSections[${idx}].question_id=null;_compositeSections[${idx}].question_title='';_renderCompositeSections()" title="Đổi đề">✕</button>
+             </div>`
+          : (sec.skill
+              ? `<div>
+                  <input class="form-input" style="font-size:12px;margin-bottom:4px" placeholder="🔍 Tìm đề..."
+                    value="${escapeHtml(sec.qsearch||'')}"
+                    oninput="_compositeSections[${idx}].qsearch=this.value;_renderCompositeSQList(${idx})" />
+                  <div id="cq-list-${idx}" class="composite-q-list">${_buildCompositeSQHtml(idx)}</div>
+                 </div>`
+              : `<div style="font-size:12px;color:var(--gray-400);padding:6px">Chọn kỹ năng trước</div>`)}
+      </div>
+    </div>`).join('');
+}
+window._renderCompositeSections = _renderCompositeSections;
+
+function _buildCompositeSQHtml(idx) {
+  const sec = _compositeSections[idx];
+  if (!sec || !sec.skill || !_questions) return '';
+  const search = (sec.qsearch || '').toLowerCase();
+  const filtered = _questions.filter(q => q.skill === sec.skill && (!search || q.title.toLowerCase().includes(search))).slice(0, 20);
+  if (filtered.length === 0) return `<div style="padding:8px;font-size:12px;color:var(--gray-400)">Không tìm thấy đề nào</div>`;
+  return filtered.map(q => `
+    <div class="composite-q-item" onclick="selectCompositeSQ(${idx},'${q.id}',${JSON.stringify(escapeHtml(q.title))})"
+      style="padding:6px 10px;cursor:pointer;font-size:12px;border-radius:4px;hover:background:var(--surface)">
+      ${escapeHtml(q.title)}
+    </div>`).join('');
+}
+window._buildCompositeSQHtml = _buildCompositeSQHtml;
+
+function _renderCompositeSQList(idx) {
+  const el = document.getElementById(`cq-list-${idx}`);
+  if (el) el.innerHTML = _buildCompositeSQHtml(idx);
+}
+window._renderCompositeSQList = _renderCompositeSQList;
+
+function addCompositeSection() {
+  _compositeSections.push({ label: '', skill: '', question_id: null, question_title: '', time_limit_minutes: null, qsearch: '' });
+  _renderCompositeSections();
+}
+window.addCompositeSection = addCompositeSection;
+
+function removeCompositeSection(idx) {
+  _compositeSections.splice(idx, 1);
+  _renderCompositeSections();
+}
+window.removeCompositeSection = removeCompositeSection;
+
+function updateCompositeSectionSkill(idx, skill) {
+  _compositeSections[idx].skill = skill;
+  _compositeSections[idx].question_id = null;
+  _compositeSections[idx].question_title = '';
+  _compositeSections[idx].qsearch = '';
+  _renderCompositeSections();
+}
+window.updateCompositeSectionSkill = updateCompositeSectionSkill;
+
+function selectCompositeSQ(idx, questionId, questionTitle) {
+  _compositeSections[idx].question_id = questionId;
+  _compositeSections[idx].question_title = questionTitle;
+  _renderCompositeSections();
+}
+window.selectCompositeSQ = selectCompositeSQ;
+
+async function submitComposite(btn) {
+  const title = document.getElementById('composite-title')?.value.trim();
+  const deadlineRaw = document.getElementById('composite-deadline')?.value;
+  const deadline = deadlineRaw ? new Date(deadlineRaw).toISOString() : null;
+  const modeEl = document.querySelector('input[name="composite-mode"]:checked');
+  const mode = modeEl?.value === 'practice' ? 'practice' : 'exam';
+
+  if (!title) { toast('Vui lòng nhập tên đề', 'error'); return; }
+  if (_compositeSections.length === 0) { toast('Vui lòng thêm ít nhất 1 phần', 'error'); return; }
+  for (let i = 0; i < _compositeSections.length; i++) {
+    const s = _compositeSections[i];
+    if (!s.label.trim()) { toast(`Phần ${i+1}: Vui lòng nhập tên phần`, 'error'); return; }
+    if (!s.skill) { toast(`Phần ${i+1}: Vui lòng chọn kỹ năng`, 'error'); return; }
+    if (!s.question_id) { toast(`Phần ${i+1}: Vui lòng chọn đề`, 'error'); return; }
+  }
+
+  btnLoading(btn);
+  try {
+    await api.post('/composite-assignments', {
+      class_id: _compositeClassId,
+      title,
+      mode,
+      deadline,
+      sections: _compositeSections.map(s => ({
+        label: s.label,
+        skill: s.skill,
+        question_id: s.question_id,
+        time_limit_minutes: s.time_limit_minutes || null,
+      })),
+    });
+    closeModal();
+    toast('Giao đề tổng hợp thành công! 🎉');
+    showClassDetail({ id: _compositeClassId });
+  } catch (e) {
+    btnReset(btn);
+    toast('Lỗi: ' + (e.error || e.message), 'error');
+  }
+}
+window.submitComposite = submitComposite;
+
+async function toggleComposite(id, active) {
+  try {
+    await api.patch(`/composite-assignments/${id}`, { is_active: active });
+    toast(active ? 'Đã mở đề' : 'Đã đóng đề');
+  } catch (e) {
+    toast('Lỗi: ' + (e.error || e.message), 'error');
+    if (_cachedCls) renderClassDetail(_cachedCls, _cachedStudents);
+  }
+}
+window.toggleComposite = toggleComposite;
+
+async function deleteComposite(id, classId, btn) {
+  if (!confirm('Xoá đề tổng hợp này? Tất cả bài nộp sẽ bị xoá.')) return;
+  btnLoading(btn);
+  try {
+    await api.delete(`/composite-assignments/${id}`);
+    toast('Đã xoá đề tổng hợp');
+    showClassDetail({ id: classId });
+  } catch (e) {
+    btnReset(btn);
+    toast('Lỗi: ' + (e.error || e.message), 'error');
+  }
+}
+window.deleteComposite = deleteComposite;
+
+// ── Composite submissions page ────────────────────────────────────────────────
+
+async function showCompositeSubmissions({ id }) {
+  setLoading('Đang tải đề tổng hợp...');
+  try {
+    const data = await api.get(`/composite-assignments/${id}/stats`);
+    renderCompositeSubmissions(data);
+  } catch (e) {
+    renderRouteError('Không tải được dữ liệu', e, '/classes');
+  }
+}
+window.showCompositeSubmissions = showCompositeSubmissions;
+
+function renderCompositeSubmissions({ composite, sections, perStudent }) {
+  const skillIcons = { reading:'📖', listening:'🎧', writing:'✍️', speaking:'🎤' };
+  const totalSecs = sections.length;
+  const studentRows = perStudent.length === 0
+    ? `<tr><td colspan="${totalSecs + 2}" style="text-align:center;padding:24px;color:var(--gray-400)">Lớp chưa có học sinh</td></tr>`
+    : perStudent.map(s => {
+        const sectionCells = sections.map(sec => {
+          const sub = s.sections.find(ss => ss.section_id === sec.id)?.submission;
+          if (!sub) return `<td style="text-align:center;color:var(--gray-400)">—</td>`;
+          const score = sub.score != null
+            ? `<span style="font-weight:700;color:var(--primary)">${sub.score}/9</span>`
+            : `<span style="color:var(--gray-400);font-size:12px">${sec.skill === 'reading' || sec.skill === 'listening' ? '—' : 'Chờ chấm'}</span>`;
+          const overtimeBadge = sub.is_overtime ? `<span class="stats-overtime-pill" style="display:block;font-size:10px;margin-top:2px">OT</span>` : '';
+          const viewBtn = (sec.skill === 'writing' || sec.skill === 'speaking')
+            ? `<button class="btn btn-sm btn-outline" style="font-size:11px;padding:2px 6px;margin-top:2px"
+                onclick="openCompositeSubmissionGrading('${sub.id}','${sec.skill}')">Chấm</button>` : '';
+          return `<td style="text-align:center">${score}${overtimeBadge}${viewBtn}</td>`;
+        }).join('');
+        return `<tr>
+          <td>
+            <div style="font-weight:600">${escapeHtml(s.full_name)}</div>
+            <div style="font-size:11px;color:var(--gray-400);font-family:monospace">${escapeHtml(s.username)}</div>
+          </td>
+          ${sectionCells}
+          <td style="text-align:center;font-size:12px;color:var(--gray-400)">
+            ${s.sections.filter(ss => ss.submission).length}/${totalSecs} phần
+          </td>
+        </tr>`;
+      }).join('');
+
+  $('#app').innerHTML = `
+    <nav class="breadcrumb">
+      <a class="breadcrumb-item" onclick="navigate('/classes')">Lớp học</a>
+      <span class="breadcrumb-sep">›</span>
+      <a class="breadcrumb-item" onclick="navigate('/class/${composite.class_id}')">Lớp</a>
+      <span class="breadcrumb-sep">›</span>
+      <span class="breadcrumb-item active">${escapeHtml(composite.title)}</span>
+    </nav>
+    <div class="detail-header">
+      <div class="detail-header-info">
+        <h2>📋 ${escapeHtml(composite.title)}</h2>
+        <div class="detail-header-meta">
+          <span>📅 Hạn nộp: ${formatDateTime(composite.deadline)}</span>
+          <span>${composite.is_active ? '🟢 Đang mở' : '🔴 Đã đóng'}</span>
+        </div>
+      </div>
+    </div>
+    <div class="table-wrap" style="overflow-x:auto">
+      <table>
+        <thead><tr>
+          <th>Học sinh</th>
+          ${sections.map(sec => `<th style="text-align:center;min-width:110px">${skillIcons[sec.skill]||''} ${escapeHtml(sec.label)}</th>`).join('')}
+          <th style="text-align:center">Tiến độ</th>
+        </tr></thead>
+        <tbody>${studentRows}</tbody>
+      </table>
+    </div>`;
+}
+window.renderCompositeSubmissions = renderCompositeSubmissions;
+
+let _gradingCompositeSubId = null;
+
+async function openCompositeSubmissionGrading(submissionId, skill) {
+  _gradingCompositeSubId = submissionId;
+  const data = await api.get(`/composite-assignments/submission/${submissionId}`).catch(() => null);
+  openModal(`Chấm bài — ${skill === 'writing' ? 'Writing' : 'Speaking'}`, `
+    <div class="form-group">
+      <label class="form-label">Điểm Band (0–9)</label>
+      <input id="composite-grade-score" class="form-input" type="number" min="0" max="9" step="0.5" placeholder="VD: 6.5" />
+    </div>
+    <div class="form-group">
+      <label class="form-label">Nhận xét</label>
+      <textarea id="composite-grade-feedback" class="form-input" rows="4" placeholder="Nhận xét của giáo viên..."></textarea>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline" onclick="closeModal()">Đóng</button>
+      <button class="btn btn-primary" onclick="saveCompositeGrading(this)">💾 Lưu</button>
+    </div>`);
+}
+window.openCompositeSubmissionGrading = openCompositeSubmissionGrading;
+
+async function saveCompositeGrading(btn) {
+  const scoreRaw = document.getElementById('composite-grade-score')?.value;
+  const feedback = document.getElementById('composite-grade-feedback')?.value.trim() || '';
+  const score = scoreRaw !== '' && scoreRaw != null ? parseFloat(scoreRaw) : null;
+  if (score !== null && (isNaN(score) || score < 0 || score > 9)) {
+    toast('Điểm Band phải từ 0 đến 9', 'error'); return;
+  }
+  btnLoading(btn);
+  try {
+    await api.patch(`/composite-submissions/${_gradingCompositeSubId}/score`, { score, feedback });
+    closeModal();
+    toast('Đã lưu nhận xét! ✓');
+    if (_gradingCompositeSubId) {
+      // Reload current composite page
+      const hash = window.location.hash;
+      const m = hash.match(/\/composite\/([^/]+)/);
+      if (m) showCompositeSubmissions({ id: m[1] });
+    }
+  } catch (e) {
+    btnReset(btn);
+    toast('Lỗi: ' + (e.error || e.message), 'error');
+  }
+}
+window.saveCompositeGrading = saveCompositeGrading;
 
 window.submitLoginGate        = submitLoginGate;
 window.toggleGatePassword     = toggleGatePassword;

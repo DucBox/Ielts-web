@@ -1561,6 +1561,8 @@ const routes = {
   '/shared-pool/:id':           showSharedQuestion,
   '/shared-attempt/:id':        showSharedAttemptResult,
   '/shared-practice/:id':       showSharedPractice,
+  '/composite/:id':             showCompositeExam,
+  '/composite-result/:id':      showCompositeResult,
 };
 
 function navigate(hash) {
@@ -1614,9 +1616,12 @@ function router() {
   stopAutoSave();
   stopTaskTimer();
   stopAssignmentCountdown();
+  stopCompositeSectionTimer();
   _removeExamBeforeUnload();
   _stopAiFeedbackPoll();
   _activeAssignmentId = null;
+  _activeSectionId = null;
+  _compositeExam = null;
   const hash = window.location.hash.slice(1) || '/home';
   updateHeader();
 
@@ -3692,17 +3697,19 @@ window.mfcAnswer   = mfcAnswer;
 async function showAssignments() {
   setLoading('Đang tải danh sách bài tập...');
   try {
-    const assignments = await api.get(
-      `/student/assignments?student_id=${_student.id}&class_id=${_selectedClass.id}`
-    );
+    const [assignments, composites] = await Promise.all([
+      api.get(`/student/assignments?student_id=${_student.id}&class_id=${_selectedClass.id}`),
+      api.get(`/student/composite-assignments?class_id=${_selectedClass.id}`).catch(() => []),
+    ]);
     window._cachedAssignments = assignments;
-    renderAssignments(assignments);
+    window._cachedComposites = composites || [];
+    renderAssignments(assignments, composites || []);
   } catch (e) {
     toast('Lỗi tải bài tập: ' + (e.error || e.message), 'error');
   }
 }
 
-function renderAssignments(assignments) {
+function renderAssignments(assignments, composites = []) {
   // Apply skill filter
   const filtered = _assignmentSkillFilter
     ? assignments.filter(a => a.skill === _assignmentSkillFilter)
@@ -3811,7 +3818,7 @@ function renderAssignments(assignments) {
       <div class="skill-filter-tabs">
         ${skillFilters.map(([s, label]) => `
           <button class="skill-filter-tab ${_assignmentSkillFilter === s ? 'active' : ''}"
-            onclick="_assignmentSkillFilter='${s}';renderAssignments(window._cachedAssignments||[])">
+            onclick="_assignmentSkillFilter='${s}';renderAssignments(window._cachedAssignments||[], window._cachedComposites||[])">
             ${label}
           </button>`).join('')}
       </div>
@@ -3834,6 +3841,37 @@ function renderAssignments(assignments) {
         <div class="section-label section-label-closed">Đã đóng (${closed.length})</div>
         <div class="assignment-list">
           ${closed.map(assignCard).join('')}
+        </div>` : ''}
+
+      ${composites.length > 0 ? `
+        <div class="section-label" style="margin-top:28px">📋 Đề tổng hợp (${composites.length})</div>
+        <div class="assignment-list">
+          ${composites.map(ca => {
+            const allSecs = ca.sections || [];
+            const submittedCount = allSecs.filter(s => s.submitted).length;
+            const allDone = submittedCount === allSecs.length && allSecs.length > 0;
+            const overdue = isOverdue(ca.deadline);
+            const isClosed = !ca.is_active;
+            const href = allDone ? `#/composite-result/${ca.id}` : `#/composite/${ca.id}`;
+            const statusBadge = isClosed
+              ? `<span class="badge badge-closed">🔒 Đã đóng</span>`
+              : allDone
+                ? `<span class="badge badge-done">✅ Hoàn thành</span>`
+                : `<span class="badge badge-pending">${submittedCount}/${allSecs.length} phần</span>`;
+            const skillPills = allSecs.map(s => `<span style="font-size:10px;padding:2px 6px;background:var(--surface);border:1px solid var(--border);border-radius:999px">${{reading:'📖',listening:'🎧',writing:'✍️',speaking:'🎤'}[s.skill]||''} ${escapeHtml(s.label)}</span>`).join(' ');
+            return `
+              <a href="${href}" class="assignment-card${isClosed ? ' assignment-card-closed' : ''}">
+                <div class="assignment-card-icon">📋</div>
+                <div class="assignment-card-body">
+                  <div class="assignment-card-title">${escapeHtml(ca.title)}</div>
+                  <div class="assignment-card-meta" style="flex-wrap:wrap;gap:4px">
+                    ${statusBadge}
+                    ${skillPills}
+                    ${ca.deadline ? `<span class="countdown-chip${overdue ? ' overdue-chip' : ''}">📅 ${formatDateTime(ca.deadline)}</span>` : ''}
+                  </div>
+                </div>
+              </a>`;
+          }).join('')}
         </div>` : ''}
     </div>`;
 }
@@ -7275,6 +7313,532 @@ async function saveProfileName() {
 
 window.startEditProfileName = startEditProfileName;
 window.saveProfileName = saveProfileName;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// COMPOSITE EXAM (student)
+// ═══════════════════════════════════════════════════════════════════════════
+
+let _compositeExam = null;
+let _activeSectionId = null;
+let _sectionTimerInterval = null;
+let _sectionTimerSecsLeft = 0;
+
+function stopCompositeSectionTimer() {
+  if (_sectionTimerInterval) { clearInterval(_sectionTimerInterval); _sectionTimerInterval = null; }
+}
+
+function _tickCompositeSectionTimer() {
+  _sectionTimerSecsLeft = Math.max(0, _sectionTimerSecsLeft - 1);
+  const el = document.getElementById('csec-countdown');
+  if (el) {
+    const m = Math.floor(_sectionTimerSecsLeft / 60);
+    const s = _sectionTimerSecsLeft % 60;
+    el.textContent = `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+    el.className = `assign-countdown${_sectionTimerSecsLeft < 60 ? ' timer-urgent' : ''}`;
+  }
+  if (_sectionTimerSecsLeft <= 0) {
+    stopCompositeSectionTimer();
+    autoSubmitCurrentCompositeSection();
+  }
+}
+
+function startCompositeSectionTimer(secs) {
+  stopCompositeSectionTimer();
+  _sectionTimerSecsLeft = Math.floor(secs);
+  _sectionTimerInterval = setInterval(_tickCompositeSectionTimer, 1000);
+}
+
+async function showCompositeExam({ id }) {
+  setLoading('Đang tải đề tổng hợp...');
+  try {
+    const composite = await api.get(`/student/composite-assignments/${id}`);
+    _compositeExam = composite;
+    _activeSectionId = null;
+    stopCompositeSectionTimer();
+    renderCompositeExam(composite);
+  } catch (e) {
+    toast('Lỗi tải đề: ' + (e.error || e.message), 'error');
+    navigate('/assignments');
+  }
+}
+window.showCompositeExam = showCompositeExam;
+
+function renderCompositeExam(composite) {
+  const skillIcons = { reading:'📖', listening:'🎧', writing:'✍️', speaking:'🎤' };
+  stopAssignmentCountdown();
+
+  const sectionHeaders = composite.sections.map(sec => {
+    const submitted = !!sec.submission_id;
+    const scoreDisplay = submitted && sec.score != null ? ` · Band ${sec.score}` : '';
+    const status = submitted
+      ? `<span class="badge badge-done" style="font-size:11px">✓ Đã nộp${scoreDisplay}</span>`
+      : `<span class="badge badge-pending" style="font-size:11px">Chưa làm</span>`;
+    const timeLimit = sec.time_limit_minutes
+      ? `<span style="font-size:11px;color:var(--gray-400)">⏱ ${sec.time_limit_minutes} phút</span>`
+      : '';
+    return `
+      <div class="composite-section-header${submitted ? ' submitted' : ''}" id="csh-${sec.id}"
+        onclick="toggleCompositeSection('${sec.id}')">
+        <div style="display:flex;align-items:center;gap:8px;flex:1;min-width:0">
+          <span style="font-size:16px">${skillIcons[sec.skill]||'📝'}</span>
+          <span style="font-weight:600;flex:1">${escapeHtml(sec.label)}</span>
+          ${timeLimit}
+          ${status}
+        </div>
+        <span class="csec-chevron" id="csec-chevron-${sec.id}">▶</span>
+      </div>
+      <div class="composite-section-body" id="csb-${sec.id}" style="display:none"></div>`;
+  }).join('');
+
+  const deadline = composite.deadline
+    ? `<span style="font-size:12px;color:var(--gray-400)">📅 Hạn: ${formatDateTime(composite.deadline)}</span>`
+    : '';
+
+  $('#app').innerHTML = `
+    <div class="assignment-page" style="max-width:860px;margin:0 auto">
+      <div class="assignment-toolbar">
+        <button class="btn-back" onclick="navigateWithTransition('/assignments')">← Quay lại</button>
+        <div class="assignment-toolbar-title">📋 ${escapeHtml(composite.title)}</div>
+        ${deadline}
+      </div>
+      <div style="padding:0 0 32px">
+        ${sectionHeaders}
+      </div>
+    </div>`;
+}
+window.renderCompositeExam = renderCompositeExam;
+
+async function toggleCompositeSection(sectionId) {
+  const sec = _compositeExam?.sections.find(s => s.id === sectionId);
+  if (!sec) return;
+
+  // Clicking already-open section → collapse (no submit)
+  if (_activeSectionId === sectionId) {
+    _collapseCompositeSection(sectionId);
+    _activeSectionId = null;
+    stopCompositeSectionTimer();
+    stopAutoSave();
+    if (!sec.submission_id) _removeExamBeforeUnload();
+    return;
+  }
+
+  // Another section open and not yet submitted → warn
+  if (_activeSectionId) {
+    const cur = _compositeExam.sections.find(s => s.id === _activeSectionId);
+    if (cur && !cur.submission_id) {
+      toast(`Vui lòng nộp hoặc đóng phần "${cur.label}" trước`, 'error');
+      return;
+    }
+    _collapseCompositeSection(_activeSectionId);
+  }
+
+  _activeSectionId = sectionId;
+  _expandCompositeSection(sectionId);
+
+  // Already submitted → read-only
+  if (sec.submission_id) {
+    _renderCompositeSectionReadOnly(sectionId, sec);
+    return;
+  }
+
+  // Compute remaining time via exam-session
+  let secs = sec.time_limit_minutes ? sec.time_limit_minutes * 60 : null;
+  if (_compositeExam.mode === 'exam' && sec.time_limit_minutes) {
+    try {
+      const session = await api.post('/exam-sessions', { ref_type: 'composite_section', ref_id: sectionId });
+      const elapsed = (Date.now() - new Date(session.started_at).getTime()) / 1000;
+      secs = Math.max(0, sec.time_limit_minutes * 60 - elapsed);
+    } catch {
+      secs = sec.time_limit_minutes * 60;
+    }
+    if (secs <= 0) {
+      await autoSubmitCurrentCompositeSection();
+      return;
+    }
+  }
+
+  _renderCompositeSectionContent(sectionId, sec, secs);
+  if (secs !== null) {
+    _installExamBeforeUnload();
+    startCompositeSectionTimer(secs);
+  }
+}
+window.toggleCompositeSection = toggleCompositeSection;
+
+function _expandCompositeSection(sectionId) {
+  document.getElementById(`csb-${sectionId}`)?.style.setProperty('display', '');
+  document.getElementById(`csh-${sectionId}`)?.classList.add('active');
+  const ch = document.getElementById(`csec-chevron-${sectionId}`);
+  if (ch) ch.textContent = '▼';
+}
+
+function _collapseCompositeSection(sectionId) {
+  const body = document.getElementById(`csb-${sectionId}`);
+  if (body) { body.style.display = 'none'; body.innerHTML = ''; }
+  document.getElementById(`csh-${sectionId}`)?.classList.remove('active');
+  const ch = document.getElementById(`csec-chevron-${sectionId}`);
+  if (ch) ch.textContent = '▶';
+}
+
+function _renderCompositeSectionContent(sectionId, sec, timerSecs) {
+  const body = document.getElementById(`csb-${sectionId}`);
+  if (!body) return;
+  const offset = sec.question_offset || 0;
+  const qCount = sec.question_count || 0;
+
+  const timerHtml = timerSecs !== null
+    ? `<div class="assign-countdown-wrap" style="margin-left:auto">
+        <span class="assign-countdown-label">⏱ Còn lại</span>
+        <span class="assign-countdown" id="csec-countdown">--:--</span>
+       </div>` : '';
+
+  let contentHtml = '';
+  if (sec.skill === 'reading' || sec.skill === 'listening') {
+    let answerRows = '';
+    for (let i = 1; i <= qCount; i++) {
+      const absQ = offset + i;
+      answerRows += `<div class="answer-row">
+        <span class="q-label">Q${absQ}</span>
+        <input class="answer-input" id="csec-ans-${sectionId}-${absQ}" type="text" placeholder="Câu ${absQ}"
+          oninput="scheduleCompositeDraftSave('${sectionId}',${offset},${qCount})" />
+      </div>`;
+    }
+    const audioHtml = sec.skill === 'listening'
+      ? (_compositeExam.mode === 'practice' ? renderListeningAudioHtml(sec) : renderLockedListeningAudioHtml(sec))
+      : '';
+    contentHtml = `
+      <div class="assignment-content">
+        <div class="content-pane">
+          ${audioHtml}
+          <div class="section-title">${sec.skill === 'reading' ? 'Bài đọc' : 'Câu hỏi'}</div>
+          <div class="reading-text">${renderQuestionContentHTML(sec.content_blocks, sec.content_text || '')}</div>
+        </div>
+        <div class="answer-pane">
+          <div class="section-title">Điền đáp án</div>
+          <div class="answer-grid">${answerRows || '<div style="color:var(--gray-400);font-size:13px">Không có câu hỏi.</div>'}</div>
+        </div>
+      </div>`;
+  } else if (sec.skill === 'writing') {
+    contentHtml = `
+      <div class="assignment-content">
+        <div class="content-pane">
+          <div class="section-title">Đề bài</div>
+          <div class="writing-prompt-body">${renderQuestionContentHTML(sec.content_blocks, sec.content_text || '')}</div>
+        </div>
+        <div class="answer-pane writing-answer-pane">
+          <div class="section-title">Bài làm</div>
+          <textarea id="csec-writing-${sectionId}" class="writing-textarea"
+            placeholder="Viết bài của bạn vào đây..."
+            oninput="updateWordCount(this);scheduleAutoSave(()=>_saveCompositeDraftW('${sectionId}'))"></textarea>
+          <div id="csec-wc-${sectionId}" class="word-count word-count-extended">
+            <span data-stat="words">0 từ</span><span data-stat="chars">0 ký tự</span>
+          </div>
+        </div>
+      </div>`;
+  } else if (sec.skill === 'speaking') {
+    _speakingSlots = [_newSpeakingSlot()];
+    _speakingRecordIdx = -1;
+    _speakingAssignId = sectionId;
+    _speakingIsShared = false;
+    contentHtml = `
+      <div class="assignment-content single-col">
+        <div class="content-pane">
+          <div class="section-title">Câu hỏi / Cue Card</div>
+          <div class="cue-card">${renderQuestionContentHTML(sec.content_blocks, sec.content_text || '')}</div>
+        </div>
+        <div class="answer-pane">
+          <div class="section-title">Bài nói</div>
+          <div id="recording-indicator" style="display:none;padding:10px 14px;background:#fef2f2;border:1px solid #fecaca;border-radius:10px;margin-bottom:10px">
+            <canvas id="waveform-canvas" class="waveform-canvas" width="600" height="60"></canvas>
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-top:6px">
+              <div id="record-timer" class="record-timer">0:00</div>
+              <button class="record-btn recording-active" style="padding:6px 18px;font-size:13px" onclick="stopSlotRecording()">⏹ Dừng</button>
+            </div>
+          </div>
+          <div id="speaking-slot-list"></div>
+          <button class="btn btn-outline btn-sm" style="margin-top:8px" onclick="addSpeakingSlot()">+ Thêm phần</button>
+          <div id="audio-submit-status" class="audio-submit-status hidden" style="margin-top:12px"></div>
+        </div>
+      </div>`;
+  }
+
+  body.innerHTML = `
+    <div style="border-top:1px solid var(--border)">
+      <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--surface);border-bottom:1px solid var(--border);flex-wrap:wrap">
+        <span style="font-size:13px;color:var(--gray-400)"><strong>${escapeHtml(sec.label)}</strong></span>
+        ${timerHtml}
+        <button class="btn btn-primary btn-sm" id="csec-submit-btn-${sectionId}"
+          onclick="submitCompositeSection('${sectionId}',false)">Đóng &amp; Nộp phần này</button>
+      </div>
+      ${contentHtml}
+    </div>`;
+
+  if (sec.skill === 'speaking') {
+    _renderSpeakingSlots();
+  } else if (sec.skill === 'writing') {
+    const draft = loadDraft(`compositeSection-${sectionId}`, 'writing');
+    if (draft?.data) {
+      const ta = document.getElementById(`csec-writing-${sectionId}`);
+      if (ta) { ta.value = draft.data; updateWordCount(ta); }
+    }
+    startAutoSave(() => _saveCompositeDraftW(sectionId));
+  } else {
+    _restoreCompositeDraft(sectionId, offset, qCount);
+    startAutoSave(() => _persistCompositeDraft(sectionId, offset, qCount));
+  }
+
+  if (timerSecs !== null) {
+    const m = Math.floor(timerSecs / 60);
+    const s = Math.floor(timerSecs % 60);
+    const el = document.getElementById('csec-countdown');
+    if (el) el.textContent = `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+  }
+}
+
+function scheduleCompositeDraftSave(sectionId, offset, qCount) {
+  scheduleAutoSave(() => _persistCompositeDraft(sectionId, offset, qCount));
+}
+window.scheduleCompositeDraftSave = scheduleCompositeDraftSave;
+
+function _persistCompositeDraft(sectionId, offset, qCount) {
+  const answers = [];
+  for (let i = 1; i <= qCount; i++) {
+    const absQ = offset + i;
+    answers.push({ q_no: absQ, answer: (document.getElementById(`csec-ans-${sectionId}-${absQ}`)?.value || '').trim() });
+  }
+  saveDraft(`compositeSection-${sectionId}`, 'answers', answers);
+  showSavedIndicator();
+}
+
+function _restoreCompositeDraft(sectionId, offset, qCount) {
+  const draft = loadDraft(`compositeSection-${sectionId}`, 'answers');
+  if (!draft?.data) return;
+  for (const { q_no, answer } of draft.data) {
+    const inp = document.getElementById(`csec-ans-${sectionId}-${q_no}`);
+    if (inp && answer) inp.value = answer;
+  }
+}
+
+function _saveCompositeDraftW(sectionId) {
+  const v = document.getElementById(`csec-writing-${sectionId}`)?.value || '';
+  saveDraft(`compositeSection-${sectionId}`, 'writing', v);
+  showSavedIndicator();
+}
+window._saveCompositeDraftW = _saveCompositeDraftW;
+
+async function autoSubmitCurrentCompositeSection() {
+  if (!_activeSectionId) return;
+  await submitCompositeSection(_activeSectionId, true);
+}
+window.autoSubmitCurrentCompositeSection = autoSubmitCurrentCompositeSection;
+
+async function submitCompositeSection(sectionId, isAuto = false) {
+  const sec = _compositeExam?.sections.find(s => s.id === sectionId);
+  if (!sec) return;
+  const btn = document.getElementById(`csec-submit-btn-${sectionId}`);
+
+  if (!isAuto) {
+    const ok = await _confirmCompositeSectionSubmit(sec.label);
+    if (!ok) return;
+  }
+
+  if (btn) { btn.disabled = true; btn.textContent = 'Đang nộp...'; }
+  stopCompositeSectionTimer();
+  stopAutoSave();
+
+  try {
+    const body = {};
+    if (sec.skill === 'reading' || sec.skill === 'listening') {
+      const qCount = sec.question_count || 0;
+      const offset = sec.question_offset || 0;
+      const answers = [];
+      for (let i = 1; i <= qCount; i++) {
+        const absQ = offset + i;
+        answers.push({ q_no: absQ, answer: (document.getElementById(`csec-ans-${sectionId}-${absQ}`)?.value || '').trim() });
+      }
+      body.answers = answers;
+    } else if (sec.skill === 'writing') {
+      body.content = (document.getElementById(`csec-writing-${sectionId}`)?.value || '').trim();
+    } else if (sec.skill === 'speaking') {
+      const uploadedSlots = _speakingSlots.filter(s => s.status === 'done' && s.key);
+      if (uploadedSlots.length === 0 && !isAuto) {
+        toast('Vui lòng thu âm trước khi nộp', 'error');
+        if (btn) { btn.disabled = false; btn.textContent = 'Đóng & Nộp phần này'; }
+        return;
+      }
+      if (uploadedSlots.length > 0) {
+        body.audio_upload_keys = uploadedSlots.map(s => ({ key: s.key, name: s.name || 'audio' }));
+      }
+    }
+
+    const result = await api.post(`/student/composite-sections/${sectionId}/submit`, body);
+
+    const secIdx = _compositeExam.sections.findIndex(s => s.id === sectionId);
+    if (secIdx >= 0) Object.assign(_compositeExam.sections[secIdx], { submission_id: result.id, answers: result.answers, content: result.content, score: result.score, submitted_at: result.submitted_at });
+
+    _activeSectionId = null;
+    _removeExamBeforeUnload();
+    toast(`Đã nộp phần "${sec.label}"!`);
+    renderCompositeExam(_compositeExam);
+  } catch (e) {
+    toast('Lỗi nộp bài: ' + (e.error || e.message), 'error');
+    if (btn) { btn.disabled = false; btn.textContent = 'Đóng & Nộp phần này'; }
+  }
+}
+window.submitCompositeSection = submitCompositeSection;
+
+function _confirmCompositeSectionSubmit(label) {
+  return new Promise(resolve => {
+    const m = document.createElement('div');
+    m.className = 'exam-leave-modal-overlay';
+    m.innerHTML = `<div class="exam-leave-modal">
+      <div class="exam-leave-title">Nộp phần "${escapeHtml(label)}"?</div>
+      <div class="exam-leave-body">Sau khi nộp bạn không thể chỉnh sửa phần này nữa.</div>
+      <div class="exam-leave-actions">
+        <button class="btn btn-outline" onclick="this.closest('.exam-leave-modal-overlay').remove();window._csecResolve(false)">Tiếp tục làm</button>
+        <button class="btn btn-primary" onclick="this.closest('.exam-leave-modal-overlay').remove();window._csecResolve(true)">Nộp phần này</button>
+      </div>
+    </div>`;
+    document.body.appendChild(m);
+    window._csecResolve = resolve;
+  });
+}
+
+function _renderCompositeSectionReadOnly(sectionId, sec) {
+  const body = document.getElementById(`csb-${sectionId}`);
+  if (!body) return;
+  const offset = sec.question_offset || 0;
+  const qCount = sec.question_count || 0;
+
+  let contentHtml = '';
+  if (sec.skill === 'reading' || sec.skill === 'listening') {
+    const sas = sec.answers || [];
+    let rows = '';
+    for (let i = 1; i <= qCount; i++) {
+      const absQ = offset + i;
+      const sa = sas.find(a => a.q_no === absQ);
+      rows += `<div class="answer-row">
+        <span class="q-label">Q${absQ}</span>
+        <span style="flex:1;padding:6px 10px;background:var(--surface);border-radius:6px;font-size:14px">${escapeHtml(sa?.answer || '—')}</span>
+      </div>`;
+    }
+    const audioHtml = sec.skill === 'listening' ? renderListeningAudioHtml(sec) : '';
+    contentHtml = `
+      <div class="assignment-content">
+        <div class="content-pane">
+          ${audioHtml}
+          <div class="section-title">${sec.skill === 'reading' ? 'Bài đọc' : 'Câu hỏi'}</div>
+          <div class="reading-text">${renderQuestionContentHTML(sec.content_blocks, sec.content_text || '')}</div>
+        </div>
+        <div class="answer-pane">
+          ${sec.score != null ? `<div class="result-score-badge" style="margin-bottom:12px">Band ${sec.score}/9</div>` : ''}
+          <div class="section-title">Đáp án của bạn</div>
+          <div class="answer-grid">${rows}</div>
+        </div>
+      </div>`;
+  } else if (sec.skill === 'writing') {
+    contentHtml = `
+      <div class="assignment-content">
+        <div class="content-pane">
+          <div class="section-title">Đề bài</div>
+          <div class="writing-prompt-body">${renderQuestionContentHTML(sec.content_blocks, sec.content_text || '')}</div>
+        </div>
+        <div class="answer-pane">
+          ${sec.score != null ? `<div class="result-score-badge" style="margin-bottom:12px">Band ${sec.score}/9</div>` : '<span class="badge badge-waiting">⏳ Chờ chấm</span>'}
+          <div class="section-title" style="margin-top:12px">Bài làm</div>
+          <div style="white-space:pre-wrap;font-size:14px;line-height:1.7;padding:12px;background:var(--surface);border-radius:8px">${escapeHtml(sec.content || '')}</div>
+          ${sec.feedback ? `<div class="section-title" style="margin-top:12px">Nhận xét</div><div class="writing-feedback-box">${escapeHtml(sec.feedback)}</div>` : ''}
+        </div>
+      </div>`;
+  } else if (sec.skill === 'speaking') {
+    contentHtml = `
+      <div class="assignment-content single-col">
+        <div class="content-pane">
+          <div class="section-title">Câu hỏi</div>
+          <div class="cue-card">${renderQuestionContentHTML(sec.content_blocks, sec.content_text || '')}</div>
+        </div>
+        <div class="answer-pane">
+          ${sec.score != null ? `<div class="result-score-badge" style="margin-bottom:12px">Band ${sec.score}/9</div>` : '<span class="badge badge-waiting">⏳ Chờ chấm</span>'}
+          ${sec.audio_url ? `<audio controls style="width:100%;margin-top:12px;margin-bottom:8px"><source src="${escapeHtml(sec.audio_url)}" /></audio>` : ''}
+          ${sec.content ? `<div class="section-title" style="margin-top:8px">Transcript</div><div style="padding:12px;background:var(--surface);border-radius:8px;font-size:14px;line-height:1.7">${escapeHtml(sec.content)}</div>` : ''}
+          ${sec.feedback ? `<div class="section-title" style="margin-top:12px">Nhận xét</div><div class="writing-feedback-box">${escapeHtml(sec.feedback)}</div>` : ''}
+        </div>
+      </div>`;
+  }
+
+  body.innerHTML = `
+    <div style="border-top:1px solid var(--border)">
+      <div style="padding:8px 12px;background:var(--surface);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px">
+        <span class="badge badge-done" style="font-size:11px">✓ Đã nộp</span>
+        <span style="font-size:12px;color:var(--gray-400)">Xem lại (chỉ đọc)</span>
+      </div>
+      ${contentHtml}
+    </div>`;
+}
+
+async function showCompositeResult({ id }) {
+  setLoading('Đang tải kết quả...');
+  try {
+    const composite = await api.get(`/student/composite-assignments/${id}`);
+    renderCompositeResult(composite);
+  } catch (e) {
+    toast('Lỗi: ' + (e.error || e.message), 'error');
+    navigate('/assignments');
+  }
+}
+window.showCompositeResult = showCompositeResult;
+
+function renderCompositeResult(composite) {
+  const skillIcons = { reading:'📖', listening:'🎧', writing:'✍️', speaking:'🎤' };
+  const scoredSecs = composite.sections.filter(s => s.submission_id && s.score != null);
+  const overallScore = scoredSecs.length > 0
+    ? (scoredSecs.reduce((sum, s) => sum + s.score, 0) / scoredSecs.length).toFixed(1)
+    : null;
+
+  const sectionCards = composite.sections.map(sec => {
+    if (!sec.submission_id) {
+      return `<div class="result-section-card" style="opacity:.5">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+          <span>${skillIcons[sec.skill]||'📝'}</span>
+          <strong>${escapeHtml(sec.label)}</strong>
+          <span class="badge badge-closed">Chưa nộp</span>
+        </div>
+      </div>`;
+    }
+    const score = sec.score != null
+      ? `<div class="result-score-badge">Band ${sec.score}/9</div>`
+      : `<span class="badge badge-waiting">⏳ Chờ chấm</span>`;
+    let detail = '';
+    if (sec.skill === 'writing' && sec.feedback) {
+      detail = `<div class="writing-feedback-box" style="margin-top:8px">${escapeHtml(sec.feedback)}</div>`;
+    } else if (sec.skill === 'speaking') {
+      if (sec.audio_url) detail += `<audio controls style="width:100%;margin-top:8px"><source src="${escapeHtml(sec.audio_url)}" /></audio>`;
+      if (sec.feedback) detail += `<div class="writing-feedback-box" style="margin-top:8px">${escapeHtml(sec.feedback)}</div>`;
+    }
+    return `<div class="result-section-card">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+        <span>${skillIcons[sec.skill]||'📝'}</span>
+        <strong>${escapeHtml(sec.label)}</strong>
+        ${score}
+        ${sec.is_overtime ? '<span class="stats-overtime-pill">Nộp trễ</span>' : ''}
+      </div>
+      ${detail}
+    </div>`;
+  }).join('');
+
+  $('#app').innerHTML = `
+    <div class="result-page">
+      <div class="result-header">
+        <button class="btn-back" onclick="navigate('/assignments')">← Quay lại</button>
+        <h2>📋 ${escapeHtml(composite.title)}</h2>
+        ${overallScore ? `<div class="result-score-main">${overallScore}<span class="result-score-label">/9 trung bình</span></div>` : ''}
+      </div>
+      <div style="padding:16px;display:flex;flex-direction:column;gap:12px">
+        ${sectionCards}
+      </div>
+    </div>`;
+}
+window.renderCompositeResult = renderCompositeResult;
 
 router();
 syncStudentProfileSummary();

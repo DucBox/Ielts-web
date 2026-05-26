@@ -4292,3 +4292,27 @@ tr[draggable="true"]:active { cursor: grabbing; }
   background: rgba(99,102,241,.12);
   color: #a5b4fc;
 }
+
+/* ── Composite assignments ───────────────────────────────────────────────── */
+
+.composite-q-list {
+  max-height: 160px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin-top: 4px;
+  background: var(--bg-card);
+}
+.composite-q-item {
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border);
+  transition: background 0.1s;
+}
+.composite-q-item:last-child { border-bottom: none; }
+.composite-q-item:hover { background: var(--bg-surface-alt); }
+
+[data-theme="dark"] .composite-q-list { background: var(--bg-card); }
+[data-theme="dark"] .composite-q-item:hover { background: rgba(255,255,255,.06); }
+

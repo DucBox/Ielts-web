@@ -713,6 +713,34 @@ async function loadStudentAssignmentAccess(sql, assignmentId, studentId) {
   return row || null;
 }
 
+async function loadCompositeSectionExamSession(sql, { studentId, assignmentId, sectionId }) {
+  if (!studentId || !assignmentId || !sectionId) return null;
+  const [row] = await sql`
+    SELECT started_at
+    FROM composite_section_exam_sessions
+    WHERE student_id = ${studentId}
+      AND assignment_id = ${assignmentId}
+      AND section_id = ${sectionId}
+    LIMIT 1
+  `;
+  return row || null;
+}
+
+async function ensureCompositeSectionExamSession(sql, { studentId, assignmentId, sectionId }) {
+  if (!studentId || !assignmentId || !sectionId) return null;
+  await sql`
+    INSERT INTO composite_section_exam_sessions (student_id, assignment_id, section_id)
+    VALUES (${studentId}, ${assignmentId}, ${sectionId})
+    ON CONFLICT (student_id, assignment_id, section_id) DO NOTHING
+  `;
+  return loadCompositeSectionExamSession(sql, { studentId, assignmentId, sectionId });
+}
+
+function buildCompositeSectionTeacherFeedbackText(teacherFeedback, fallback = '') {
+  if (teacherFeedback?.overall) return String(teacherFeedback.overall);
+  return String(fallback || '');
+}
+
 async function studentHasAnyClassMembership(sql, studentId) {
   const [row] = await sql`
     SELECT 1 AS ok
@@ -1002,6 +1030,18 @@ async function claimNextStudentEmailEvent(sql, { ownerId, delayMs = 2000, leaseM
   return row || null;
 }
 
+function parseStudentEmailEventType(eventType) {
+  const raw = String(eventType || '');
+  if (raw.startsWith(`${EMAIL_EVENT_TYPES.SCORE_RELEASED}:`)) {
+    return {
+      rawType: raw,
+      baseType: EMAIL_EVENT_TYPES.SCORE_RELEASED,
+      sectionId: raw.slice(`${EMAIL_EVENT_TYPES.SCORE_RELEASED}:`.length) || null,
+    };
+  }
+  return { rawType: raw, baseType: raw, sectionId: null };
+}
+
 async function hasQueuedStudentEmails(sql) {
   const [row] = await sql`
     SELECT 1 AS queued
@@ -1054,7 +1094,34 @@ async function updateStudentEmailEvent(sql, { studentId, assignmentId, eventType
   }, status === 'failed' ? 'error' : 'log');
 }
 
-async function loadStudentEmailContext(sql, { studentId, assignmentId }) {
+async function loadStudentEmailContext(sql, { studentId, assignmentId, eventType }) {
+  const parsedEvent = parseStudentEmailEventType(eventType);
+  if (parsedEvent.baseType === EMAIL_EVENT_TYPES.SCORE_RELEASED && parsedEvent.sectionId) {
+    const [compositeRow] = await sql`
+      SELECT
+        s.id AS student_id,
+        s.full_name AS student_name,
+        s.email AS student_email,
+        a.id AS assignment_id,
+        (a.title || ' · ' || cqs.label) AS assignment_title,
+        a.deadline,
+        c.class_name,
+        cqs.skill,
+        css.score AS overall_score
+      FROM students s
+      JOIN assignments a ON a.id = ${assignmentId}::uuid
+      JOIN classes c ON c.id = a.class_id
+      JOIN composite_section_submissions css
+        ON css.assignment_id = a.id
+        AND css.student_id = s.id
+        AND css.section_id = ${parsedEvent.sectionId}::uuid
+      JOIN composite_question_sections cqs ON cqs.id = css.section_id
+      WHERE s.id = ${studentId}::uuid
+      LIMIT 1
+    `;
+    if (compositeRow) return compositeRow;
+  }
+
   const [row] = await sql`
     SELECT
       s.id AS student_id,
@@ -1147,7 +1214,8 @@ function buildStudentEmailPayload(env, eventType, ctx) {
 
 async function deliverClaimedStudentEmail(sql, env, { studentId, assignmentId, eventType }) {
   try {
-    const ctx = await loadStudentEmailContext(sql, { studentId, assignmentId });
+    const parsedEvent = parseStudentEmailEventType(eventType);
+    const ctx = await loadStudentEmailContext(sql, { studentId, assignmentId, eventType });
     if (!ctx) {
       await updateStudentEmailEvent(sql, {
         studentId, assignmentId, eventType,
@@ -1167,7 +1235,7 @@ async function deliverClaimedStudentEmail(sql, env, { studentId, assignmentId, e
       return false;
     }
 
-    if (eventType === EMAIL_EVENT_TYPES.SCORE_RELEASED && ctx.overall_score == null) {
+    if (parsedEvent.baseType === EMAIL_EVENT_TYPES.SCORE_RELEASED && ctx.overall_score == null) {
       await updateStudentEmailEvent(sql, {
         studentId, assignmentId, eventType,
         status: 'failed',
@@ -1176,7 +1244,7 @@ async function deliverClaimedStudentEmail(sql, env, { studentId, assignmentId, e
       return false;
     }
 
-    const payload = buildStudentEmailPayload(env, eventType, ctx);
+    const payload = buildStudentEmailPayload(env, parsedEvent.baseType, ctx);
     logStudentEmail('sending', {
       studentId,
       assignmentId,
@@ -2069,7 +2137,18 @@ export default {
 
           const assignments = await sql`
             SELECT a.*, q.title AS question_title, q.skill,
-              (SELECT COUNT(*) FROM submissions sub WHERE sub.assignment_id = a.id)::int AS submission_count
+              CASE WHEN q.skill = 'composite' THEN
+                (SELECT COUNT(DISTINCT css.student_id) FROM composite_section_submissions css WHERE css.assignment_id = a.id)::int
+              ELSE
+                (SELECT COUNT(*) FROM submissions sub WHERE sub.assignment_id = a.id)::int
+              END AS submission_count,
+              CASE WHEN q.skill = 'composite' THEN (
+                SELECT json_agg(json_build_object(
+                  'id', cqs.id, 'label', cqs.label, 'skill', cqs.skill,
+                  'time_limit_minutes', cqs.time_limit_minutes, 'display_order', cqs.display_order
+                ) ORDER BY cqs.display_order)
+                FROM composite_question_sections cqs WHERE cqs.composite_id = q.id
+              ) ELSE NULL END AS composite_sections
             FROM assignments a
             JOIN question_pool q ON q.id = a.question_id
             WHERE a.class_id = ${p.id}
@@ -2530,6 +2609,7 @@ export default {
           let uploadedR2Key = null;
           let vocabulary = [];
           let script = null;
+          let compositeSections = [];
 
           if (ct.includes('multipart/form-data')) {
             const form = await request.formData();
@@ -2573,6 +2653,7 @@ export default {
             script         = body.script        ?? null;
             var tagsArr    = body.tags          || [];
             var contentUrls = Array.isArray(body.content_urls) ? body.content_urls : [];
+            compositeSections = Array.isArray(body.sections) ? body.sections : [];
           }
           content_blocks = normalizeContentBlocks(content_blocks);
           if (content_blocks.length) content_text = blocksToPlainText(content_blocks);
@@ -2608,6 +2689,41 @@ export default {
               const imgKey = extractR2Key(imgUrl, env.R2_PUBLIC_URL);
               if (imgKey) await r2RefIncrement(sql, imgKey).catch(e => console.error('R2 ref track failed:', e));
             }
+
+            // Insert composite sections if this is a composite question
+            if (skill === 'composite' && compositeSections.length > 0) {
+              let qOffset = 0;
+              for (let i = 0; i < compositeSections.length; i++) {
+                const sec = compositeSections[i];
+                if (!sec.label || !sec.skill) continue;
+                const secQuestionsData  = sec.questions_data  || [];
+                const secContentBlocks  = normalizeContentBlocks(sec.content_blocks || []);
+                const secContentText    = secContentBlocks.length ? blocksToPlainText(secContentBlocks) : (sec.content_text ?? null);
+                const secContentUrl     = sec.content_url  ?? null;
+                const secContentUrls    = sec.content_urls ?? [];
+                const secVocabulary     = sec.vocabulary ?? [];
+                const isObjective = sec.skill === 'reading' || sec.skill === 'listening';
+                await sql`
+                  INSERT INTO composite_question_sections
+                    (composite_id, label, skill, questions_data, prompt, content_text,
+                     content_blocks, content_url, content_urls, script, vocabulary,
+                     time_limit_minutes, question_offset, display_order)
+                  VALUES (
+                    ${row.id}, ${sec.label}, ${sec.skill},
+                    ${JSON.stringify(secQuestionsData)}::jsonb,
+                    ${sec.prompt ?? null}, ${secContentText},
+                    ${JSON.stringify(secContentBlocks)}::jsonb,
+                    ${secContentUrl},
+                    ${JSON.stringify(secContentUrls)}::jsonb,
+                    ${sec.script ?? null},
+                    ${JSON.stringify(secVocabulary)}::jsonb,
+                    ${sec.time_limit_minutes ?? null}, ${qOffset}, ${i}
+                  )
+                `;
+                if (isObjective) qOffset += secQuestionsData.length;
+              }
+            }
+
             return json(row, 201);
           } catch (dbErr) {
             if (uploadedR2Key) await env.R2.delete(uploadedR2Key).catch(() => {});
@@ -2656,6 +2772,14 @@ export default {
         if (method === 'GET') {
           const [row] = await sql`SELECT * FROM question_pool WHERE id = ${p.id}`;
           if (!row) return err('Không tìm thấy đề', 404);
+          if (row.skill === 'composite') {
+            const sections = await sql`
+              SELECT * FROM composite_question_sections
+              WHERE composite_id = ${p.id}
+              ORDER BY display_order
+            `;
+            return json({ ...row, sections });
+          }
           return json(row);
         }
         if (method === 'PATCH') {
@@ -2706,6 +2830,62 @@ export default {
             }
             for (const key of oldKeys) {
               if (!newKeySet.has(key)) await r2SafeDelete(env, sql, key).catch(e => console.error('R2 image cleanup failed:', e));
+            }
+          }
+          // Handle composite section update: delete orphaned sections, upsert remaining
+          if (row.skill === 'composite' && Array.isArray(body.sections)) {
+            const incomingSections = body.sections;
+            const incomingIds = incomingSections.map(s => s._id).filter(Boolean);
+            // Delete sections not in the incoming list
+            if (incomingIds.length > 0) {
+              await sql`DELETE FROM composite_question_sections WHERE composite_id = ${p.id} AND id != ALL(${incomingIds}::uuid[])`;
+            } else {
+              await sql`DELETE FROM composite_question_sections WHERE composite_id = ${p.id}`;
+            }
+            let qOffset = 0;
+            for (let i = 0; i < incomingSections.length; i++) {
+              const sec = incomingSections[i];
+              if (!sec.label || !sec.skill) continue;
+              const secQuestionsData = sec.questions_data || [];
+              const secContentBlocks = normalizeContentBlocks(sec.content_blocks || []);
+              const secContentText = secContentBlocks.length ? blocksToPlainText(secContentBlocks) : (sec.content_text ?? null);
+              const secVocabulary = sec.vocabulary || [];
+              const isObjective = sec.skill === 'reading' || sec.skill === 'listening';
+              if (sec._id) {
+                await sql`
+                  UPDATE composite_question_sections SET
+                    label = ${sec.label}, skill = ${sec.skill},
+                    questions_data = ${JSON.stringify(secQuestionsData)}::jsonb,
+                    prompt = ${sec.prompt ?? null}, content_text = ${secContentText},
+                    content_blocks = ${JSON.stringify(secContentBlocks)}::jsonb,
+                    content_url = ${sec.content_url ?? null},
+                    content_urls = ${JSON.stringify(sec.content_urls ?? [])}::jsonb,
+                    script = ${sec.script ?? null},
+                    vocabulary = ${JSON.stringify(secVocabulary)}::jsonb,
+                    time_limit_minutes = ${sec.time_limit_minutes ?? null},
+                    question_offset = ${qOffset}, display_order = ${i}
+                  WHERE id = ${sec._id} AND composite_id = ${p.id}
+                `;
+              } else {
+                await sql`
+                  INSERT INTO composite_question_sections
+                    (composite_id, label, skill, questions_data, prompt, content_text,
+                     content_blocks, content_url, content_urls, script, vocabulary,
+                     time_limit_minutes, question_offset, display_order)
+                  VALUES (
+                    ${p.id}, ${sec.label}, ${sec.skill},
+                    ${JSON.stringify(secQuestionsData)}::jsonb,
+                    ${sec.prompt ?? null}, ${secContentText},
+                    ${JSON.stringify(secContentBlocks)}::jsonb,
+                    ${sec.content_url ?? null},
+                    ${JSON.stringify(sec.content_urls ?? [])}::jsonb,
+                    ${sec.script ?? null},
+                    ${JSON.stringify(secVocabulary)}::jsonb,
+                    ${sec.time_limit_minutes ?? null}, ${qOffset}, ${i}
+                  )
+                `;
+              }
+              if (isObjective) qOffset += secQuestionsData.length;
             }
           }
           return json(row);
@@ -3209,14 +3389,133 @@ export default {
             JOIN students s ON s.id = sub.student_id
             WHERE sub.id = ${p.id}
           `;
-          if (!sub) return err('Không tìm thấy bài nộp', 404);
-          return json(sub);
+          if (sub) return json({ ...sub, submission_kind: 'assignment', supports_ai_feedback: true });
+
+          const [compositeSub] = await sql`
+            SELECT
+              css.id,
+              css.assignment_id,
+              css.section_id,
+              css.student_id,
+              css.answers AS student_answers,
+              css.content AS section_content,
+              css.audio_url,
+              css.audio_key,
+              css.submitted_at,
+              css.is_overtime,
+              css.score AS overall_score,
+              css.feedback,
+              css.teacher_feedback,
+              a.title AS assignment_title,
+              a.class_id,
+              c.class_name,
+              cqs.label AS section_label,
+              cqs.skill,
+              cqs.questions_data,
+              cqs.content_text,
+              cqs.content_blocks,
+              cqs.content_url,
+              cqs.content_urls,
+              cqs.script,
+              cqs.vocabulary,
+              st.full_name AS student_name,
+              st.username AS student_username
+            FROM composite_section_submissions css
+            JOIN assignments a ON a.id = css.assignment_id
+            JOIN classes c ON c.id = a.class_id
+            JOIN composite_question_sections cqs ON cqs.id = css.section_id
+            JOIN students st ON st.id = css.student_id
+            WHERE css.id = ${p.id}
+          `;
+          if (!compositeSub) return err('Không tìm thấy bài nộp', 404);
+          return json({
+            id: compositeSub.id,
+            assignment_id: compositeSub.assignment_id,
+            class_id: compositeSub.class_id,
+            class_name: compositeSub.class_name,
+            student_id: compositeSub.student_id,
+            student_name: compositeSub.student_name,
+            student_username: compositeSub.student_username,
+            submitted_at: compositeSub.submitted_at,
+            is_overtime: compositeSub.is_overtime,
+            overall_score: compositeSub.overall_score,
+            skill: compositeSub.skill,
+            assignment_title: `${compositeSub.assignment_title} · ${compositeSub.section_label}`,
+            section_label: compositeSub.section_label,
+            questions_data: compositeSub.questions_data,
+            content_text: compositeSub.content_text,
+            content_blocks: compositeSub.content_blocks,
+            content_url: compositeSub.content_url,
+            content_urls: compositeSub.content_urls || [],
+            script: compositeSub.script || '',
+            vocabulary: compositeSub.vocabulary || [],
+            student_answers: compositeSub.student_answers || [],
+            writing_content: compositeSub.skill === 'writing' ? (compositeSub.section_content || '') : '',
+            speaking_script: compositeSub.skill === 'speaking' ? (compositeSub.section_content || '') : '',
+            speaking_audio_url: compositeSub.skill === 'speaking' ? compositeSub.audio_url : null,
+            speaking_audio_urls: compositeSub.skill === 'speaking' && compositeSub.audio_url
+              ? [{ url: compositeSub.audio_url, name: '' }]
+              : [],
+            teacher_feedback: compositeSub.teacher_feedback || null,
+            ai_feedback: null,
+            submission_kind: 'composite_section',
+            supports_ai_feedback: false,
+          });
         }
         if (method === 'PATCH') {
           const body = await request.json();
           // Capture previous score to detect first-time grading
           const [prev] = await sql`SELECT overall_score FROM submissions WHERE id = ${p.id}`;
           const wasUnscored = prev && prev.overall_score == null;
+          if (!prev) {
+            const [prevComposite] = await sql`
+              SELECT css.score AS overall_score
+              FROM composite_section_submissions css
+              WHERE css.id = ${p.id}
+            `;
+            if (!prevComposite) return err('Không tìm thấy bài nộp', 404);
+            const compositeWasUnscored = prevComposite.overall_score == null;
+            const teacherFeedbackJson = body.teacher_feedback != null ? JSON.stringify(body.teacher_feedback) : null;
+            const [updatedComposite] = await sql`
+              UPDATE composite_section_submissions
+              SET teacher_feedback = ${teacherFeedbackJson}::jsonb,
+                  score = COALESCE(${body.overall_score ?? null}, score),
+                  feedback = COALESCE(${buildCompositeSectionTeacherFeedbackText(body.teacher_feedback, body.feedback)} , feedback)
+              WHERE id = ${p.id}
+              RETURNING id, assignment_id, student_id, section_id, score
+            `;
+            if (body.overall_score != null && compositeWasUnscored) {
+              const [asgn] = await sql`
+                SELECT
+                  a.id AS assignment_id,
+                  (a.title || ' · ' || cqs.label) AS title,
+                  cqs.skill,
+                  s.email AS student_email
+                FROM composite_section_submissions css
+                JOIN assignments a ON a.id = css.assignment_id
+                JOIN composite_question_sections cqs ON cqs.id = css.section_id
+                JOIN students s ON s.id = css.student_id
+                WHERE css.id = ${p.id}
+              `;
+              if (asgn && (asgn.skill === 'writing' || asgn.skill === 'speaking')) {
+                const meta = JSON.stringify({ title: asgn.title, skill: asgn.skill, score: body.overall_score });
+                await sql`
+                  INSERT INTO notifications (student_id, type, ref_id, metadata)
+                  VALUES (${updatedComposite.student_id}, 'score_released', ${asgn.assignment_id}, ${meta}::jsonb)
+                `;
+                await queueStudentEmailEvent(sql, {
+                  studentId: updatedComposite.student_id,
+                  assignmentId: asgn.assignment_id,
+                  eventType: `${EMAIL_EVENT_TYPES.SCORE_RELEASED}:${updatedComposite.section_id}`,
+                  email: asgn.student_email,
+                });
+                if (normalizeStudentEmail(asgn.student_email)) {
+                  ctx?.waitUntil?.(processQueuedStudentEmails(sql, env, { limit: 1, delayMs: 1000 }));
+                }
+              }
+            }
+            return json(updatedComposite);
+          }
           const [sub] = await sql`
             UPDATE submissions
             SET teacher_feedback = ${body.teacher_feedback != null ? JSON.stringify(body.teacher_feedback) : null}::jsonb,
@@ -3260,23 +3559,51 @@ export default {
       if (path === '/inbox' && method === 'GET') {
         if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
         const teacherId = await getTeacherId(sql);
-        const rows = await sql`
-          SELECT sub.id AS submission_id, sub.submitted_at, sub.overall_score, sub.status,
-            sub.teacher_feedback IS NOT NULL AS has_teacher_feedback,
-            st.full_name AS student_name,
-            a.id AS assignment_id, a.title AS assignment_title,
-            q.skill, c.class_name, c.id AS class_id
-          FROM submissions sub
-          JOIN assignments a ON a.id = sub.assignment_id
-          JOIN question_pool q ON q.id = a.question_id
-          JOIN classes c ON c.id = a.class_id
-          JOIN students st ON st.id = sub.student_id
-          WHERE c.teacher_id = ${teacherId}
-            AND q.skill IN ('writing', 'speaking')
-            AND sub.overall_score IS NULL
-          ORDER BY sub.submitted_at ASC
-          LIMIT 100
-        `;
+        const [standardRows, compositeRows] = await Promise.all([
+          sql`
+            SELECT sub.id AS submission_id, sub.submitted_at, sub.overall_score, sub.status,
+              sub.teacher_feedback IS NOT NULL AS has_teacher_feedback,
+              st.full_name AS student_name,
+              a.id AS assignment_id, a.title AS assignment_title,
+              q.skill, c.class_name, c.id AS class_id
+            FROM submissions sub
+            JOIN assignments a ON a.id = sub.assignment_id
+            JOIN question_pool q ON q.id = a.question_id
+            JOIN classes c ON c.id = a.class_id
+            JOIN students st ON st.id = sub.student_id
+            WHERE c.teacher_id = ${teacherId}
+              AND q.skill IN ('writing', 'speaking')
+              AND sub.overall_score IS NULL
+          `,
+          sql`
+            SELECT
+              css.id AS submission_id,
+              css.submitted_at,
+              css.score AS overall_score,
+              'submitted'::text AS status,
+              css.feedback IS NOT NULL AS has_teacher_feedback,
+              st.full_name AS student_name,
+              a.id AS assignment_id,
+              (a.title || ' · ' || cqs.label) AS assignment_title,
+              cqs.skill,
+              c.class_name,
+              c.id AS class_id
+            FROM composite_section_submissions css
+            JOIN composite_question_sections cqs ON cqs.id = css.section_id
+            JOIN assignments a ON a.id = css.assignment_id
+            JOIN classes c ON c.id = a.class_id
+            JOIN students st ON st.id = css.student_id
+            WHERE c.teacher_id = ${teacherId}
+              AND cqs.skill IN ('writing', 'speaking')
+              AND css.score IS NULL
+          `,
+        ]);
+        const rows = [
+          ...standardRows.map(row => ({ ...row, submission_kind: 'assignment' })),
+          ...compositeRows.map(row => ({ ...row, submission_kind: 'composite_section' })),
+        ]
+          .sort((a, b) => new Date(a.submitted_at) - new Date(b.submitted_at))
+          .slice(0, 100);
         return json(rows);
       }
 
@@ -3300,11 +3627,23 @@ export default {
 
         await autoCloseExpired(sql, { classId });
         const rows = await sql`
-          SELECT a.id, a.title, a.deadline, a.is_active, a.created_at, a.mode, a.time_limit_minutes,
+          SELECT a.id, a.question_id, a.title, a.deadline, a.is_active, a.created_at, a.mode, a.time_limit_minutes,
             q.skill, q.title AS question_title, q.content_text, q.content_blocks, q.content_url,
             jsonb_array_length(COALESCE(q.vocabulary, '[]'::jsonb)) AS vocab_count,
             sub.id AS submission_id, sub.overall_score, sub.status AS submission_status,
-            sub.submitted_at
+            sub.submitted_at,
+            CASE WHEN q.skill = 'composite' THEN (
+              SELECT json_agg(json_build_object(
+                'id', cqs.id, 'label', cqs.label, 'skill', cqs.skill,
+                'time_limit_minutes', cqs.time_limit_minutes, 'display_order', cqs.display_order,
+                'submitted', CASE WHEN css.id IS NOT NULL THEN true ELSE false END,
+                'score', css.score
+              ) ORDER BY cqs.display_order)
+              FROM composite_question_sections cqs
+              LEFT JOIN composite_section_submissions css
+                ON css.section_id = cqs.id AND css.assignment_id = a.id AND css.student_id = ${studentId}
+              WHERE cqs.composite_id = q.id
+            ) ELSE NULL END AS composite_sections
           FROM assignments a
           JOIN question_pool q ON q.id = a.question_id
           LEFT JOIN submissions sub
@@ -3321,6 +3660,7 @@ export default {
         if (!claims) return err('Unauthorized', 401);
         const studentId = String(claims.student_id);
         const body = await request.json().catch(() => null);
+        const compositeAssignmentId = String(body?.assignment_id || '').trim() || null;
         if (!body?.ref_type || !body?.ref_id) return err('ref_type và ref_id là bắt buộc', 400);
         if (!['assignment', 'shared_pool', 'composite_section'].includes(body.ref_type)) return err('ref_type không hợp lệ', 400);
 
@@ -3333,16 +3673,41 @@ export default {
           `;
           if (!row) return err('Không tìm thấy bài tập', 404);
         } else if (body.ref_type === 'composite_section') {
-          const [row] = await sql`
-            SELECT cs.id FROM composite_sections cs
-            JOIN composite_assignments ca ON ca.id = cs.composite_id
-            JOIN student_classes sc ON sc.class_id = ca.class_id
-            WHERE cs.id = ${body.ref_id} AND sc.student_id = ${studentId} LIMIT 1
-          `;
+          const [row] = compositeAssignmentId
+            ? await sql`
+                SELECT cqs.id
+                FROM composite_question_sections cqs
+                JOIN question_pool q ON q.id = cqs.composite_id
+                JOIN assignments a ON a.question_id = q.id
+                JOIN student_classes sc ON sc.class_id = a.class_id
+                WHERE cqs.id = ${body.ref_id}
+                  AND a.id = ${compositeAssignmentId}
+                  AND sc.student_id = ${studentId}
+                LIMIT 1
+              `
+            : await sql`
+                SELECT cqs.id
+                FROM composite_question_sections cqs
+                JOIN question_pool q ON q.id = cqs.composite_id
+                JOIN assignments a ON a.question_id = q.id
+                JOIN student_classes sc ON sc.class_id = a.class_id
+                WHERE cqs.id = ${body.ref_id}
+                  AND sc.student_id = ${studentId}
+                LIMIT 1
+              `;
           if (!row) return err('Không tìm thấy section', 404);
         } else {
           const [row] = await sql`SELECT id, time_limit_minutes FROM shared_pool WHERE id = ${body.ref_id}`;
           if (!row) return err('Không tìm thấy đề', 404);
+        }
+
+        if (body.ref_type === 'composite_section' && compositeAssignmentId) {
+          const session = await ensureCompositeSectionExamSession(sql, {
+            studentId,
+            assignmentId: compositeAssignmentId,
+            sectionId: body.ref_id,
+          });
+          return json({ started_at: session?.started_at || new Date().toISOString() });
         }
 
         // ON CONFLICT DO NOTHING keeps the original started_at
@@ -4195,279 +4560,68 @@ export default {
       }
 
       // ══════════════════════════════════════════════════════════════════════════
-      // COMPOSITE ASSIGNMENTS
+      // COMPOSITE — student detail + submit + teacher grading
       // ══════════════════════════════════════════════════════════════════════════
 
-      // ── Teacher: list + create ────────────────────────────────────────────────
-      if (path === '/composite-assignments') {
-        if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
-
-        if (method === 'GET') {
-          const classId = url.searchParams.get('class_id');
-          if (!classId) return err('class_id là bắt buộc', 400);
-          const rows = await sql`
-            SELECT ca.*,
-              (SELECT COUNT(DISTINCT cs2.student_id)
-               FROM composite_submissions cs2
-               JOIN composite_sections sec2 ON sec2.id = cs2.section_id
-               WHERE sec2.composite_id = ca.id)::int AS submission_count,
-              (SELECT json_agg(json_build_object(
-                'id', sec.id, 'label', sec.label, 'skill', sec.skill,
-                'time_limit_minutes', sec.time_limit_minutes
-              ) ORDER BY sec.display_order)
-               FROM composite_sections sec WHERE sec.composite_id = ca.id) AS sections
-            FROM composite_assignments ca
-            WHERE ca.class_id = ${classId}
-            ORDER BY ca.created_at DESC
-          `;
-          return json(rows);
-        }
-
-        if (method === 'POST') {
-          const body = await request.json().catch(() => null);
-          if (!body?.class_id || !body?.title || !Array.isArray(body.sections) || body.sections.length === 0)
-            return err('class_id, title, sections là bắt buộc', 400);
-          const mode = body.mode === 'practice' ? 'practice' : 'exam';
-
-          const [composite] = await sql`
-            INSERT INTO composite_assignments (class_id, title, mode, deadline, is_active)
-            VALUES (${body.class_id}, ${body.title}, ${mode}, ${body.deadline ?? null}, true)
-            RETURNING *
-          `;
-
-          // Insert sections, computing question_offset cumulatively for R/L sections
-          let offset = 0;
-          for (let i = 0; i < body.sections.length; i++) {
-            const sec = body.sections[i];
-            if (!sec.label || !sec.skill || !sec.question_id) continue;
-            const [q] = await sql`
-              SELECT jsonb_array_length(COALESCE(questions_data, '[]'::jsonb)) AS qcount
-              FROM question_pool WHERE id = ${sec.question_id}
-            `;
-            const qcount = q?.qcount || 0;
-            const isObjective = sec.skill === 'reading' || sec.skill === 'listening';
-            await sql`
-              INSERT INTO composite_sections (composite_id, label, skill, question_id, time_limit_minutes, question_offset, display_order)
-              VALUES (${composite.id}, ${sec.label}, ${sec.skill}, ${sec.question_id},
-                ${sec.time_limit_minutes ?? null}, ${offset}, ${i})
-            `;
-            if (isObjective) offset += qcount;
-          }
-
-          // Notify students in the class
-          const classStudents = await sql`
-            SELECT sc.student_id FROM student_classes sc WHERE sc.class_id = ${body.class_id}
-          `;
-          const studentIds = classStudents.map(r => r.student_id);
-          if (studentIds.length > 0) {
-            const notifMeta = JSON.stringify({ title: body.title, skill: 'composite', deadline: body.deadline ?? null });
-            await sql`
-              WITH input_rows AS (SELECT UNNEST(${studentIds}::uuid[]) AS student_id)
-              INSERT INTO notifications (student_id, type, ref_id, metadata)
-              SELECT student_id, 'new_assignment', ${composite.id}, ${notifMeta}::jsonb
-              FROM input_rows ON CONFLICT DO NOTHING
-            `;
-          }
-          return json(composite, 201);
-        }
-      }
-
-      // ── Teacher: stats (must be before /:id) ─────────────────────────────────
-      if ((p = matchPath('/composite-assignments/:id/stats', path)) && method === 'GET') {
-        if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
-        const [composite] = await sql`SELECT * FROM composite_assignments WHERE id = ${p.id}`;
-        if (!composite) return err('Không tìm thấy', 404);
-
-        const sections = await sql`
-          SELECT cs.id, cs.label, cs.skill, cs.time_limit_minutes, cs.question_offset, cs.display_order,
-            q.title AS question_title, q.questions_data
-          FROM composite_sections cs
-          JOIN question_pool q ON q.id = cs.question_id
-          WHERE cs.composite_id = ${p.id}
-          ORDER BY cs.display_order
+      // ── Student: get assignment detail (includes sections for composite) ──────
+      if ((p = matchPath('/student/assignments/:id', path)) && method === 'GET') {
+        const claims = await requireStudentAuth(request, env);
+        if (!claims) return err('Unauthorized', 401);
+        const studentId = String(claims.student_id);
+        const [assignment] = await sql`
+          SELECT a.*, q.skill, q.title AS question_title,
+            q.content_text, q.content_blocks, q.content_url, q.content_urls,
+            q.questions_data, q.script, q.vocabulary
+          FROM assignments a
+          JOIN question_pool q ON q.id = a.question_id
+          WHERE a.id = ${p.id}
         `;
-        const students = await sql`
-          SELECT s.id AS student_id, s.full_name, s.username
-          FROM student_classes sc JOIN students s ON s.id = sc.student_id
-          WHERE sc.class_id = ${composite.class_id}
-          ORDER BY s.full_name
+        if (!assignment) return err('Không tìm thấy bài tập', 404);
+        const [membership] = await sql`
+          SELECT 1 FROM student_classes
+          WHERE student_id = ${studentId} AND class_id = ${assignment.class_id}
         `;
-        const submissions = await sql`
-          SELECT csub.*, sec.skill, sec.label AS section_label
-          FROM composite_submissions csub
-          JOIN composite_sections sec ON sec.id = csub.section_id
-          WHERE sec.composite_id = ${p.id}
-        `;
-        const subMap = {};
-        for (const sub of submissions) {
-          if (!subMap[sub.student_id]) subMap[sub.student_id] = {};
-          subMap[sub.student_id][sub.section_id] = sub;
-        }
-        const perStudent = students.map(s => ({
-          student_id: s.student_id,
-          full_name:  s.full_name,
-          username:   s.username,
-          sections:   sections.map(sec => ({
-            section_id: sec.id,
-            label:      sec.label,
-            skill:      sec.skill,
-            submission: subMap[s.student_id]?.[sec.id] ?? null,
-          })),
-        }));
-        return json({ composite, sections, perStudent });
-      }
+        if (!membership) return err('Học sinh không thuộc lớp này', 403);
 
-      // ── Teacher: get / update / delete ───────────────────────────────────────
-      if ((p = matchPath('/composite-assignments/:id', path))) {
-        if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
-
-        if (method === 'GET') {
-          const [composite] = await sql`SELECT * FROM composite_assignments WHERE id = ${p.id}`;
-          if (!composite) return err('Không tìm thấy', 404);
+        if (assignment.skill === 'composite') {
           const sections = await sql`
-            SELECT cs.*,
-              jsonb_array_length(COALESCE(q.questions_data, '[]'::jsonb)) AS question_count,
-              q.title AS question_title
-            FROM composite_sections cs
-            JOIN question_pool q ON q.id = cs.question_id
-            WHERE cs.composite_id = ${p.id}
-            ORDER BY cs.display_order
+            SELECT cqs.*,
+              css.id AS submission_id, css.answers, css.content, css.audio_url,
+              css.score, css.feedback, css.teacher_feedback, css.submitted_at, css.is_overtime
+            FROM composite_question_sections cqs
+            LEFT JOIN composite_section_submissions css
+              ON css.section_id = cqs.id
+              AND css.assignment_id = ${p.id}
+              AND css.student_id = ${studentId}
+            WHERE cqs.composite_id = ${assignment.question_id}
+            ORDER BY cqs.display_order
           `;
-          return json({ ...composite, sections });
+          return json({ ...assignment, sections });
         }
-
-        if (method === 'PATCH') {
-          const body = await request.json().catch(() => null);
-          const updates = {};
-          if (body?.is_active !== undefined) updates.is_active = body.is_active;
-          if (body?.deadline  !== undefined) updates.deadline  = body.deadline;
-          if (body?.title     !== undefined) updates.title     = body.title;
-          if (Object.keys(updates).length === 0) return err('Không có trường nào cần cập nhật');
-          const fields = Object.keys(updates);
-          const vals   = Object.values(updates);
-          const setClauses = fields.map((f, i) => `${f} = $${i + 1}`).join(', ');
-          const [row] = await sql(`UPDATE composite_assignments SET ${setClauses} WHERE id = $${fields.length + 1} RETURNING *`, [...vals, p.id]);
-          return json(row);
-        }
-
-        if (method === 'DELETE') {
-          const audios = await sql`
-            SELECT audio_key FROM composite_submissions
-            WHERE composite_id = ${p.id} AND audio_key IS NOT NULL
-          `;
-          for (const a of audios) await env.R2.delete(a.audio_key).catch(() => {});
-          await sql`DELETE FROM composite_assignments WHERE id = ${p.id}`;
-          return json({ ok: true });
-        }
+        return json(assignment);
       }
 
-      // ── Teacher: grade composite submission (writing/speaking) ────────────────
-      if ((p = matchPath('/composite-submissions/:id/score', path)) && method === 'PATCH') {
-        if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
-        const body = await request.json().catch(() => null);
-        const updateFields = [], updateVals = [];
-        if (body?.score    !== undefined) { updateFields.push('score');    updateVals.push(Number(body.score)); }
-        if (body?.feedback !== undefined) { updateFields.push('feedback'); updateVals.push(String(body.feedback)); }
-        if (updateFields.length === 0) return err('score hoặc feedback là bắt buộc');
-        const setClauses = updateFields.map((f, i) => `${f} = $${i + 1}`).join(', ');
-        const [row] = await sql(`UPDATE composite_submissions SET ${setClauses} WHERE id = $${updateFields.length + 1} RETURNING *`, [...updateVals, p.id]);
-        if (!row) return err('Không tìm thấy bài nộp', 404);
-        return json(row);
-      }
-
-      // ── Student: list composite assignments ───────────────────────────────────
-      if (path === '/student/composite-assignments' && method === 'GET') {
-        const claims = await requireStudentAuth(request, env);
-        if (!claims) return err('Unauthorized', 401);
-        const classId   = url.searchParams.get('class_id');
-        if (!classId) return err('class_id là bắt buộc', 400);
-        const studentId = String(claims.student_id);
-        const [membership] = await sql`
-          SELECT 1 FROM student_classes WHERE student_id = ${studentId} AND class_id = ${classId}
-        `;
-        if (!membership) return err('Học sinh không thuộc lớp này', 403);
-
-        const composites = await sql`
-          SELECT ca.*,
-            (SELECT json_agg(json_build_object(
-              'id', sec.id, 'label', sec.label, 'skill', sec.skill,
-              'time_limit_minutes', sec.time_limit_minutes, 'display_order', sec.display_order,
-              'submitted', CASE WHEN csub.id IS NOT NULL THEN true ELSE false END,
-              'score', csub.score
-            ) ORDER BY sec.display_order)
-            FROM composite_sections sec
-            LEFT JOIN composite_submissions csub
-              ON csub.section_id = sec.id AND csub.student_id = ${studentId}
-            WHERE sec.composite_id = ca.id) AS sections
-          FROM composite_assignments ca
-          WHERE ca.class_id = ${classId}
-          ORDER BY ca.created_at DESC
-        `;
-        return json(composites);
-      }
-
-      // ── Student: composite detail (questions + student submissions) ───────────
-      if ((p = matchPath('/student/composite-assignments/:id', path)) && method === 'GET') {
-        const claims = await requireStudentAuth(request, env);
-        if (!claims) return err('Unauthorized', 401);
-        const studentId = String(claims.student_id);
-        const [composite] = await sql`SELECT * FROM composite_assignments WHERE id = ${p.id}`;
-        if (!composite) return err('Không tìm thấy', 404);
-        const [membership] = await sql`
-          SELECT 1 FROM student_classes WHERE student_id = ${studentId} AND class_id = ${composite.class_id}
-        `;
-        if (!membership) return err('Học sinh không thuộc lớp này', 403);
-        const sections = await sql`
-          SELECT cs.id, cs.label, cs.skill, cs.time_limit_minutes, cs.question_offset, cs.display_order,
-            q.title AS question_title, q.content_text, q.content_blocks, q.content_url, q.content_urls,
-            q.questions_data, q.script,
-            jsonb_array_length(COALESCE(q.questions_data, '[]'::jsonb)) AS question_count,
-            csub.id AS submission_id, csub.answers, csub.content, csub.audio_url,
-            csub.score, csub.feedback, csub.submitted_at, csub.is_overtime
-          FROM composite_sections cs
-          JOIN question_pool q ON q.id = cs.question_id
-          LEFT JOIN composite_submissions csub
-            ON csub.section_id = cs.id AND csub.student_id = ${studentId}
-          WHERE cs.composite_id = ${p.id}
-          ORDER BY cs.display_order
-        `;
-        return json({ ...composite, sections });
-      }
-
-      // ── Student: submit composite section ─────────────────────────────────────
+      // ── Student: submit a composite section ───────────────────────────────────
       if ((p = matchPath('/student/composite-sections/:id/submit', path)) && method === 'POST') {
         const claims = await requireStudentAuth(request, env);
         if (!claims) return err('Unauthorized', 401);
         const studentId = String(claims.student_id);
 
         const [section] = await sql`
-          SELECT cs.*, ca.class_id, ca.is_active, ca.deadline, ca.mode,
-            q.questions_data, q.skill AS q_skill
-          FROM composite_sections cs
-          JOIN composite_assignments ca ON ca.id = cs.composite_id
-          JOIN question_pool q ON q.id = cs.question_id
-          WHERE cs.id = ${p.id}
+          SELECT cqs.*, q.id AS composite_question_id
+          FROM composite_question_sections cqs
+          JOIN question_pool q ON q.id = cqs.composite_id
+          WHERE cqs.id = ${p.id}
         `;
         if (!section) return err('Không tìm thấy section', 404);
 
-        const [membership] = await sql`
-          SELECT 1 FROM student_classes WHERE student_id = ${studentId} AND class_id = ${section.class_id}
-        `;
-        if (!membership) return err('Học sinh không thuộc lớp này', 403);
-        if (!section.is_active) return err('Bài tập đã đóng', 403);
-        if (section.deadline && new Date(section.deadline) < new Date()) return err('Đã hết hạn nộp bài', 403);
-
-        const [existing] = await sql`
-          SELECT id FROM composite_submissions WHERE section_id = ${p.id} AND student_id = ${studentId}
-        `;
-        if (existing) return err('Bạn đã nộp phần này rồi', 409);
-
         const ct = request.headers.get('Content-Type') || '';
-        let answers = null, content = null, audioUrl = null, audioKey = null;
+        let assignmentId = null, answers = null, content = null, audioUrl = null, audioKey = null;
         let directUploadKey = null, audioUploadKeys = null;
 
         if (ct.includes('multipart/form-data')) {
           const form = await request.formData();
+          assignmentId = form.get('assignment_id');
           const audioFile = form.get('audio');
           if (audioFile && audioFile.size > 0) {
             if (audioFile.size > 50 * 1024 * 1024) return err('File quá lớn — tối đa 50MB', 413);
@@ -4481,18 +4635,40 @@ export default {
             const aiRes = await fetch(sttUrl, { method: 'POST', headers: { 'Authorization': `Bearer ${getOpenAIAuthToken(env, sttUrl, 'stt')}` }, body: openaiForm });
             if (!aiRes.ok) { const t = await aiRes.text(); if (isUnsupportedRegionOpenAIError(t)) return err('Dịch vụ nhận diện giọng nói đang bị chặn', 502); return err('Không thể nhận diện giọng nói', 500); }
             content = (await aiRes.json()).text || '';
-            audioKey = `speaking/${section.composite_id}/${studentId}-${crypto.randomUUID()}-${sanitizeFileName(audioFile.name)}`;
+            audioKey = `speaking/${section.composite_question_id}/${studentId}-${crypto.randomUUID()}-${sanitizeFileName(audioFile.name)}`;
             await env.R2.put(audioKey, audioFile.stream(), { httpMetadata: { contentType: audioFile.type } });
             audioUrl = buildR2PublicUrl(env, audioKey);
           }
         } else {
           const body = await request.json().catch(() => null);
-          answers         = body?.answers         ?? null;
-          content         = body?.content         ?? null;
-          directUploadKey = body?.audio_upload_key ?? null;
+          assignmentId    = body?.assignment_id     ?? null;
+          answers         = body?.answers           ?? null;
+          content         = body?.content           ?? null;
+          directUploadKey = body?.audio_upload_key  ?? null;
           audioUploadKeys = Array.isArray(body?.audio_upload_keys) && body.audio_upload_keys.length > 0
             ? body.audio_upload_keys : null;
         }
+
+        if (!assignmentId) return err('assignment_id là bắt buộc', 400);
+
+        // Verify student access via assignment
+        const [assignment] = await sql`
+          SELECT a.id, a.is_active, a.deadline, a.mode, a.time_limit_minutes, a.class_id
+          FROM assignments a
+          JOIN student_classes sc ON sc.class_id = a.class_id
+          WHERE a.id = ${assignmentId} AND a.question_id = ${section.composite_question_id}
+            AND sc.student_id = ${studentId}
+          LIMIT 1
+        `;
+        if (!assignment) return err('Không tìm thấy bài tập', 404);
+        if (!assignment.is_active) return err('Bài tập đã đóng', 403);
+        if (assignment.deadline && new Date(assignment.deadline) < new Date()) return err('Đã hết hạn nộp bài', 403);
+
+        const [existing] = await sql`
+          SELECT id FROM composite_section_submissions
+          WHERE assignment_id = ${assignmentId} AND section_id = ${p.id} AND student_id = ${studentId}
+        `;
+        if (existing) return err('Bạn đã nộp phần này rồi', 409);
 
         // Handle R2 pre-uploaded audio for speaking
         if (section.skill === 'speaking' && (directUploadKey || audioUploadKeys) && !content) {
@@ -4514,13 +4690,19 @@ export default {
           score = autoGrade(answers, section.questions_data);
         }
 
-        // Overtime detection
+        // Overtime detection using exam_session for this section
         let isOvertime = false;
-        if (section.mode === 'exam' && section.time_limit_minutes) {
-          const [session] = await sql`
+        if (assignment.mode === 'exam' && section.time_limit_minutes) {
+          const scopedSession = await loadCompositeSectionExamSession(sql, {
+            studentId,
+            assignmentId,
+            sectionId: p.id,
+          });
+          const [legacySession] = scopedSession ? [null] : await sql`
             SELECT started_at FROM exam_sessions
             WHERE student_id = ${studentId} AND ref_type = 'composite_section' AND ref_id = ${p.id}
           `;
+          const session = scopedSession || legacySession;
           if (session) {
             const elapsedSec = (Date.now() - new Date(session.started_at).getTime()) / 1000;
             isOvertime = elapsedSec > section.time_limit_minutes * 60 + 30;
@@ -4529,10 +4711,10 @@ export default {
 
         try {
           const [submission] = await sql`
-            INSERT INTO composite_submissions
-              (composite_id, section_id, student_id, answers, content, audio_url, audio_key, score, is_overtime)
+            INSERT INTO composite_section_submissions
+              (assignment_id, section_id, student_id, answers, content, audio_url, audio_key, score, is_overtime)
             VALUES (
-              ${section.composite_id}, ${p.id}, ${studentId},
+              ${assignmentId}, ${p.id}, ${studentId},
               ${answers ? JSON.stringify(answers) : null}::jsonb,
               ${content}, ${audioUrl}, ${audioKey}, ${score}, ${isOvertime}
             )
@@ -4543,6 +4725,137 @@ export default {
           if (audioKey && !directUploadKey && !audioUploadKeys) await env.R2.delete(audioKey).catch(() => {});
           throw dbErr;
         }
+      }
+
+      // ── Teacher: grade composite section submission ────────────────────────────
+      if ((p = matchPath('/composite-section-submissions/:id/score', path)) && method === 'PATCH') {
+        if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
+        const body = await request.json().catch(() => null);
+        const updateFields = [], updateVals = [];
+        if (body?.score    !== undefined) { updateFields.push('score');    updateVals.push(Number(body.score)); }
+        if (body?.feedback !== undefined) { updateFields.push('feedback'); updateVals.push(String(body.feedback)); }
+        if (updateFields.length === 0) return err('score hoặc feedback là bắt buộc');
+        const setClauses = updateFields.map((f, i) => `${f} = $${i + 1}`).join(', ');
+        const [row] = await sql(`UPDATE composite_section_submissions SET ${setClauses} WHERE id = $${updateFields.length + 1} RETURNING *`, [...updateVals, p.id]);
+        if (!row) return err('Không tìm thấy bài nộp', 404);
+        return json(row);
+      }
+
+      // ── Teacher: view composite assignment submissions ─────────────────────────
+      if ((p = matchPath('/assignments/:id/composite-submissions', path)) && method === 'GET') {
+        if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
+        const [assignment] = await sql`
+          SELECT a.*, q.id AS question_id FROM assignments a
+          JOIN question_pool q ON q.id = a.question_id
+          WHERE a.id = ${p.id} AND q.skill = 'composite'
+        `;
+        if (!assignment) return err('Không tìm thấy bài tập composite', 404);
+
+        const sections = await sql`
+          SELECT cqs.*
+          FROM composite_question_sections cqs
+          WHERE cqs.composite_id = ${assignment.question_id}
+          ORDER BY cqs.display_order
+        `;
+        const students = await sql`
+          SELECT s.id AS student_id, s.full_name, s.username
+          FROM student_classes sc JOIN students s ON s.id = sc.student_id
+          WHERE sc.class_id = ${assignment.class_id}
+          ORDER BY s.full_name
+        `;
+        const submissions = await sql`
+          SELECT css.*, cqs.skill, cqs.label AS section_label
+          FROM composite_section_submissions css
+          JOIN composite_question_sections cqs ON cqs.id = css.section_id
+          WHERE css.assignment_id = ${p.id}
+        `;
+        const subMap = {};
+        for (const sub of submissions) {
+          if (!subMap[sub.student_id]) subMap[sub.student_id] = {};
+          subMap[sub.student_id][sub.section_id] = sub;
+        }
+        const perStudent = students.map(s => ({
+          student_id: s.student_id,
+          full_name:  s.full_name,
+          username:   s.username,
+          sections:   sections.map(sec => ({
+            section_id: sec.id,
+            label:      sec.label,
+            skill:      sec.skill,
+            submission: subMap[s.student_id]?.[sec.id] ?? null,
+          })),
+        }));
+        return json({ assignment, sections, perStudent });
+      }
+
+      if ((p = matchPath('/student/composite-section-submissions/:id', path)) && method === 'GET') {
+        const claims = await requireStudentAuth(request, env);
+        if (!claims) return err('Unauthorized', 401);
+        const studentId = String(claims.student_id);
+        const [sub] = await sql`
+          SELECT
+            css.id,
+            css.assignment_id,
+            css.section_id,
+            css.answers,
+            css.content,
+            css.audio_url,
+            css.submitted_at,
+            css.is_overtime,
+            css.score,
+            css.feedback,
+            css.teacher_feedback,
+            a.title AS assignment_title,
+            a.class_id,
+            c.class_name,
+            cqs.label AS section_label,
+            cqs.skill,
+            cqs.questions_data,
+            cqs.content_text,
+            cqs.content_blocks,
+            cqs.content_url,
+            cqs.content_urls,
+            cqs.script,
+            cqs.vocabulary
+          FROM composite_section_submissions css
+          JOIN assignments a ON a.id = css.assignment_id
+          JOIN classes c ON c.id = a.class_id
+          JOIN composite_question_sections cqs ON cqs.id = css.section_id
+          JOIN student_classes sc ON sc.class_id = a.class_id
+          WHERE css.id = ${p.id}
+            AND css.student_id = ${studentId}
+            AND sc.student_id = ${studentId}
+          LIMIT 1
+        `;
+        if (!sub) return err('Không tìm thấy bài nộp', 404);
+        return json({
+          id: sub.id,
+          assignment_id: sub.assignment_id,
+          composite_assignment_id: sub.assignment_id,
+          class_id: sub.class_id,
+          class_name: sub.class_name,
+          assignment_title: `${sub.assignment_title} · ${sub.section_label}`,
+          section_label: sub.section_label,
+          skill: sub.skill,
+          submitted_at: sub.submitted_at,
+          is_overtime: sub.is_overtime,
+          overall_score: sub.score,
+          questions_data: sub.questions_data,
+          content_text: sub.content_text,
+          content_blocks: sub.content_blocks,
+          content_url: sub.content_url,
+          content_urls: sub.content_urls || [],
+          script: sub.script || '',
+          vocabulary: sub.vocabulary || [],
+          student_answers: sub.answers || [],
+          writing_content: sub.skill === 'writing' ? (sub.content || '') : '',
+          speaking_script: sub.skill === 'speaking' ? (sub.content || '') : '',
+          speaking_audio_url: sub.skill === 'speaking' ? sub.audio_url : null,
+          speaking_audio_urls: sub.skill === 'speaking' && sub.audio_url ? [{ url: sub.audio_url, name: '' }] : [],
+          teacher_feedback: sub.teacher_feedback || null,
+          ai_feedback: null,
+          is_composite_section: true,
+        });
       }
 
       return err('Not found', 404);

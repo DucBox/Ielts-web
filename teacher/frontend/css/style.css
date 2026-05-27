@@ -317,6 +317,7 @@ tbody tr:hover { background: var(--bg-surface-alt); }
 .badge-listening { background: #fce7f3; color: #be185d; }
 .badge-writing   { background: #fef9c3; color: #854d0e; }
 .badge-speaking  { background: #f0fdf4; color: #166534; }
+.badge-composite { background: #f0f0ff; color: #4338ca; }
 .badge-active    { background: var(--success-lt); color: #166534; }
 .badge-inactive  { background: var(--gray-100); color: var(--gray-400); }
 
@@ -2266,7 +2267,7 @@ body.resizing-image {
 
 /* Floating annotation popup */
 .annotation-popup {
-  position: absolute;
+  position: fixed;
   z-index: 500;
   background: #fff;
   border: 1px solid var(--gray-200);

@@ -510,7 +510,9 @@ const SKILL_LABELS = {
   listening: { icon: '🎧', label: 'Listening', badge: 'badge-listening' },
   writing:   { icon: '✍️',  label: 'Writing',   badge: 'badge-writing' },
   speaking:  { icon: '🎤', label: 'Speaking',  badge: 'badge-speaking' },
+  composite: { icon: '📋', label: 'Tổng hợp',  badge: 'badge-composite' },
 };
+const FILTERABLE_ASSIGNMENT_SKILLS = ['reading', 'listening', 'writing', 'speaking', 'composite'];
 
 function skillBadge(skill) {
   const s = SKILL_LABELS[skill] || { icon: '?', label: skill, badge: '' };
@@ -985,10 +987,15 @@ function buildInboxRows(items) {
         <td style="font-size:12px;color:var(--gray-400)">${formatDateTime(it.submitted_at)}</td>
         <td>
           <button class="btn btn-sm btn-primary inbox-grade-btn"
-            onclick="navigate('/grading/${it.submission_id}')">✏️ Chấm bài</button>
+            onclick="openInboxSubmission('${it.submission_kind || 'assignment'}','${it.submission_id}','${it.skill}','${it.assignment_id || ''}')">✏️ Chấm bài</button>
         </td>
       </tr>`).join('');
 }
+
+function openInboxSubmission(submissionKind, submissionId, skill, assignmentId) {
+  navigate(`/grading/${submissionId}`);
+}
+window.openInboxSubmission = openInboxSubmission;
 
 function renderInbox(items) {
   _inboxItems = items;
@@ -1192,12 +1199,10 @@ async function submitCreateClass(btn) {
 async function showClassDetail({ id }) {
   setLoading('Đang tải thông tin lớp...');
   try {
-    const [cls, students, composites] = await Promise.all([
+    const [cls, students] = await Promise.all([
       api.get(`/classes/${id}`),
       api.get(`/classes/${id}/students`),
-      api.get(`/composite-assignments?class_id=${id}`).catch(() => []),
     ]);
-    cls.composites = composites || [];
     _cachedCls = cls;
     _cachedStudents = students;
     _classDetailTab = 'assignments';
@@ -1542,7 +1547,7 @@ function renderStatsTab(container, data) {
     reading: '#3b82f6', listening: '#f59e0b', writing: '#8b5cf6', speaking: '#22c55e',
   };
   const studentPalette = ['#3b82f6','#ef4444','#22c55e','#f59e0b','#8b5cf6','#06b6d4','#ec4899','#14b8a6','#f97316','#a3e635'];
-  const skillLabels = { reading: 'Reading', listening: 'Listening', writing: 'Writing', speaking: 'Speaking' };
+  const skillLabels = { reading: 'Reading', listening: 'Listening', writing: 'Writing', speaking: 'Speaking', composite: 'Tổng hợp' };
 
   // Overview cards
   const cardsHtml = `
@@ -1691,7 +1696,7 @@ function renderStatsTab(container, data) {
       <div class="stats-filter-group">
         <span class="stats-filter-label">Kỹ năng:</span>
         <div class="stats-filter-pills">
-          ${['', 'reading', 'listening', 'writing', 'speaking'].map(sk => `
+          ${['', ...FILTERABLE_ASSIGNMENT_SKILLS].map(sk => `
             <button class="stats-filter-pill${_statsSkillFilter === sk ? ' active' : ''}"
               onclick="_statsSkillFilter='${sk}';applyStatsFilter()">
               ${sk ? skillLabels[sk] : 'Tất cả'}
@@ -2137,10 +2142,21 @@ function renderClassDetail(cls, students = []) {
     : cls.assignments.map(a => {
         const overdue = isOverdue(a.deadline) && a.is_active;
         const pct = cls.student_count > 0 ? Math.round(a.submission_count / cls.student_count * 100) : 0;
+        const isComposite = a.skill === 'composite';
+        const secBadges = isComposite && Array.isArray(a.composite_sections)
+          ? a.composite_sections.map(s => {
+              const icons = { reading:'📖', listening:'🎧', writing:'✍️', speaking:'🎤' };
+              return `<span class="badge" style="background:var(--surface);border:1px solid var(--border);font-size:10px;padding:1px 5px">${icons[s.skill]||''} ${escapeHtml(s.label)}</span>`;
+            }).join(' ')
+          : '';
+        const submissionsRoute = isComposite ? `/composite/${a.id}` : `/assignment/${a.id}`;
         return `
         <tr>
           <td>${skillBadge(a.skill)}</td>
-          <td style="font-weight:600">${escapeHtml(a.title)}</td>
+          <td style="font-weight:600">
+            ${escapeHtml(a.title)}
+            ${isComposite && secBadges ? `<div style="margin-top:3px;display:flex;flex-wrap:wrap;gap:3px">${secBadges}</div>` : ''}
+          </td>
           <td style="color:var(--gray-400);font-size:12px">${escapeHtml(a.question_title)}</td>
           <td>
             <span class="deadline${overdue ? ' overdue' : ''}">
@@ -2157,7 +2173,7 @@ function renderClassDetail(cls, students = []) {
           <td>
             <div class="td-actions">
               <button class="btn btn-sm btn-outline" title="Xem bài nộp"
-                onclick="navigate('/assignment/${a.id}')">
+                onclick="navigate('${submissionsRoute}')">
                 <span class="sub-progress-wrap">
                   <span class="sub-progress-bar" style="width:${pct}%"></span>
                 </span>
@@ -2205,10 +2221,6 @@ function renderClassDetail(cls, students = []) {
         </div>
       </div>
       <div style="display:flex;gap:8px">
-        <button class="btn btn-outline"
-          onclick="openCompositeModal('${cls.id}', '${clsNameSafe}')">
-          📋 Giao đề tổng hợp
-        </button>
         <button class="btn btn-primary"
           onclick="openAssignModal('${cls.id}', '${clsNameSafe}')">
           + Giao bài mới
@@ -2217,7 +2229,7 @@ function renderClassDetail(cls, students = []) {
     </div>
 
     <div class="tab-bar">
-      <button class="tab-btn active" data-tab="assignments" onclick="switchClassTab('assignments')">📋 Bài tập (${cls.assignments.length + (cls.composites?.length || 0)})</button>
+      <button class="tab-btn active" data-tab="assignments" onclick="switchClassTab('assignments')">📋 Bài tập (${cls.assignments.length})</button>
       <button class="tab-btn" data-tab="students" onclick="switchClassTab('students')">👤 Học sinh (${students.length})</button>
       <button class="tab-btn" data-tab="stats" onclick="switchClassTab('stats')">📊 Thống kê</button>
     </div>
@@ -2229,10 +2241,9 @@ function renderClassDetail(cls, students = []) {
           oninput="filterAssignments(this.value, null)" />
         <div class="assign-skill-pills">
           <button class="assign-skill-pill active" data-skill="" onclick="filterAssignments(null, '')">Tất cả</button>
-          <button class="assign-skill-pill" data-skill="reading" onclick="filterAssignments(null, 'reading')">📖 Reading</button>
-          <button class="assign-skill-pill" data-skill="listening" onclick="filterAssignments(null, 'listening')">🎧 Listening</button>
-          <button class="assign-skill-pill" data-skill="writing" onclick="filterAssignments(null, 'writing')">✍️ Writing</button>
-          <button class="assign-skill-pill" data-skill="speaking" onclick="filterAssignments(null, 'speaking')">🎤 Speaking</button>
+          ${FILTERABLE_ASSIGNMENT_SKILLS.map(skill => `
+            <button class="assign-skill-pill" data-skill="${skill}" onclick="filterAssignments(null, '${skill}')">${SKILL_LABELS[skill].icon} ${SKILL_LABELS[skill].label}</button>
+          `).join('')}
         </div>
       </div>` : ''}
       <div class="table-wrap assign-table-wrap">
@@ -2247,51 +2258,6 @@ function renderClassDetail(cls, students = []) {
           <tbody id="assign-tbody">${assignRows}</tbody>
         </table>
       </div>
-      ${cls.composites && cls.composites.length > 0 ? `
-      <div style="margin-top:24px">
-        <div class="section-title" style="margin-bottom:8px">📋 Đề tổng hợp</div>
-        <div class="table-wrap">
-          <table>
-            <thead><tr>
-              <th>Tên đề</th>
-              <th>Phần</th>
-              <th>Hạn nộp</th>
-              <th>Mở/Đóng</th>
-              <th>Thao tác</th>
-            </tr></thead>
-            <tbody>
-              ${cls.composites.map(ca => {
-                const overdue = isOverdue(ca.deadline) && ca.is_active;
-                const skillIcons = { reading:'📖', listening:'🎧', writing:'✍️', speaking:'🎤' };
-                const secBadges = (ca.sections||[]).map(s => `<span class="badge" style="background:var(--surface);border:1px solid var(--border);font-size:11px">${skillIcons[s.skill]||''} ${escapeHtml(s.label)}</span>`).join(' ');
-                const subCount = ca.submission_count || 0;
-                const pct = cls.student_count > 0 ? Math.round(subCount / cls.student_count * 100) : 0;
-                return `<tr>
-                  <td style="font-weight:600">${escapeHtml(ca.title)}</td>
-                  <td style="font-size:12px">${secBadges}</td>
-                  <td><span class="deadline${overdue?' overdue':''}">${overdue?'⚠️ ':''}${formatDateTime(ca.deadline)}</span></td>
-                  <td>
-                    <label class="toggle">
-                      <input type="checkbox" ${ca.is_active?'checked':''}
-                        onchange="toggleComposite('${ca.id}', this.checked)" />
-                      <span class="toggle-slider"></span>
-                    </label>
-                  </td>
-                  <td>
-                    <div class="td-actions">
-                      <button class="btn btn-sm btn-outline" onclick="navigate('/composite/${ca.id}')">
-                        <span class="sub-progress-wrap"><span class="sub-progress-bar" style="width:${pct}%"></span></span>
-                        📊 ${subCount}/${cls.student_count} nộp
-                      </button>
-                      <button class="btn-icon danger" title="Xoá" onclick="deleteComposite('${ca.id}', '${cls.id}', this)">🗑</button>
-                    </div>
-                  </td>
-                </tr>`;
-              }).join('')}
-            </tbody>
-          </table>
-        </div>
-      </div>` : ''}
     </div>
 
     <div id="tab-students" class="tab-content" style="display:none">
@@ -2373,6 +2339,8 @@ function filterAssignments(search, skill) {
   tbody.innerHTML = filtered.map(a => {
     const overdue = isOverdue(a.deadline) && a.is_active;
     const pct = cls.student_count > 0 ? Math.round(a.submission_count / cls.student_count * 100) : 0;
+    const isComposite = a.skill === 'composite';
+    const submissionsRoute = isComposite ? `/composite/${a.id}` : `/assignment/${a.id}`;
     return `
       <tr>
         <td>${skillBadge(a.skill)}</td>
@@ -2393,7 +2361,7 @@ function filterAssignments(search, skill) {
         <td>
           <div class="td-actions">
             <button class="btn btn-sm btn-outline" title="Xem bài nộp"
-              onclick="navigate('/assignment/${a.id}')">
+              onclick="navigate('${submissionsRoute}')">
               <span class="sub-progress-wrap">
                 <span class="sub-progress-bar" style="width:${pct}%"></span>
               </span>
@@ -3075,6 +3043,10 @@ function renderGradingPage(sub) {
   const existing       = sub.teacher_feedback || {};
   _gradingAnnotations  = existing.annotations || [];
   _gradingAiFeedback   = sub.ai_feedback || null;
+  const submissionsHref = sub.submission_kind === 'composite_section'
+    ? `/composite/${sub.assignment_id}`
+    : `/assignment/${sub.assignment_id}`;
+  const supportsAiFeedback = sub.supports_ai_feedback !== false;
 
   const titleSkill = sub.skill === 'speaking' ? '🎤 Chấm bài Speaking' : '✏️ Chấm bài Writing';
   
@@ -3103,7 +3075,7 @@ function renderGradingPage(sub) {
       <a class="breadcrumb-item" onclick="navigate('/classes')">Lớp học</a>
       <span class="breadcrumb-sep">›</span>
       ${sub.class_id ? `<a class="breadcrumb-item" onclick="navigate('/class/${sub.class_id}')">${escapeHtml(sub.class_name || 'Lớp học')}</a><span class="breadcrumb-sep">›</span>` : ''}
-      ${sub.assignment_id ? `<a class="breadcrumb-item" onclick="navigate('/assignment/${sub.assignment_id}')">${escapeHtml(sub.assignment_title || 'Bài tập')}</a><span class="breadcrumb-sep">›</span>` : ''}
+      ${sub.assignment_id ? `<a class="breadcrumb-item" onclick="navigate('${submissionsHref}')">${escapeHtml(sub.assignment_title || 'Bài tập')}</a><span class="breadcrumb-sep">›</span>` : ''}
       <span class="breadcrumb-item active">Chấm bài</span>
     </nav>
 
@@ -3164,6 +3136,7 @@ function renderGradingPage(sub) {
           💾 Lưu nhận xét
         </button>
 
+        ${supportsAiFeedback ? `
         <div class="grading-sidebar-section ai-feedback-section" style="margin-top:16px;border-top:1px solid var(--gray-200);padding-top:16px">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
             <button class="ai-feedback-toggle" onclick="toggleAiFeedback(this)" title="Đóng/Mở">
@@ -3176,6 +3149,7 @@ function renderGradingPage(sub) {
           </div>
           <div id="ai-feedback-display"></div>
         </div>
+        ` : ''}
       </div>
     </div>`;
 
@@ -3245,6 +3219,22 @@ function buildAnnotatedHtml(text, annotations) {
 
 // ─── Selection → Annotation popup ────────────────────────────────────────────
 
+// Walk text nodes in container, skipping .ann-marker sups, to get plain-text offset.
+function _plainTextOffset(container, targetNode, targetOffset) {
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
+    acceptNode: (n) => n.parentElement?.closest('.ann-marker')
+      ? NodeFilter.FILTER_REJECT
+      : NodeFilter.FILTER_ACCEPT,
+  });
+  let len = 0;
+  let node;
+  while ((node = walker.nextNode())) {
+    if (node === targetNode) return len + targetOffset;
+    len += node.length;
+  }
+  return len;
+}
+
 function handleTextSelection() {
   closeAnnotationPopup();
   const selection = window.getSelection();
@@ -3254,12 +3244,9 @@ function handleTextSelection() {
   const container = document.getElementById('writing-display');
   if (!container || !container.contains(range.commonAncestorContainer)) return;
 
-  // Calc offsets against plain text of the container
-  const preRange = document.createRange();
-  preRange.selectNodeContents(container);
-  preRange.setEnd(range.startContainer, range.startOffset);
-  const start = preRange.toString().length;
-  const end   = start + range.toString().length;
+  // Calc offsets against plain text, ignoring ann-marker sup numbers
+  const start = _plainTextOffset(container, range.startContainer, range.startOffset);
+  const end   = _plainTextOffset(container, range.endContainer, range.endOffset);
   const selectedText = range.toString();
   if (!selectedText.trim()) return;
 
@@ -3288,13 +3275,15 @@ function showAnnotationPopup(start, end, selectedText, rect) {
     </div>`;
   document.body.appendChild(popup);
 
-  // Position below selection, clamp to viewport width
+  // Position below selection, clamp to viewport width (fixed coords — no scrollX/Y offset)
   const annVw = window.visualViewport?.width ?? window.innerWidth;
-  const annPopupW = popup.offsetWidth || 320;
-  const top  = rect.bottom + window.scrollY + 10;
-  const left = Math.min(rect.left + window.scrollX, annVw - annPopupW - 8);
+  const annVh = window.visualViewport?.height ?? window.innerHeight;
+  const annPopupW = popup.offsetWidth || 340;
+  const annPopupH = popup.offsetHeight || 200;
+  const top  = Math.min(rect.bottom + 10, annVh - annPopupH - 8);
+  const left = Math.max(8, Math.min(rect.left, annVw - annPopupW - 8));
   popup.style.top  = top + 'px';
-  popup.style.left = Math.max(8, left) + 'px';
+  popup.style.left = left + 'px';
 
   setTimeout(() => {
     const ta = document.getElementById('ann-comment-input');
@@ -3543,7 +3532,7 @@ async function openAssignModal(classId, className, preSelectedId = null) {
     <div class="form-group">
       <label class="form-label">Chọn đề từ kho</label>
       <div class="skill-tabs" id="assign-skill-tabs">
-        ${['', 'reading', 'listening', 'writing', 'speaking'].map((s, i) => `
+        ${['', ...FILTERABLE_ASSIGNMENT_SKILLS].map((s, i) => `
           <button class="skill-tab ${i === 0 ? 'active' : ''}"
             onclick="filterAssignQuestions('${s}', this)">
             ${i === 0 ? 'Tất cả' : SKILL_LABELS[s].icon + ' ' + SKILL_LABELS[s].label}
@@ -4012,7 +4001,9 @@ function _buildQuestionTableRows(filtered) {
             : '—'}
         </td>
         <td style="font-size:12px;color:var(--gray-400)">
-          ${Array.isArray(q.questions_data) ? q.questions_data.length + ' câu' : '—'}
+          ${q.skill === 'composite'
+            ? '📋 Tổng hợp'
+            : (Array.isArray(q.questions_data) ? q.questions_data.length + ' câu' : '—')}
           ${q.content_url ? ' · 🔊 Audio' : ''}
         </td>
         <td style="font-size:12px;color:var(--gray-400)">${formatDate(q.created_at)}</td>
@@ -4334,7 +4325,7 @@ function renderQuestions() {
     document.querySelectorAll('.skill-tab').forEach(btn => {
       btn.classList.toggle('active', btn.textContent.trim().includes(
         _currentSkillFilter
-          ? { reading:'Reading', listening:'Listening', writing:'Writing', speaking:'Speaking' }[_currentSkillFilter]
+          ? { reading:'Reading', listening:'Listening', writing:'Writing', speaking:'Speaking', composite:'Tổng hợp' }[_currentSkillFilter]
           : 'Tất cả'
       ));
     });
@@ -4377,7 +4368,7 @@ function renderQuestions() {
 
         <div class="skill-tabs">
           ${[['', 'Tất cả'], ['reading','📖 Reading'], ['listening','🎧 Listening'],
-             ['writing','✍️ Writing'], ['speaking','🎤 Speaking']].map(([s, label]) => `
+             ['writing','✍️ Writing'], ['speaking','🎤 Speaking'], ['composite','📋 Tổng hợp']].map(([s, label]) => `
             <button class="skill-tab ${_currentSkillFilter === s ? 'active' : ''}"
               onclick="setSkillFilter('${s}')">${label}</button>`).join('')}
         </div>
@@ -4429,6 +4420,31 @@ async function previewQuestion(id) {
   const cached = _allQuestions.find(x => x.id == id);
   if (!cached) return;
 
+  const buildCompositeModal = (q) => {
+    const sections = Array.isArray(q.sections) ? q.sections : [];
+    const secHtml = sections.map(s => {
+      const qCount = Array.isArray(s.questions_data) ? s.questions_data.length : 0;
+      return `<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px;background:var(--bg-card)">
+        <span>${_cqSkillIcon(s.skill)}</span>
+        <span style="font-weight:600;font-size:13px">${escapeHtml(s.label || _cqSkillLabel(s.skill))}</span>
+        <span style="color:var(--gray-400);font-size:12px">${_cqSkillLabel(s.skill)}${qCount ? ` · ${qCount} câu` : ''}${s.time_limit_minutes ? ` · ⏱${s.time_limit_minutes}ph` : ''}</span>
+      </div>`;
+    }).join('');
+    return `
+      <div style="margin-bottom:12px">${skillBadge(q.skill)}</div>
+      <div style="display:flex;gap:16px;margin-bottom:16px;flex-wrap:wrap">
+        <span class="stat-chip">📋 ${sections.length} phần thi</span>
+        <span class="stat-chip">📅 Tạo ${formatDate(q.created_at)}</span>
+      </div>
+      ${sections.length ? `
+      <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--gray-400);margin-bottom:8px">Các phần thi</div>
+      ${secHtml}` : '<div style="color:var(--gray-400);font-size:13px">Chưa có phần thi nào.</div>'}
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="closeModal()">Đóng</button>
+        <button class="btn btn-primary" onclick="closeModal();navigate('/questions/${id}')">Chỉnh sửa</button>
+      </div>`;
+  };
+
   // Show modal immediately with cached data while fetching full content
   const qs = Array.isArray(cached.questions_data) ? cached.questions_data : [];
   const buildModal = (q, qRows, hasMore) => `
@@ -4472,6 +4488,17 @@ async function previewQuestion(id) {
       </div>`).join('');
     return { qRows, hasMore: qArr.length > 20 };
   };
+
+  if (cached.skill === 'composite') {
+    openModal(escapeHtml(cached.title), '<div style="color:var(--gray-400)">Đang tải...</div>');
+    try {
+      const full = await api.get(`/questions/${id}`);
+      Object.assign(cached, full);
+      const modalBody = document.getElementById('modal-body');
+      if (modalBody) modalBody.innerHTML = buildCompositeModal(full);
+    } catch {}
+    return;
+  }
 
   // Show immediately with cached data (no content_text yet)
   const { qRows: initRows, hasMore: initMore } = buildRows(cached);
@@ -5572,7 +5599,23 @@ function renderQuestionDetail(q) {
   _vocabItems = Array.isArray(q.vocabulary) ? [...q.vocabulary] : [];
 
   let skillSection = '';
-  if (q.skill === 'reading') {
+  if (q.skill === 'composite') {
+    _cqSections = Array.isArray(q.sections) ? q.sections.map(s => ({
+      label: s.label || '',
+      skill: s.skill || '',
+      time_limit_minutes: s.time_limit_minutes ?? null,
+      questions_data: s.questions_data || [],
+      content_blocks: s.content_blocks || [],
+      content_text: s.content_text || '',
+      content_url: s.content_url || null,
+      content_urls: s.content_urls || [],
+      script: s.script || '',
+      vocabulary: s.vocabulary || [],
+      _id: s.id,
+    })) : [];
+    _cqEditingIdx = -1;
+    skillSection = `<div id="cq-sections-ui"></div>`;
+  } else if (q.skill === 'reading') {
     skillSection = `
       ${contentComposerHtml('Nội dung đề (Bài đọc + Câu hỏi)', 'Soạn nội dung dạng text, và chèn ảnh vào giữa khi cần. Location chỉ áp dụng cho phần text.')}
       <div id="location-pick-hint" class="location-pick-hint hidden"></div>
@@ -5632,6 +5675,7 @@ function renderQuestionDetail(q) {
             <option value="listening" ${q.skill === 'listening' ? 'selected' : ''}>🎧 Listening</option>
             <option value="writing"   ${q.skill === 'writing'   ? 'selected' : ''}>✍️ Writing</option>
             <option value="speaking"  ${q.skill === 'speaking'  ? 'selected' : ''}>🎤 Speaking</option>
+            <option value="composite" ${q.skill === 'composite' ? 'selected' : ''}>📋 Tổng hợp</option>
           </select>
           <div class="form-hint">Kỹ năng không thể thay đổi sau khi tạo.</div>
         </div>
@@ -5669,6 +5713,12 @@ function renderQuestionDetail(q) {
         tagContainer.insertBefore(chip, tagInput);
       }
     }
+  }
+
+  if (q.skill === 'composite') {
+    renderCQSectionsUI();
+    attachChipListeners();
+    return;
   }
 
   if (q.skill === 'reading' || q.skill === 'listening') {
@@ -5709,11 +5759,50 @@ function renderAnswerGridWithData(questionsData) {
 async function submitQuestionEdit(id, btn) {
   const title   = $('#q-title')?.value.trim();
   const skill   = $('#q-skill')?.value;
-  const contentBlocks = normalizeContentBlocksForEditor(_contentBlocks);
-  const content = blocksToPlainText(contentBlocks) || null;
 
   if (!title) { toast('Vui lòng nhập tiêu đề', 'error'); return; }
+
+  const tags = getChipValues($('#q-tags-chip-edit'));
+
+  if (skill === 'composite') {
+    _saveCQCurrentEditorState();
+    if (_cqEditingIdx >= 0) { toast('Vui lòng lưu phần đang chỉnh sửa trước', 'warning'); return; }
+    if (_cqSections.length === 0) { toast('Vui lòng thêm ít nhất 1 phần thi', 'error'); return; }
+    for (let i = 0; i < _cqSections.length; i++) {
+      if (!_cqSections[i].label.trim()) { toast(`Phần ${i+1}: Chưa đặt tên`, 'error'); return; }
+      if (!_cqSections[i].skill) { toast(`Phần ${i+1}: Chưa chọn kỹ năng`, 'error'); return; }
+    }
+    btnLoading(btn);
+    try {
+      await api.patch(`/questions/${id}`, {
+        title,
+        tags,
+        sections: _cqSections.map(s => ({
+          _id: s._id || null,
+          label: s.label,
+          skill: s.skill,
+          time_limit_minutes: s.time_limit_minutes || null,
+          questions_data: s.questions_data || [],
+          content_blocks: s.content_blocks || [],
+          content_text: s.content_text || null,
+          content_url: s.content_url || null,
+          content_urls: s.content_urls || [],
+          script: s.script || null,
+        })),
+      });
+      toast('Đã lưu thay đổi! ✓');
+      navigate('/questions');
+    } catch (e) {
+      btnReset(btn);
+      toast('Lỗi lưu: ' + (e.error || e.message), 'error');
+    }
+    return;
+  }
+
   if (_contentImageUploadCount > 0) { toast('Ảnh đang upload, vui lòng đợi xong rồi lưu', 'warning'); return; }
+
+  const contentBlocks = normalizeContentBlocksForEditor(_contentBlocks);
+  const content = blocksToPlainText(contentBlocks) || null;
 
   let questions_data = [];
   if (skill === 'reading' || skill === 'listening') {
@@ -5724,8 +5813,6 @@ async function submitQuestionEdit(id, btn) {
       return;
     }
   }
-
-  const tags = getChipValues($('#q-tags-chip-edit'));
 
   btnLoading(btn);
   try {
@@ -5908,6 +5995,7 @@ function showQuestionForm() {
             <option value="listening">🎧 Listening</option>
             <option value="writing">✍️ Writing</option>
             <option value="speaking">🎤 Speaking</option>
+            <option value="composite">📋 Tổng hợp (nhiều kỹ năng)</option>
           </select>
         </div>
       </div>
@@ -5951,6 +6039,13 @@ function onSkillChange(skill) {
   if (!skill) {
     section.innerHTML = `<div style="text-align:center;padding:30px;color:var(--gray-400)">
       Chọn kỹ năng để hiển thị form nhập đề</div>`;
+    return;
+  }
+
+  if (skill === 'composite') {
+    _cqSections = [];
+    _cqEditingIdx = -1;
+    renderCQSectionsUI();
     return;
   }
 
@@ -6487,11 +6582,50 @@ function scrollToFeedbackMark() {}
 async function submitQuestion(btn) {
   const title = $('#q-title')?.value.trim();
   const skill = $('#q-skill')?.value;
-  const contentBlocks = normalizeContentBlocksForEditor(_contentBlocks);
-  const content = blocksToPlainText(contentBlocks) || '';
+  const tags = getChipValues($('#q-tags-chip'));
 
   if (!title) { toast('Vui lòng nhập tiêu đề', 'error'); return; }
   if (!skill)  { toast('Vui lòng chọn kỹ năng', 'error'); return; }
+
+  // Handle composite question
+  if (skill === 'composite') {
+    if (_cqEditingIdx >= 0) { toast('Vui lòng lưu phần đang chỉnh sửa trước', 'warning'); return; }
+    if (_cqSections.length === 0) { toast('Vui lòng thêm ít nhất 1 phần thi', 'error'); return; }
+    for (let i = 0; i < _cqSections.length; i++) {
+      if (!_cqSections[i].label.trim()) { toast(`Phần ${i+1}: Chưa đặt tên`, 'error'); return; }
+      if (!_cqSections[i].skill) { toast(`Phần ${i+1}: Chưa chọn kỹ năng`, 'error'); return; }
+    }
+    btnLoading(btn);
+    try {
+      await api.post('/questions', {
+        title,
+        skill: 'composite',
+        tags,
+        sections: _cqSections.map(s => ({
+          label: s.label,
+          skill: s.skill,
+          time_limit_minutes: s.time_limit_minutes || null,
+          questions_data: s.questions_data || [],
+          content_blocks: s.content_blocks || [],
+          content_text: s.content_text || '',
+          content_url: s.content_url || null,
+          content_urls: s.content_urls || [],
+          script: s.script || '',
+        })),
+      });
+      stopQuestionDraftAutosave();
+      clearQuestionDraft(getQuestionDraftKey('new'));
+      toast('Đã lưu đề tổng hợp vào kho! 🎉');
+      navigate('/questions');
+    } catch (e) {
+      btnReset(btn);
+      toast('Lỗi lưu đề: ' + (e.error || e.message), 'error');
+    }
+    return;
+  }
+
+  const contentBlocks = normalizeContentBlocksForEditor(_contentBlocks);
+  const content = blocksToPlainText(contentBlocks) || '';
   if (_contentImageUploadCount > 0) { toast('Ảnh đang upload, vui lòng đợi xong rồi lưu', 'warning'); return; }
   if (skill === 'listening') {
     const doneSlots = _audioSlots.filter(s => s.status === 'done');
@@ -6515,9 +6649,6 @@ async function submitQuestion(btn) {
       return;
     }
   }
-  // B4.5 — collect tags chips
-  const tags = getChipValues($('#q-tags-chip'));
-
   btnLoading(btn);
   try {
     let listeningExtra = {};
@@ -7964,238 +8095,248 @@ window.showSharedPoolForm   = showSharedPoolForm;
 window.showSharedPoolDetail = showSharedPoolDetail;
 
 // ═══════════════════════════════════════════════════════════════════════════
-// COMPOSITE ASSIGNMENTS (teacher)
+// COMPOSITE QUESTION BUILDER (kho đề)
 // ═══════════════════════════════════════════════════════════════════════════
 
-let _compositeClassId = '';
-let _compositeSections = []; // [{label, skill, question_id, question_title, time_limit_minutes, qsearch}]
+// Each section: { label, skill, time_limit_minutes, questions_data, content_blocks, content_text, content_url, content_urls, script, vocabulary }
+let _cqSections = [];
+let _cqEditingIdx = -1;
 
-function openCompositeModal(classId, className) {
-  _compositeClassId = classId;
-  _compositeSections = [];
-  const clsNameSafe = String(className).replace(/'/g, "\\'");
-  openModal(`Giao đề tổng hợp cho lớp "${clsNameSafe}"`, `
-    <div class="form-group">
-      <label class="form-label">Tên đề <span style="color:var(--danger)">*</span></label>
-      <input id="composite-title" class="form-input" placeholder="VD: Đề tổng hợp tháng 5" />
-    </div>
-    <div class="form-group">
-      <label class="form-label">Hạn nộp bài</label>
-      <input id="composite-deadline" class="form-input" type="datetime-local" />
-    </div>
-    <div class="form-group">
-      <label class="form-label">Chế độ bài tập</label>
-      <div class="assign-mode-options">
-        <label class="assign-mode-option">
-          <input type="radio" name="composite-mode" value="exam" checked />
-          <span class="assign-mode-label"><span class="assign-mode-icon">📝</span>
-            <span><strong>Kiểm tra</strong><span class="assign-mode-desc">Đếm giờ từng phần, không tua audio</span></span>
-          </span>
-        </label>
-        <label class="assign-mode-option">
-          <input type="radio" name="composite-mode" value="practice" />
-          <span class="assign-mode-label"><span class="assign-mode-icon">🎧</span>
-            <span><strong>Luyện tập</strong><span class="assign-mode-desc">Không giới hạn thời gian, thoải mái</span></span>
-          </span>
-        </label>
-      </div>
-    </div>
-    <div class="form-group">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-        <label class="form-label" style="margin:0">Các phần thi <span style="color:var(--danger)">*</span></label>
-        <button class="btn btn-sm btn-outline" onclick="addCompositeSection()">+ Thêm phần</button>
-      </div>
-      <div id="composite-sections-container"></div>
-    </div>
-    <div class="modal-footer">
-      <button class="btn btn-outline" onclick="closeModal()">Hủy</button>
-      <button class="btn btn-primary" onclick="submitComposite(this)">Giao đề</button>
-    </div>`);
+function _cqSkillIcon(s) { return { reading:'📖', listening:'🎧', writing:'✍️', speaking:'🎤' }[s] || ''; }
+function _cqSkillLabel(s) { return { reading:'Reading', listening:'Listening', writing:'Writing', speaking:'Speaking' }[s] || s; }
 
-  if (!_questions || _questions.length === 0) {
-    api.get('/questions').then(qs => { _questions = qs; }).catch(() => {});
+function _newCQSection() {
+  return { label: '', skill: '', time_limit_minutes: null, questions_data: [], content_blocks: [], content_text: '', content_url: null, content_urls: [], script: '', vocabulary: [] };
+}
+
+function _saveCQCurrentEditorState() {
+  if (_cqEditingIdx < 0 || !_cqSections[_cqEditingIdx]) return;
+  const sec = _cqSections[_cqEditingIdx];
+  sec.label = document.getElementById('cq-label')?.value.trim() ?? sec.label;
+  sec.time_limit_minutes = (() => { const v = document.getElementById('cq-time')?.value; return v ? Number(v) : null; })();
+  const blocks = normalizeContentBlocksForEditor(_contentBlocks);
+  sec.content_blocks = blocks;
+  sec.content_text = blocksToPlainText(blocks) || '';
+  if (sec.skill === 'reading' || sec.skill === 'listening') {
+    sec.questions_data = collectAnswerGrid ? collectAnswerGrid() : [];
+  }
+  if (sec.skill === 'listening') {
+    const doneSlots = _audioSlots.filter(s => s.status === 'done');
+    sec.content_url   = doneSlots[0]?.url || null;
+    sec.content_urls  = doneSlots.map(s => ({ url: s.url, key: s.key, name: s.displayName || s.name, filename: s.name }));
+    sec.script = document.getElementById('listening-script')?.value.trim() ?? sec.script;
+  }
+  sec.vocabulary = Array.isArray(_vocabItems) ? [..._vocabItems] : [];
+}
+
+function _loadCQSectionIntoEditor(idx) {
+  const sec = _cqSections[idx];
+  _contentBlocks = (sec.content_blocks || []).map(b => ({ ...b }));
+  _vocabItems = Array.isArray(sec.vocabulary) ? [...sec.vocabulary] : [];
+  _editingVocabIndex = -1;
+  if (sec.skill === 'listening') {
+    const slots = (sec.content_urls?.length ? sec.content_urls : (sec.content_url ? [{ url: sec.content_url, key: null, name: 'audio' }] : []));
+    _audioSlots = slots.map(s => ({ displayName: s.name || '', file: null, name: s.filename || s.name || '', size: 0, status: 'done', url: s.url, key: s.key || null, pct: 100, eta: null }));
+    if (_audioSlots.length === 0) _audioSlots = [_newAudioSlot()];
+    _audioFiles = _audioSlots;
+    _audioUploading = false;
   }
 }
-window.openCompositeModal = openCompositeModal;
 
-function _renderCompositeSections() {
-  const container = document.getElementById('composite-sections-container');
-  if (!container) return;
-  if (_compositeSections.length === 0) {
-    container.innerHTML = `<div style="padding:16px;text-align:center;color:var(--gray-400);font-size:13px;border:1.5px dashed var(--border);border-radius:8px">Nhấn "+ Thêm phần" để thêm kỹ năng vào đề</div>`;
-    return;
-  }
-  const skillIcons = { reading:'📖', listening:'🎧', writing:'✍️', speaking:'🎤' };
-  const skillLabels = { reading:'Reading', listening:'Listening', writing:'Writing', speaking:'Speaking' };
-  container.innerHTML = _compositeSections.map((sec, idx) => `
-    <div class="composite-section-card" style="border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:8px;background:var(--bg-card)">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-        <strong style="font-size:13px">Phần ${idx + 1}</strong>
-        <button class="btn-icon danger" onclick="removeCompositeSection(${idx})">×</button>
-      </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
-        <div>
-          <label class="form-label" style="font-size:12px">Tên phần *</label>
-          <input class="form-input" style="font-size:13px" placeholder="VD: Bài đọc 1"
-            value="${escapeHtml(sec.label)}"
-            oninput="_compositeSections[${idx}].label = this.value" />
-        </div>
-        <div>
-          <label class="form-label" style="font-size:12px">Kỹ năng *</label>
-          <select class="form-input" style="font-size:13px" onchange="updateCompositeSectionSkill(${idx}, this.value)">
-            <option value="">-- Chọn --</option>
-            ${['reading','listening','writing','speaking'].map(s =>
-              `<option value="${s}" ${sec.skill===s?'selected':''}>${skillIcons[s]} ${skillLabels[s]}</option>`
-            ).join('')}
-          </select>
-        </div>
-      </div>
-      <div style="margin-bottom:8px">
-        <label class="form-label" style="font-size:12px">Thời gian (phút, để trống = không giới hạn)</label>
-        <input class="form-input" style="font-size:13px;width:140px" type="number" min="1" max="300"
-          placeholder="Không giới hạn"
-          value="${sec.time_limit_minutes ?? ''}"
-          oninput="_compositeSections[${idx}].time_limit_minutes = this.value ? Number(this.value) : null" />
-      </div>
+function renderCQSectionsUI() {
+  const section = document.getElementById('skill-section');
+  if (!section) return;
+  const isEditing = _cqEditingIdx >= 0;
+
+  const listHtml = _cqSections.map((sec, idx) => {
+    if (idx === _cqEditingIdx) return '';
+    const summary = [sec.skill ? `${_cqSkillIcon(sec.skill)} ${_cqSkillLabel(sec.skill)}` : '',
+      sec.time_limit_minutes ? `⏱ ${sec.time_limit_minutes} phút` : '',
+      (sec.skill === 'reading' || sec.skill === 'listening') && sec.questions_data?.length ? `${sec.questions_data.length} câu` : ''
+    ].filter(Boolean).join(' · ');
+    return `<div class="cq-section-card" style="display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border:1px solid var(--border);border-radius:8px;margin-bottom:6px;background:var(--bg-card)">
       <div>
-        <label class="form-label" style="font-size:12px">Đề *</label>
-        ${sec.question_id
-          ? `<div style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--surface);border-radius:6px;font-size:13px">
-              <span style="flex:1">${escapeHtml(sec.question_title)}</span>
-              <button class="btn-icon" onclick="_compositeSections[${idx}].question_id=null;_compositeSections[${idx}].question_title='';_renderCompositeSections()" title="Đổi đề">✕</button>
-             </div>`
-          : (sec.skill
-              ? `<div>
-                  <input class="form-input" style="font-size:12px;margin-bottom:4px" placeholder="🔍 Tìm đề..."
-                    value="${escapeHtml(sec.qsearch||'')}"
-                    oninput="_compositeSections[${idx}].qsearch=this.value;_renderCompositeSQList(${idx})" />
-                  <div id="cq-list-${idx}" class="composite-q-list">${_buildCompositeSQHtml(idx)}</div>
-                 </div>`
-              : `<div style="font-size:12px;color:var(--gray-400);padding:6px">Chọn kỹ năng trước</div>`)}
+        <span style="font-weight:600;font-size:14px">${idx + 1}. ${escapeHtml(sec.label || '(Chưa đặt tên)')}</span>
+        ${summary ? `<span style="font-size:12px;color:var(--gray-400);margin-left:8px">${summary}</span>` : ''}
       </div>
-    </div>`).join('');
-}
-window._renderCompositeSections = _renderCompositeSections;
+      <div style="display:flex;gap:6px">
+        <button class="btn btn-sm btn-outline" onclick="editCQSection(${idx})">✏️ Sửa</button>
+        <button class="btn-icon danger" onclick="removeCQSection(${idx})">×</button>
+      </div>
+    </div>`;
+  }).join('');
 
-function _buildCompositeSQHtml(idx) {
-  const sec = _compositeSections[idx];
-  if (!sec || !sec.skill || !_questions) return '';
-  const search = (sec.qsearch || '').toLowerCase();
-  const filtered = _questions.filter(q => q.skill === sec.skill && (!search || q.title.toLowerCase().includes(search))).slice(0, 20);
-  if (filtered.length === 0) return `<div style="padding:8px;font-size:12px;color:var(--gray-400)">Không tìm thấy đề nào</div>`;
-  return filtered.map(q => `
-    <div class="composite-q-item" onclick="selectCompositeSQ(${idx},'${q.id}',${JSON.stringify(escapeHtml(q.title))})"
-      style="padding:6px 10px;cursor:pointer;font-size:12px;border-radius:4px;hover:background:var(--surface)">
-      ${escapeHtml(q.title)}
-    </div>`).join('');
-}
-window._buildCompositeSQHtml = _buildCompositeSQHtml;
+  let editorHtml = '';
+  if (isEditing) {
+    const sec = _cqSections[_cqEditingIdx];
+    let skillContentHtml = '';
+    if (sec.skill === 'reading') {
+      skillContentHtml = `${contentComposerHtml('Nội dung đề (Bài đọc + Câu hỏi)')}
+        <div id="location-pick-hint" class="location-pick-hint hidden"></div>
+        ${answerGridHtml()}`;
+    } else if (sec.skill === 'listening') {
+      skillContentHtml = `<div class="form-group"><label class="form-label">File Audio <span style="color:var(--danger)">*</span></label>${audioUploadHtml()}</div>
+        <div class="form-group" id="script-section">
+          <label class="form-label">Script Listening</label>
+          <div id="script-loading" class="script-loading hidden"><span class="btn-spinner btn-spinner--dark"></span> Đang trích xuất...</div>
+          <textarea id="listening-script" class="form-textarea listening-script-editor" rows="6"
+            placeholder="Script tự động điền sau khi upload audio">${escapeHtml(sec.script||'')}</textarea>
+        </div>
+        ${contentComposerHtml('Câu hỏi (text)')}
+        <div id="location-pick-hint" class="location-pick-hint hidden"></div>
+        ${answerGridHtml()}`;
+    } else if (sec.skill === 'writing') {
+      skillContentHtml = `${contentComposerHtml('Đề bài Writing')}`;
+    } else if (sec.skill === 'speaking') {
+      skillContentHtml = `${contentComposerHtml('Câu hỏi / Cue Card')}`;
+    }
 
-function _renderCompositeSQList(idx) {
-  const el = document.getElementById(`cq-list-${idx}`);
-  if (el) el.innerHTML = _buildCompositeSQHtml(idx);
-}
-window._renderCompositeSQList = _renderCompositeSQList;
-
-function addCompositeSection() {
-  _compositeSections.push({ label: '', skill: '', question_id: null, question_title: '', time_limit_minutes: null, qsearch: '' });
-  _renderCompositeSections();
-}
-window.addCompositeSection = addCompositeSection;
-
-function removeCompositeSection(idx) {
-  _compositeSections.splice(idx, 1);
-  _renderCompositeSections();
-}
-window.removeCompositeSection = removeCompositeSection;
-
-function updateCompositeSectionSkill(idx, skill) {
-  _compositeSections[idx].skill = skill;
-  _compositeSections[idx].question_id = null;
-  _compositeSections[idx].question_title = '';
-  _compositeSections[idx].qsearch = '';
-  _renderCompositeSections();
-}
-window.updateCompositeSectionSkill = updateCompositeSectionSkill;
-
-function selectCompositeSQ(idx, questionId, questionTitle) {
-  _compositeSections[idx].question_id = questionId;
-  _compositeSections[idx].question_title = questionTitle;
-  _renderCompositeSections();
-}
-window.selectCompositeSQ = selectCompositeSQ;
-
-async function submitComposite(btn) {
-  const title = document.getElementById('composite-title')?.value.trim();
-  const deadlineRaw = document.getElementById('composite-deadline')?.value;
-  const deadline = deadlineRaw ? new Date(deadlineRaw).toISOString() : null;
-  const modeEl = document.querySelector('input[name="composite-mode"]:checked');
-  const mode = modeEl?.value === 'practice' ? 'practice' : 'exam';
-
-  if (!title) { toast('Vui lòng nhập tên đề', 'error'); return; }
-  if (_compositeSections.length === 0) { toast('Vui lòng thêm ít nhất 1 phần', 'error'); return; }
-  for (let i = 0; i < _compositeSections.length; i++) {
-    const s = _compositeSections[i];
-    if (!s.label.trim()) { toast(`Phần ${i+1}: Vui lòng nhập tên phần`, 'error'); return; }
-    if (!s.skill) { toast(`Phần ${i+1}: Vui lòng chọn kỹ năng`, 'error'); return; }
-    if (!s.question_id) { toast(`Phần ${i+1}: Vui lòng chọn đề`, 'error'); return; }
+    editorHtml = `
+      <div class="cq-editor-panel" style="border:2px solid var(--primary);border-radius:10px;padding:16px;margin-bottom:10px;background:var(--bg-card)">
+        <div style="font-weight:700;font-size:14px;margin-bottom:12px;color:var(--primary)">
+          ✏️ Chỉnh sửa phần ${_cqEditingIdx + 1}
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:14px">
+          <div>
+            <label class="form-label" style="font-size:12px">Tên phần *</label>
+            <input id="cq-label" class="form-input" value="${escapeHtml(sec.label)}" placeholder="VD: Bài đọc 1" />
+          </div>
+          <div>
+            <label class="form-label" style="font-size:12px">Kỹ năng *</label>
+            <select id="cq-skill" class="form-select" onchange="onCQSkillChange(this.value)">
+              <option value="">— Chọn —</option>
+              <option value="reading" ${sec.skill==='reading'?'selected':''}>📖 Reading</option>
+              <option value="listening" ${sec.skill==='listening'?'selected':''}>🎧 Listening</option>
+              <option value="writing" ${sec.skill==='writing'?'selected':''}>✍️ Writing</option>
+              <option value="speaking" ${sec.skill==='speaking'?'selected':''}>🎤 Speaking</option>
+            </select>
+          </div>
+          <div>
+            <label class="form-label" style="font-size:12px">Thời gian (phút)</label>
+            <input id="cq-time" class="form-input" type="number" min="1" max="300"
+              value="${sec.time_limit_minutes ?? ''}" placeholder="Không giới hạn" />
+          </div>
+        </div>
+        <div id="cq-skill-content">${sec.skill ? skillContentHtml : '<div style="color:var(--gray-400);font-size:13px;padding:12px;text-align:center">Chọn kỹ năng để hiển thị form</div>'}</div>
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px">
+          <button class="btn btn-outline" onclick="cancelCQEdit()">Hủy</button>
+          <button class="btn btn-primary" onclick="saveCQSection()">💾 Lưu phần này</button>
+        </div>
+      </div>`;
   }
 
-  btnLoading(btn);
-  try {
-    await api.post('/composite-assignments', {
-      class_id: _compositeClassId,
-      title,
-      mode,
-      deadline,
-      sections: _compositeSections.map(s => ({
-        label: s.label,
-        skill: s.skill,
-        question_id: s.question_id,
-        time_limit_minutes: s.time_limit_minutes || null,
-      })),
-    });
-    closeModal();
-    toast('Giao đề tổng hợp thành công! 🎉');
-    showClassDetail({ id: _compositeClassId });
-  } catch (e) {
-    btnReset(btn);
-    toast('Lỗi: ' + (e.error || e.message), 'error');
-  }
-}
-window.submitComposite = submitComposite;
+  section.innerHTML = `
+    <div style="margin-bottom:10px;font-weight:600;font-size:14px">Các phần thi <span style="color:var(--danger)">*</span></div>
+    ${editorHtml}
+    <div id="cq-list">${listHtml || (!isEditing ? '<div style="text-align:center;padding:20px;color:var(--gray-400);border:2px dashed var(--border);border-radius:8px">Nhấn "+ Thêm kỹ năng" để bắt đầu</div>' : '')}</div>
+    ${!isEditing ? '<button class="btn btn-outline" style="margin-top:10px" onclick="addCQSection()">+ Thêm kỹ năng</button>' : ''}
+  `;
 
-async function toggleComposite(id, active) {
-  try {
-    await api.patch(`/composite-assignments/${id}`, { is_active: active });
-    toast(active ? 'Đã mở đề' : 'Đã đóng đề');
-  } catch (e) {
-    toast('Lỗi: ' + (e.error || e.message), 'error');
-    if (_cachedCls) renderClassDetail(_cachedCls, _cachedStudents);
+  if (isEditing) {
+    const sec = _cqSections[_cqEditingIdx];
+    initContentComposer(sec.content_blocks || [], '');
+    if (sec.skill === 'listening') {
+      attachAudioUpload();
+      _renderAudioSlots();
+    }
+    if (sec.skill === 'reading' || sec.skill === 'listening') {
+      if (sec.questions_data?.length > 0) {
+        renderAnswerGridWithData(sec.questions_data);
+      }
+      const countInput = document.getElementById('answer-count');
+      if (countInput) {
+        countInput.addEventListener('input', () => {
+          const n = parseInt(countInput.value) || 0;
+          if (n > 0 && n <= 100) renderAnswerGrid(n);
+        });
+      }
+    }
+    renderVocabList && renderVocabList();
+    syncVocabEditorState && syncVocabEditorState();
   }
 }
-window.toggleComposite = toggleComposite;
+window.renderCQSectionsUI = renderCQSectionsUI;
 
-async function deleteComposite(id, classId, btn) {
-  if (!confirm('Xoá đề tổng hợp này? Tất cả bài nộp sẽ bị xoá.')) return;
-  btnLoading(btn);
-  try {
-    await api.delete(`/composite-assignments/${id}`);
-    toast('Đã xoá đề tổng hợp');
-    showClassDetail({ id: classId });
-  } catch (e) {
-    btnReset(btn);
-    toast('Lỗi: ' + (e.error || e.message), 'error');
-  }
+function addCQSection() {
+  _saveCQCurrentEditorState();
+  _cqSections.push(_newCQSection());
+  _cqEditingIdx = _cqSections.length - 1;
+  // Reset global state for new empty section
+  _contentBlocks = [];
+  _vocabItems = [];
+  _editingVocabIndex = -1;
+  _audioSlots = [_newAudioSlot()]; _audioFiles = _audioSlots;
+  _audioUploading = false;
+  renderCQSectionsUI();
 }
-window.deleteComposite = deleteComposite;
+window.addCQSection = addCQSection;
+
+function editCQSection(idx) {
+  _saveCQCurrentEditorState();
+  _cqEditingIdx = idx;
+  _loadCQSectionIntoEditor(idx);
+  renderCQSectionsUI();
+}
+window.editCQSection = editCQSection;
+
+function saveCQSection() {
+  const labelEl = document.getElementById('cq-label');
+  if (!labelEl || !labelEl.value.trim()) { toast('Vui lòng đặt tên phần thi', 'error'); return; }
+  const skillEl = document.getElementById('cq-skill');
+  if (!skillEl?.value) { toast('Vui lòng chọn kỹ năng', 'error'); return; }
+  _cqSections[_cqEditingIdx].skill = skillEl.value;
+  _saveCQCurrentEditorState();
+  _cqEditingIdx = -1;
+  _contentBlocks = [];
+  _vocabItems = [];
+  _audioSlots = [_newAudioSlot()]; _audioFiles = _audioSlots;
+  renderCQSectionsUI();
+}
+window.saveCQSection = saveCQSection;
+
+function cancelCQEdit() {
+  if (_cqSections[_cqEditingIdx]?.skill === '') {
+    _cqSections.splice(_cqEditingIdx, 1);
+  }
+  _cqEditingIdx = -1;
+  _contentBlocks = [];
+  _vocabItems = [];
+  _audioSlots = [_newAudioSlot()]; _audioFiles = _audioSlots;
+  renderCQSectionsUI();
+}
+window.cancelCQEdit = cancelCQEdit;
+
+function removeCQSection(idx) {
+  if (_cqEditingIdx === idx) { _cqEditingIdx = -1; _contentBlocks = []; _vocabItems = []; _audioSlots = [_newAudioSlot()]; _audioFiles = _audioSlots; }
+  else if (_cqEditingIdx > idx) _cqEditingIdx--;
+  _cqSections.splice(idx, 1);
+  renderCQSectionsUI();
+}
+window.removeCQSection = removeCQSection;
+
+function onCQSkillChange(skill) {
+  if (_cqEditingIdx < 0) return;
+  _saveCQCurrentEditorState();
+  _cqSections[_cqEditingIdx].skill = skill;
+  _cqSections[_cqEditingIdx].questions_data = [];
+  _cqSections[_cqEditingIdx].content_blocks = [];
+  _cqSections[_cqEditingIdx].content_url = null;
+  _cqSections[_cqEditingIdx].content_urls = [];
+  _cqSections[_cqEditingIdx].script = '';
+  _contentBlocks = [];
+  _vocabItems = [];
+  _audioSlots = [_newAudioSlot()]; _audioFiles = _audioSlots;
+  _audioUploading = false;
+  renderCQSectionsUI();
+}
+window.onCQSkillChange = onCQSkillChange;
 
 // ── Composite submissions page ────────────────────────────────────────────────
 
 async function showCompositeSubmissions({ id }) {
   setLoading('Đang tải đề tổng hợp...');
   try {
-    const data = await api.get(`/composite-assignments/${id}/stats`);
+    const data = await api.get(`/assignments/${id}/composite-submissions`);
     renderCompositeSubmissions(data);
   } catch (e) {
     renderRouteError('Không tải được dữ liệu', e, '/classes');
@@ -8203,7 +8344,9 @@ async function showCompositeSubmissions({ id }) {
 }
 window.showCompositeSubmissions = showCompositeSubmissions;
 
-function renderCompositeSubmissions({ composite, sections, perStudent }) {
+function renderCompositeSubmissions({ assignment, sections, perStudent }) {
+  const composite = assignment; // compatibility alias
+  const compositeAssignmentId = assignment?.id || '';
   const skillIcons = { reading:'📖', listening:'🎧', writing:'✍️', speaking:'🎤' };
   const totalSecs = sections.length;
   const studentRows = perStudent.length === 0
@@ -8218,7 +8361,7 @@ function renderCompositeSubmissions({ composite, sections, perStudent }) {
           const overtimeBadge = sub.is_overtime ? `<span class="stats-overtime-pill" style="display:block;font-size:10px;margin-top:2px">OT</span>` : '';
           const viewBtn = (sec.skill === 'writing' || sec.skill === 'speaking')
             ? `<button class="btn btn-sm btn-outline" style="font-size:11px;padding:2px 6px;margin-top:2px"
-                onclick="openCompositeSubmissionGrading('${sub.id}','${sec.skill}')">Chấm</button>` : '';
+                onclick="navigate('/grading/${sub.id}')">Chấm</button>` : '';
           return `<td style="text-align:center">${score}${overtimeBadge}${viewBtn}</td>`;
         }).join('');
         return `<tr>
@@ -8237,7 +8380,7 @@ function renderCompositeSubmissions({ composite, sections, perStudent }) {
     <nav class="breadcrumb">
       <a class="breadcrumb-item" onclick="navigate('/classes')">Lớp học</a>
       <span class="breadcrumb-sep">›</span>
-      <a class="breadcrumb-item" onclick="navigate('/class/${composite.class_id}')">Lớp</a>
+      <a class="breadcrumb-item" onclick="navigate('/class/${composite.class_id || ''}')">Lớp</a>
       <span class="breadcrumb-sep">›</span>
       <span class="breadcrumb-item active">${escapeHtml(composite.title)}</span>
     </nav>
@@ -8264,10 +8407,11 @@ function renderCompositeSubmissions({ composite, sections, perStudent }) {
 window.renderCompositeSubmissions = renderCompositeSubmissions;
 
 let _gradingCompositeSubId = null;
+let _gradingCompositeAssignId = null;
 
-async function openCompositeSubmissionGrading(submissionId, skill) {
+async function openCompositeSubmissionGrading(submissionId, skill, assignmentId) {
   _gradingCompositeSubId = submissionId;
-  const data = await api.get(`/composite-assignments/submission/${submissionId}`).catch(() => null);
+  _gradingCompositeAssignId = assignmentId || null;
   openModal(`Chấm bài — ${skill === 'writing' ? 'Writing' : 'Speaking'}`, `
     <div class="form-group">
       <label class="form-label">Điểm Band (0–9)</label>
@@ -8293,14 +8437,11 @@ async function saveCompositeGrading(btn) {
   }
   btnLoading(btn);
   try {
-    await api.patch(`/composite-submissions/${_gradingCompositeSubId}/score`, { score, feedback });
+    await api.patch(`/composite-section-submissions/${_gradingCompositeSubId}/score`, { score, feedback });
     closeModal();
     toast('Đã lưu nhận xét! ✓');
-    if (_gradingCompositeSubId) {
-      // Reload current composite page
-      const hash = window.location.hash;
-      const m = hash.match(/\/composite\/([^/]+)/);
-      if (m) showCompositeSubmissions({ id: m[1] });
+    if (_gradingCompositeAssignId) {
+      showCompositeSubmissions({ id: _gradingCompositeAssignId });
     }
   } catch (e) {
     btnReset(btn);

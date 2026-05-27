@@ -137,7 +137,10 @@ CREATE TABLE IF NOT EXISTS vocab_sessions (
 CREATE TABLE IF NOT EXISTS student_email_events (
   student_id UUID NOT NULL REFERENCES students(id) ON DELETE CASCADE,
   assignment_id UUID NOT NULL REFERENCES assignments(id) ON DELETE CASCADE,
-  event_type TEXT NOT NULL CHECK (event_type IN ('new_assignment', 'score_released', 'deadline_1day')),
+  event_type TEXT NOT NULL CHECK (
+    event_type IN ('new_assignment', 'deadline_1day', 'score_released')
+    OR event_type LIKE 'score_released:%'
+  ),
   status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'sending', 'sent', 'failed', 'skipped')),
   provider_message_id TEXT,
   last_error TEXT,

@@ -4584,7 +4584,7 @@ async function _silenceCheckThenUpload(idx, file) {
   const rms = await _audioRms(file);
   if (!_speakingSlots[idx]) return; // slot bị xóa trong lúc check
 
-  if (rms < 0.005) {
+  if (rms < 0.002) { // ~-54 dB: bắt silence/near-silence, speech bình thường ~-24dB (RMS 0.06)
     slot.status = 'silent_warning';
     slot._pendingFile = file; // giữ lại để "Nộp dù vậy"
     _renderSpeakingSlots();

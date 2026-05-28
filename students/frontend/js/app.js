@@ -398,6 +398,11 @@ function getHistoryItemScore(assignment) {
     : assignment.overall_score;
 }
 
+function formatBandScore(score) {
+  const value = Number(score);
+  return Number.isFinite(value) ? value.toFixed(1) : '—';
+}
+
 function getHistoryItemHref(assignment) {
   return assignment.skill === 'composite'
     ? `#/composite-result/${assignment.id}`
@@ -771,7 +776,7 @@ function startNotifPolling() {
   });
   _notifPollTimer = setInterval(() => {
     refreshNotifBadge().then(() => syncMissingEmailUI());
-  }, 1800000);
+  }, 86400000);
 }
 
 function stopNotifPolling() {
@@ -2529,7 +2534,7 @@ function historyRow(a) {
       </div>
       <div class="history-row-score">
         ${hasScore
-          ? `<div class="band-pill">${score}</div><div class="band-pill-label">Band</div>`
+          ? `<div class="band-pill">${formatBandScore(score)}</div><div class="band-pill-label">Band</div>`
           : `<div class="band-pill waiting">⏳</div><div class="band-pill-label">Chờ chấm</div>`}
       </div>
     </a>`;
@@ -3054,7 +3059,7 @@ historyRow = function(a) {
       </div>
       <div class="history-row-score">
         ${hasScore
-          ? `<div class="band-pill">${score}</div><div class="band-pill-label">Band</div>`
+          ? `<div class="band-pill">${formatBandScore(score)}</div><div class="band-pill-label">Band</div>`
           : `<div class="band-pill waiting">⏳</div><div class="band-pill-label">Chờ chấm</div>`}
       </div>
     </a>`;

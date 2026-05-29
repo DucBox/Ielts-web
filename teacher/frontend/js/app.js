@@ -858,6 +858,7 @@ function router() {
   const hash = window.location.hash.slice(1) || '/classes';
   try {
     hideTableFloatToolbar();
+    clearTableCellSelection();
     _activeTableCell = null;
 
     // Update active nav link
@@ -4959,6 +4960,19 @@ function bindTableEditorEvents(host) {
       document.addEventListener('pointermove', onMove);
       document.addEventListener('pointerup', onUp, { once: true });
     };
+
+    // Shift+click for multi-cell range selection (merge)
+    table.addEventListener('mousedown', (e) => {
+      const cell = e.target.closest('td,th');
+      if (!cell || !table.contains(cell)) return;
+      if (e.shiftKey && _activeTableCell && _activeTableCell.closest('table') === table) {
+        e.preventDefault();
+        selectTableCellRange(table, _activeTableCell, cell);
+        showTableFloatToolbar(table);
+      } else if (!e.shiftKey) {
+        clearTableCellSelection();
+      }
+    });
   });
 }
 
@@ -5159,6 +5173,7 @@ function renderContentComposer() {
 
 let _formatSelListenerBound = false;
 let _activeTableCell = null;
+let _selectedTableCells = [];
 function bindFormatToolbarStateUpdater() {
   if (_formatSelListenerBound) return;
   _formatSelListenerBound = true;
@@ -5198,7 +5213,7 @@ function updateFormatToolbarState() {
     _activeTableCell = null;
   }
   if (_activeTableCell) showTableFloatToolbar(_activeTableCell.closest('table'));
-  else hideTableFloatToolbar();
+  else { clearTableCellSelection(); hideTableFloatToolbar(); }
 }
 
 function applyFormat(cmd) {
@@ -5293,8 +5308,8 @@ function ensureTableFloatToolbar() {
   const tb = document.createElement('div');
   tb.id = 'editor-table-float-toolbar';
   tb.className = 'editor-table-float-toolbar';
-  const btn = (title, onclick, danger, svgPath) =>
-    `<button class="tft-btn${danger ? ' tft-danger' : ''}" title="${title}" onmousedown="event.preventDefault()" onclick="${onclick}"><svg width="15" height="15" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">${svgPath}</svg></button>`;
+  const btn = (title, onclick, danger, svgPath, id) =>
+    `<button${id ? ` id="${id}"` : ''} class="tft-btn${danger ? ' tft-danger' : ''}" title="${title}" onmousedown="event.preventDefault()" onclick="${onclick}"><svg width="15" height="15" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">${svgPath}</svg></button>`;
   tb.innerHTML =
     btn('Thêm hàng phía trên', 'tableAddRowAbove()', false,
       '<rect x="1" y="6" width="12" height="7" rx="1" stroke="currentColor" stroke-width="1.4"/><path d="M7 1v4M5 3h4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>') +
@@ -5308,7 +5323,18 @@ function ensureTableFloatToolbar() {
     btn('Thêm cột bên phải', 'tableAddColRight()', false,
       '<rect x="1" y="1" width="8" height="12" rx="1" stroke="currentColor" stroke-width="1.4"/><path d="M13 7h-3M12 5v4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>') +
     btn('Xóa cột hiện tại', 'tableDeleteCol()', true,
-      '<rect x="4" y="1" width="6" height="12" rx="1" stroke="currentColor" stroke-width="1.4"/><path d="M6 7h2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>');
+      '<rect x="4" y="1" width="6" height="12" rx="1" stroke="currentColor" stroke-width="1.4"/><path d="M6 7h2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>') +
+    '<div class="tft-sep" id="tft-merge-sep" style="display:none"></div>' +
+    btn('Gộp ô đã chọn (Shift+click để chọn nhiều ô)', 'tableMergeCells()', false,
+      '<rect x="1" y="1" width="5" height="5" rx=".8" stroke="currentColor" stroke-width="1.3"/><rect x="8" y="1" width="5" height="5" rx=".8" stroke="currentColor" stroke-width="1.3"/><rect x="1" y="8" width="5" height="5" rx=".8" stroke="currentColor" stroke-width="1.3"/><rect x="8" y="8" width="5" height="5" rx=".8" stroke="currentColor" stroke-width="1.3"/><path d="M5 5L9 9M9 5L5 9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>',
+      'tft-merge-btn') +
+    btn('Tách ô', 'tableSplitCell()', false,
+      '<rect x="1" y="1" width="12" height="12" rx="1" stroke="currentColor" stroke-width="1.3"/><path d="M7 1v12M1 7h12" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>',
+      'tft-split-btn') +
+    '<div class="tft-sep"></div>' +
+    btn('Kiểu viền bảng', 'toggleTableBorderPicker()', false,
+      '<rect x="1" y="1" width="12" height="12" rx="1" stroke="currentColor" stroke-width="1.3"/><path d="M5 1v12M9 1v12M1 5h12M1 9h12" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>',
+      'tft-border-btn');
   document.body.appendChild(tb);
 }
 
@@ -5321,6 +5347,16 @@ function showTableFloatToolbar(table) {
   tb.style.top = (rect.top - 44 + window.scrollY) + 'px';
   tb.style.position = 'absolute';
   tb.style.display = 'flex';
+
+  const mergeBtn = document.getElementById('tft-merge-btn');
+  const splitBtn = document.getElementById('tft-split-btn');
+  const mergeSep = document.getElementById('tft-merge-sep');
+  const canMerge = _selectedTableCells.length > 1;
+  const canSplit = _selectedTableCells.length <= 1 && _activeTableCell &&
+    ((_activeTableCell.colSpan || 1) > 1 || (_activeTableCell.rowSpan || 1) > 1);
+  if (mergeBtn) mergeBtn.style.display = canMerge ? '' : 'none';
+  if (splitBtn) splitBtn.style.display = canSplit ? '' : 'none';
+  if (mergeSep) mergeSep.style.display = (canMerge || canSplit) ? '' : 'none';
 }
 
 function hideTableFloatToolbar() {
@@ -5480,6 +5516,207 @@ function tableDeleteCol() {
   _activeTableCell = null;
   hideTableFloatToolbar();
   syncContentBlocksFromEditor();
+}
+
+// ── CELL RANGE SELECTION ─────────────────────────────────────────────────────
+function clearTableCellSelection() {
+  _selectedTableCells.forEach(c => c.classList.remove('is-td-selected'));
+  _selectedTableCells = [];
+}
+
+function selectTableCellRange(table, startCell, endCell) {
+  const rows = Array.from(table.querySelectorAll('tr'));
+  function getCellPos(cell) {
+    const row = cell.parentElement;
+    const rowIdx = rows.indexOf(row);
+    const cells = Array.from(row.querySelectorAll('td,th'));
+    return { row: rowIdx, col: cells.indexOf(cell) };
+  }
+  const sp = getCellPos(startCell);
+  const ep = getCellPos(endCell);
+  if (sp.row < 0 || ep.row < 0 || sp.col < 0 || ep.col < 0) return;
+  const minRow = Math.min(sp.row, ep.row), maxRow = Math.max(sp.row, ep.row);
+  const minCol = Math.min(sp.col, ep.col), maxCol = Math.max(sp.col, ep.col);
+  document.querySelectorAll('.editor-table .is-td-selected').forEach(c => c.classList.remove('is-td-selected'));
+  _selectedTableCells = [];
+  for (let r = minRow; r <= maxRow; r++) {
+    const rowCells = Array.from(rows[r].querySelectorAll('td,th'));
+    for (let c = minCol; c <= maxCol; c++) {
+      if (rowCells[c]) { rowCells[c].classList.add('is-td-selected'); _selectedTableCells.push(rowCells[c]); }
+    }
+  }
+}
+
+// ── MERGE CELLS ───────────────────────────────────────────────────────────────
+function tableMergeCells() {
+  if (_selectedTableCells.length < 2) return;
+  const table = _selectedTableCells[0].closest('table');
+  if (!table) return;
+  const rows = Array.from(table.querySelectorAll('tr'));
+  const positions = _selectedTableCells.map(cell => {
+    const row = cell.parentElement;
+    const rowIdx = rows.indexOf(row);
+    const colIdx = Array.from(row.querySelectorAll('td,th')).indexOf(cell);
+    return { cell, rowIdx, colIdx };
+  });
+  const minRow = Math.min(...positions.map(p => p.rowIdx));
+  const maxRow = Math.max(...positions.map(p => p.rowIdx));
+  const minCol = Math.min(...positions.map(p => p.colIdx));
+  const maxCol = Math.max(...positions.map(p => p.colIdx));
+
+  const firstCell = Array.from(rows[minRow].querySelectorAll('td,th'))[minCol];
+  if (!firstCell) return;
+
+  const contents = _selectedTableCells
+    .map(c => c.innerHTML.replace(/^(<br\s*\/?>|\s)+|(<br\s*\/?>|\s)+$/gi, '').trim())
+    .filter(c => c && c !== '<br>');
+
+  firstCell.colSpan = maxCol - minCol + 1;
+  firstCell.rowSpan = maxRow - minRow + 1;
+  firstCell.innerHTML = contents.join(' ') || '<br>';
+
+  _selectedTableCells.forEach(cell => { if (cell !== firstCell) cell.remove(); });
+  clearTableCellSelection();
+  _activeTableCell = firstCell;
+  syncContentBlocksFromEditor();
+  showTableFloatToolbar(table);
+}
+
+// ── SPLIT CELL ────────────────────────────────────────────────────────────────
+function tableSplitCell() {
+  const cell = _activeTableCell;
+  if (!cell) return;
+  const colSpan = cell.colSpan || 1;
+  const rowSpan = cell.rowSpan || 1;
+  if (colSpan === 1 && rowSpan === 1) return;
+  const table = cell.closest('table');
+  const rows = Array.from(table.querySelectorAll('tr'));
+  const row = cell.parentElement;
+  const rowIdx = rows.indexOf(row);
+  const colIdx = Array.from(row.querySelectorAll('td,th')).indexOf(cell);
+  const borderStyle = cell.style.border || '';
+
+  cell.colSpan = 1;
+  cell.rowSpan = 1;
+
+  for (let c = 1; c < colSpan; c++) {
+    const newCell = document.createElement('td');
+    newCell.innerHTML = '<br>';
+    if (borderStyle) newCell.style.border = borderStyle;
+    row.insertBefore(newCell, cell.nextSibling);
+  }
+
+  for (let r = 1; r < rowSpan; r++) {
+    const targetRow = rows[rowIdx + r];
+    if (!targetRow) continue;
+    const targetCells = Array.from(targetRow.querySelectorAll('td,th'));
+    const insertBefore = targetCells[colIdx] || null;
+    for (let c = 0; c < colSpan; c++) {
+      const newCell = document.createElement('td');
+      newCell.innerHTML = '<br>';
+      if (borderStyle) newCell.style.border = borderStyle;
+      targetRow.insertBefore(newCell, insertBefore);
+    }
+  }
+
+  syncContentBlocksFromEditor();
+  showTableFloatToolbar(table);
+}
+
+// ── TABLE BORDER STYLE ────────────────────────────────────────────────────────
+function toggleTableBorderPicker() {
+  let picker = document.getElementById('editor-table-border-picker');
+  if (picker && picker.style.display !== 'none') { hideTableBorderPicker(); return; }
+
+  if (!picker) {
+    picker = document.createElement('div');
+    picker.id = 'editor-table-border-picker';
+    picker.className = 'editor-table-border-picker';
+    picker.innerHTML =
+      '<div class="tbp-label">Kiểu viền bảng</div>' +
+      '<div class="tbp-options">' +
+        '<button class="tbp-btn" title="Tất cả viền" onmousedown="event.preventDefault()" onclick="tableApplyBorderStyle(\'all\')">' +
+          '<svg width="28" height="28" viewBox="0 0 28 28" fill="none"><rect x="3" y="3" width="22" height="22" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M3 10h22M3 18h22M10 3v22M18 3v22" stroke="currentColor" stroke-width="1.5"/></svg>' +
+          '<span>Tất cả viền</span>' +
+        '</button>' +
+        '<button class="tbp-btn" title="Không viền" onmousedown="event.preventDefault()" onclick="tableApplyBorderStyle(\'none\')">' +
+          '<svg width="28" height="28" viewBox="0 0 28 28" fill="none"><rect x="3" y="3" width="22" height="22" rx="2" stroke="currentColor" stroke-width="1.5" stroke-dasharray="3 2"/></svg>' +
+          '<span>Không viền</span>' +
+        '</button>' +
+        '<button class="tbp-btn" title="Chỉ viền ngoài" onmousedown="event.preventDefault()" onclick="tableApplyBorderStyle(\'outer\')">' +
+          '<svg width="28" height="28" viewBox="0 0 28 28" fill="none"><rect x="3" y="3" width="22" height="22" rx="2" stroke="currentColor" stroke-width="2"/></svg>' +
+          '<span>Viền ngoài</span>' +
+        '</button>' +
+        '<button class="tbp-btn" title="Chỉ viền trong" onmousedown="event.preventDefault()" onclick="tableApplyBorderStyle(\'inner\')">' +
+          '<svg width="28" height="28" viewBox="0 0 28 28" fill="none"><rect x="3" y="3" width="22" height="22" rx="2" stroke="currentColor" stroke-width="1.5" stroke-dasharray="3 2"/><path d="M3 10h22M3 18h22M10 3v22M18 3v22" stroke="currentColor" stroke-width="1.5"/></svg>' +
+          '<span>Viền trong</span>' +
+        '</button>' +
+      '</div>';
+    document.body.appendChild(picker);
+  }
+
+  const btn = document.getElementById('tft-border-btn');
+  if (btn) {
+    const rect = btn.getBoundingClientRect();
+    picker.style.left = rect.left + 'px';
+    picker.style.top = (rect.bottom + 6 + window.scrollY) + 'px';
+  }
+  picker.style.display = 'block';
+
+  setTimeout(() => {
+    const close = (e) => {
+      if (!picker.contains(e.target) && e.target.id !== 'tft-border-btn') {
+        hideTableBorderPicker();
+        document.removeEventListener('mousedown', close);
+      }
+    };
+    document.addEventListener('mousedown', close);
+  }, 0);
+}
+
+function hideTableBorderPicker() {
+  const picker = document.getElementById('editor-table-border-picker');
+  if (picker) picker.style.display = 'none';
+}
+
+function tableApplyBorderStyle(style) {
+  const cell = _activeTableCell || _selectedTableCells[0];
+  if (!cell) return;
+  const table = cell.closest('table');
+  if (!table) return;
+  const rows = Array.from(table.querySelectorAll('tr'));
+  const totalRows = rows.length;
+  const brd = '1px solid #cbd5e1';
+
+  rows.forEach((row, rowIdx) => {
+    const rowCells = Array.from(row.querySelectorAll('td,th'));
+    const totalCols = rowCells.length;
+    rowCells.forEach((c, colIdx) => {
+      c.style.removeProperty('border');
+      c.style.removeProperty('border-top');
+      c.style.removeProperty('border-right');
+      c.style.removeProperty('border-bottom');
+      c.style.removeProperty('border-left');
+      if (style === 'all') {
+        c.style.border = brd;
+      } else if (style === 'none') {
+        c.style.border = 'none';
+      } else if (style === 'outer') {
+        c.style.borderTop    = rowIdx === 0             ? brd : 'none';
+        c.style.borderBottom = rowIdx === totalRows - 1 ? brd : 'none';
+        c.style.borderLeft   = colIdx === 0             ? brd : 'none';
+        c.style.borderRight  = colIdx === totalCols - 1 ? brd : 'none';
+      } else if (style === 'inner') {
+        c.style.borderTop    = rowIdx === 0             ? 'none' : brd;
+        c.style.borderBottom = rowIdx === totalRows - 1 ? 'none' : brd;
+        c.style.borderLeft   = colIdx === 0             ? 'none' : brd;
+        c.style.borderRight  = colIdx === totalCols - 1 ? 'none' : brd;
+      }
+    });
+  });
+
+  syncContentBlocksFromEditor();
+  hideTableBorderPicker();
 }
 
 function applyFormatColor(color) {

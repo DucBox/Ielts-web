@@ -1203,6 +1203,58 @@ tbody tr:hover { background: var(--bg-surface-alt); }
 .tft-danger:hover { background: #fee2e2 !important; color: #dc2626 !important; }
 .tft-sep { width: 1px; height: 20px; background: var(--gray-200); margin: 0 3px; flex-shrink: 0; }
 
+/* ── CELL RANGE SELECTION ─────────────────────────────────── */
+.content-composer-host .editor-table td.is-td-selected,
+.content-composer-host .editor-table th.is-td-selected {
+  background: #dbeafe !important;
+  outline: 2px solid #3b82f6;
+  outline-offset: -2px;
+}
+
+/* ── TABLE BORDER PICKER ──────────────────────────────────── */
+.editor-table-border-picker {
+  position: absolute;
+  background: #fff;
+  border: 1px solid var(--gray-200);
+  border-radius: 10px;
+  padding: 10px;
+  box-shadow: 0 4px 16px rgba(0,0,0,.12);
+  z-index: 2001;
+  min-width: 196px;
+}
+.tbp-label {
+  font-size: 10px;
+  color: var(--gray-500);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  margin-bottom: 8px;
+}
+.tbp-options {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+.tbp-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 6px;
+  border: 1px solid var(--gray-200);
+  border-radius: 7px;
+  background: #fff;
+  cursor: pointer;
+  font-size: 10px;
+  color: var(--gray-600);
+  transition: background .1s, border-color .1s, color .1s;
+}
+.tbp-btn:hover {
+  background: #eff6ff;
+  border-color: #3b82f6;
+  color: #1d4ed8;
+}
+
 .mixed-content-image-wrap {
   position: relative;
   margin: 0;
@@ -4128,9 +4180,28 @@ tr[draggable="true"]:active { cursor: grabbing; }
 [data-theme="dark"] .content-composer-preview-body,
 [data-theme="dark"] .fmt-select,
 [data-theme="dark"] .fmt-table-picker,
-[data-theme="dark"] .editor-table-float-toolbar {
+[data-theme="dark"] .editor-table-float-toolbar,
+[data-theme="dark"] .editor-table-border-picker {
   background: var(--surface);
   border-color: var(--border);
+}
+
+[data-theme="dark"] .tbp-btn {
+  background: var(--surface);
+  border-color: var(--border);
+  color: var(--text-strong);
+}
+[data-theme="dark"] .tbp-btn:hover {
+  background: var(--bg-subtle);
+  border-color: #60a5fa;
+  color: #bfdbfe;
+}
+[data-theme="dark"] .tbp-label { color: var(--text-muted); }
+
+[data-theme="dark"] .content-composer-host .editor-table td.is-td-selected,
+[data-theme="dark"] .content-composer-host .editor-table th.is-td-selected {
+  background: rgba(59,130,246,.22) !important;
+  outline-color: #60a5fa;
 }
 
 [data-theme="dark"] .content-composer-toolbar,

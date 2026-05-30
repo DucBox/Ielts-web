@@ -4862,7 +4862,7 @@ function syncContentBlocksFromEditor() {
       if (tbl) { tbl.style.width = wrap.style.width || '100%'; wrap.replaceWith(tbl.cloneNode(true)); }
       else wrap.remove();
     });
-    clone.querySelectorAll('.editor-table-resize-handle').forEach(el => el.remove());
+    clone.querySelectorAll('.editor-table-resize-handle, .tbl-col-resize-handle, .tbl-row-resize-handle').forEach(el => el.remove());
     const html = clone.innerHTML.replace(/^(<br\s*\/?>)+|(<br\s*\/?>)+$/gi, '').trim();
     if (html) blocks.push({ id: nextContentBlockId(), type: 'text', html });
     tmpDiv = document.createElement('div');
@@ -4960,6 +4960,8 @@ function bindTableEditorEvents(host) {
       document.addEventListener('pointermove', onMove);
       document.addEventListener('pointerup', onUp, { once: true });
     };
+
+    injectTableResizeHandles(table);
 
     // Shift+click for multi-cell range selection (merge)
     table.addEventListener('mousedown', (e) => {
@@ -5445,26 +5447,125 @@ function getTableColCount(table) {
   return max;
 }
 
+// ── COL/ROW RESIZE ───────────────────────────────────────────────────────────
+function injectTableResizeHandles(table) {
+  table.querySelectorAll('.tbl-col-resize-handle, .tbl-row-resize-handle').forEach(h => h.remove());
+
+  const colCount = getTableColCount(table);
+  let cg = table.querySelector('colgroup');
+  if (!cg) {
+    cg = document.createElement('colgroup');
+    const firstRow = table.querySelector('tr');
+    const firstCells = firstRow ? Array.from(firstRow.querySelectorAll('td,th')) : [];
+    const hasInlineWidths = firstCells.length === colCount && firstCells.every(c => c.style.width);
+    for (let i = 0; i < colCount; i++) {
+      const col = document.createElement('col');
+      if (hasInlineWidths) {
+        col.style.width = firstCells[i].style.width;
+      } else {
+        const w = Math.floor(100 / colCount);
+        col.style.width = (i === colCount - 1 ? 100 - w * (colCount - 1) : w) + '%';
+      }
+      cg.appendChild(col);
+    }
+    table.prepend(cg);
+  }
+  const cols = Array.from(cg.querySelectorAll('col'));
+
+  table.querySelectorAll('tr').forEach(row => {
+    const cells = Array.from(row.querySelectorAll('td,th'));
+    let colPos = 0;
+    cells.forEach((cell, idx) => {
+      const span = cell.colSpan || 1;
+      const isLastInRow = idx === cells.length - 1;
+
+      if (!isLastInRow) {
+        const rightColIdx = colPos + span - 1;
+        const h = document.createElement('div');
+        h.className = 'tbl-col-resize-handle';
+        h.onpointerdown = (e) => {
+          e.preventDefault(); e.stopPropagation();
+          if (rightColIdx + 1 >= cols.length) return;
+          const tableW = table.getBoundingClientRect().width || 1;
+          const startX = e.clientX;
+          const leftCol = cols[rightColIdx];
+          const rightCol = cols[rightColIdx + 1];
+          const startL = parseFloat(leftCol.style.width) || (100 / colCount);
+          const startR = parseFloat(rightCol.style.width) || (100 / colCount);
+          h.classList.add('is-dragging');
+          document.body.style.cursor = 'col-resize';
+          const onMove = (ev) => {
+            const dPct = ((ev.clientX - startX) / tableW) * 100;
+            leftCol.style.width = Math.max(3, startL + dPct) + '%';
+            rightCol.style.width = Math.max(3, startR - dPct) + '%';
+          };
+          const onUp = () => {
+            h.classList.remove('is-dragging');
+            document.body.style.cursor = '';
+            document.removeEventListener('pointermove', onMove);
+            document.removeEventListener('pointerup', onUp);
+            syncContentBlocksFromEditor();
+          };
+          document.addEventListener('pointermove', onMove);
+          document.addEventListener('pointerup', onUp, { once: true });
+        };
+        cell.appendChild(h);
+      }
+
+      if (idx === 0) {
+        const h = document.createElement('div');
+        h.className = 'tbl-row-resize-handle';
+        h.onpointerdown = (e) => {
+          e.preventDefault(); e.stopPropagation();
+          const startY = e.clientY;
+          const startH = row.getBoundingClientRect().height;
+          h.classList.add('is-dragging');
+          document.body.style.cursor = 'row-resize';
+          const onMove = (ev) => {
+            row.style.height = Math.max(24, startH + (ev.clientY - startY)) + 'px';
+          };
+          const onUp = () => {
+            h.classList.remove('is-dragging');
+            document.body.style.cursor = '';
+            document.removeEventListener('pointermove', onMove);
+            document.removeEventListener('pointerup', onUp);
+            syncContentBlocksFromEditor();
+          };
+          document.addEventListener('pointermove', onMove);
+          document.addEventListener('pointerup', onUp, { once: true });
+        };
+        cell.appendChild(h);
+      }
+
+      colPos += span;
+    });
+  });
+}
+
 function tableAddRowAbove() {
   if (!_activeTableCell) return;
   const row = _activeTableCell.closest('tr');
   if (!row) return;
-  const colCount = getTableColCount(row.closest('table'));
+  const table = row.closest('table');
+  const colCount = getTableColCount(table);
   const newRow = document.createElement('tr');
   for (let i = 0; i < colCount; i++) { const td = document.createElement('td'); td.innerHTML = '<br>'; newRow.appendChild(td); }
   row.parentNode.insertBefore(newRow, row);
   syncContentBlocksFromEditor();
+  injectTableResizeHandles(table);
 }
 
 function tableAddRowBelow() {
   if (!_activeTableCell) return;
   const row = _activeTableCell.closest('tr');
   if (!row) return;
-  const colCount = getTableColCount(row.closest('table'));
+  const table = row.closest('table');
+  const colCount = getTableColCount(table);
   const newRow = document.createElement('tr');
   for (let i = 0; i < colCount; i++) { const td = document.createElement('td'); td.innerHTML = '<br>'; newRow.appendChild(td); }
   row.parentNode.insertBefore(newRow, row.nextSibling);
   syncContentBlocksFromEditor();
+  injectTableResizeHandles(table);
 }
 
 function tableDeleteRow() {
@@ -5473,7 +5574,8 @@ function tableDeleteRow() {
   if (!row) return;
   const table = row.closest('table');
   row.remove();
-  if (table && !table.querySelectorAll('tr').length) table.remove();
+  if (table && !table.querySelectorAll('tr').length) { table.remove(); }
+  else if (table) injectTableResizeHandles(table);
   _activeTableCell = null;
   hideTableFloatToolbar();
   syncContentBlocksFromEditor();
@@ -5493,7 +5595,10 @@ function tableAddColLeft() {
     newCell.innerHTML = '<br>';
     tr.insertBefore(newCell, ref);
   });
+  const cg = table.querySelector('colgroup');
+  if (cg) { const col = document.createElement('col'); col.style.width = '10%'; cg.insertBefore(col, cg.children[colIndex]); redistributeColWidths(cg); }
   syncContentBlocksFromEditor();
+  injectTableResizeHandles(table);
 }
 
 function tableAddColRight() {
@@ -5510,7 +5615,10 @@ function tableAddColRight() {
     newCell.innerHTML = '<br>';
     tr.insertBefore(newCell, ref.nextSibling);
   });
+  const cg = table.querySelector('colgroup');
+  if (cg) { const col = document.createElement('col'); col.style.width = '10%'; cg.insertBefore(col, cg.children[colIndex + 1] || null); redistributeColWidths(cg); }
   syncContentBlocksFromEditor();
+  injectTableResizeHandles(table);
 }
 
 function tableDeleteCol() {
@@ -5523,9 +5631,20 @@ function tableDeleteCol() {
     const cells = tr.querySelectorAll('td,th');
     if (cells[colIndex]) cells[colIndex].remove();
   });
+  const cg = table.querySelector('colgroup');
+  if (cg && cg.children[colIndex]) { cg.children[colIndex].remove(); redistributeColWidths(cg); }
   _activeTableCell = null;
   hideTableFloatToolbar();
   syncContentBlocksFromEditor();
+  injectTableResizeHandles(table);
+}
+
+function redistributeColWidths(cg) {
+  const cols = Array.from(cg.querySelectorAll('col'));
+  if (!cols.length) return;
+  const total = cols.reduce((s, c) => s + (parseFloat(c.style.width) || 0), 0) || 100;
+  const scale = 100 / total;
+  cols.forEach(c => { c.style.width = ((parseFloat(c.style.width) || 0) * scale).toFixed(2) + '%'; });
 }
 
 // ── CELL RANGE SELECTION ─────────────────────────────────────────────────────
@@ -5589,6 +5708,7 @@ function tableMergeCells() {
   clearTableCellSelection();
   _activeTableCell = firstCell;
   syncContentBlocksFromEditor();
+  injectTableResizeHandles(table);
   showTableFloatToolbar(table);
 }
 
@@ -5630,6 +5750,7 @@ function tableSplitCell() {
   }
 
   syncContentBlocksFromEditor();
+  injectTableResizeHandles(table);
   showTableFloatToolbar(table);
 }
 

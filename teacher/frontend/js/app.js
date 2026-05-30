@@ -5435,11 +5435,21 @@ function insertTable(rows, cols) {
 }
 
 // ── TABLE ROW / COLUMN OPERATIONS ────────────────────────────────────────────
+function getTableColCount(table) {
+  let max = 0;
+  table.querySelectorAll('tr').forEach(tr => {
+    let count = 0;
+    tr.querySelectorAll('td,th').forEach(cell => { count += (cell.colSpan || 1); });
+    if (count > max) max = count;
+  });
+  return max;
+}
+
 function tableAddRowAbove() {
   if (!_activeTableCell) return;
   const row = _activeTableCell.closest('tr');
   if (!row) return;
-  const colCount = row.closest('table').querySelector('tr').querySelectorAll('td,th').length;
+  const colCount = getTableColCount(row.closest('table'));
   const newRow = document.createElement('tr');
   for (let i = 0; i < colCount; i++) { const td = document.createElement('td'); td.innerHTML = '<br>'; newRow.appendChild(td); }
   row.parentNode.insertBefore(newRow, row);
@@ -5450,7 +5460,7 @@ function tableAddRowBelow() {
   if (!_activeTableCell) return;
   const row = _activeTableCell.closest('tr');
   if (!row) return;
-  const colCount = row.closest('table').querySelector('tr').querySelectorAll('td,th').length;
+  const colCount = getTableColCount(row.closest('table'));
   const newRow = document.createElement('tr');
   for (let i = 0; i < colCount; i++) { const td = document.createElement('td'); td.innerHTML = '<br>'; newRow.appendChild(td); }
   row.parentNode.insertBefore(newRow, row.nextSibling);

@@ -1213,6 +1213,7 @@ async function showClassDetail({ id }) {
     _statsSkillFilter = '';
     _statsStatusFilter = '';
     _statsModeFilter = '';
+    _statsScaleFilter = 'ielts';
     _assignTableSortCol = '';
     _assignTableSortDir = 'desc';
     _assignListSortCol = '';
@@ -1244,6 +1245,7 @@ let _statsData = null;
 let _statsSkillFilter = '';
 let _statsStatusFilter = '';
 let _statsModeFilter = '';
+let _statsScaleFilter = 'ielts'; // default: IELTS Test
 let _statsSortCol = '';
 let _statsSortDir = 'desc';
 let _statsAllScoredSubs = []; // flat list of all scored submissions with student_name
@@ -1283,6 +1285,7 @@ async function loadStatsTab(classId) {
     _statsSkillFilter = '';
     _statsStatusFilter = '';
     _statsModeFilter = '';
+    _statsScaleFilter = 'ielts';
     _statsSortCol = '';
     _statsSortDir = 'desc';
     _closedAssignsExpanded = false;
@@ -1378,6 +1381,7 @@ function rebuildTrendChart() {
   const chronoAssigns = [...per_assignment].reverse().filter(a => {
     if (skill && a.skill !== skill) return false;
     if (_statsModeFilter && a.mode !== _statsModeFilter) return false;
+    if (_statsScaleFilter && (a.scoring_scale || '10') !== _statsScaleFilter) return false;
     return true;
   });
 
@@ -1448,6 +1452,7 @@ function renderStatsTab(container, data) {
   const sf = _statsSkillFilter;
   const stf = _statsStatusFilter;
   const mf = _statsModeFilter;
+  const scf = _statsScaleFilter;
 
   // Filter assignments by all active filters
   const filteredAssignments = per_assignment.filter(a => {
@@ -1455,6 +1460,7 @@ function renderStatsTab(container, data) {
     if (stf === 'active' && !a.is_active) return false;
     if (stf === 'closed' && a.is_active) return false;
     if (mf && a.mode !== mf) return false;
+    if (scf && (a.scoring_scale || '10') !== scf) return false;
     return true;
   });
   const filteredAssignmentIds = new Set(filteredAssignments.map(a => a.id));
@@ -1694,6 +1700,16 @@ function renderStatsTab(container, data) {
   // Filter bar with Refresh button
   const filterHtml = `
     <div class="stats-filter-bar">
+      <div class="stats-filter-group">
+        <span class="stats-filter-label">Loại bài:</span>
+        <div class="stats-filter-pills">
+          ${[['ielts', '🎯 IELTS Test'], ['10', '📊 Practice Test']].map(([v, l]) => `
+            <button class="stats-filter-pill${_statsScaleFilter === v ? ' active' : ''}"
+              onclick="_statsScaleFilter='${v}';applyStatsFilter()">
+              ${l}
+            </button>`).join('')}
+        </div>
+      </div>
       <div class="stats-filter-group">
         <span class="stats-filter-label">Kỹ năng:</span>
         <div class="stats-filter-pills">
@@ -1962,6 +1978,7 @@ function renderStatsTab(container, data) {
       const initAssigns = [...per_assignment].reverse().filter(a => {
         if (_statsTrendSkill && a.skill !== _statsTrendSkill) return false;
         if (_statsModeFilter && a.mode !== _statsModeFilter) return false;
+        if (_statsScaleFilter && (a.scoring_scale || '10') !== _statsScaleFilter) return false;
         return true;
       });
       const trendLabels = initAssigns.map(a => a.title.length > 18 ? a.title.slice(0,16) + '…' : a.title);
@@ -3586,6 +3603,31 @@ async function openAssignModal(classId, className, preSelectedId = null) {
         <span style="color:var(--gray-400);font-size:13px">phút — hết giờ tự động nộp bài</span>
       </div>
     </div>
+    <div class="form-group" id="assign-scale-group">
+      <label class="form-label">Thang điểm <span class="form-hint-inline">(Reading &amp; Listening)</span></label>
+      <div class="assign-mode-options">
+        <label class="assign-mode-option">
+          <input type="radio" name="assign-scale" value="ielts" checked />
+          <span class="assign-mode-label">
+            <span class="assign-mode-icon">🎯</span>
+            <span>
+              <strong>IELTS Test</strong>
+              <span class="assign-mode-desc">Bảng quy đổi IELTS chuẩn (40 câu → band 0–9)</span>
+            </span>
+          </span>
+        </label>
+        <label class="assign-mode-option">
+          <input type="radio" name="assign-scale" value="10" />
+          <span class="assign-mode-label">
+            <span class="assign-mode-icon">📊</span>
+            <span>
+              <strong>Practice Test</strong>
+              <span class="assign-mode-desc">Thang điểm 10 (đúng/tổng × 10)</span>
+            </span>
+          </span>
+        </label>
+      </div>
+    </div>
     <div class="modal-footer">
       <button class="btn btn-outline" onclick="closeModal()">Hủy</button>
       <button class="btn btn-primary" onclick="submitAssign(this)">Giao bài</button>
@@ -3595,6 +3637,9 @@ async function openAssignModal(classId, className, preSelectedId = null) {
     radio.addEventListener('change', _syncAssignTimeLimitVisibility);
   });
   _syncAssignTimeLimitVisibility();
+  // Hide scale group until a reading/listening question is selected
+  const scaleGroup = $('#assign-scale-group');
+  if (scaleGroup) scaleGroup.style.display = 'none';
 
   try {
     _questions = await api.get('/questions');
@@ -3649,7 +3694,7 @@ function renderAssignPicker(skillFilter) {
 
   picker.innerHTML = sortPills + filtered.map(q => `
     <div class="question-picker-item ${_selectedQuestionId === q.id ? 'selected' : ''}"
-      onclick="selectQuestion('${q.id}', this)">
+      data-skill="${q.skill}" onclick="selectQuestion('${q.id}', this)">
       <input type="radio" name="assign-q" value="${q.id}"
         ${_selectedQuestionId === q.id ? 'checked' : ''} />
       <div>
@@ -3721,6 +3766,9 @@ function selectQuestion(id, el) {
   document.querySelectorAll('.question-picker-item').forEach(i => i.classList.remove('selected'));
   el.classList.add('selected');
   el.querySelector('input[type=radio]').checked = true;
+  const skill = el.dataset.skill || '';
+  const scaleGroup = $('#assign-scale-group');
+  if (scaleGroup) scaleGroup.style.display = (skill === 'reading' || skill === 'listening') ? '' : 'none';
 }
 
 function _syncAssignTimeLimitVisibility() {
@@ -3738,6 +3786,8 @@ async function submitAssign(btn) {
   const mode = modeEl?.value === 'practice' ? 'practice' : 'exam';
   const timeLimitRaw = $('#assign-time-limit')?.value.trim();
   const timeLimitMinutes = (mode === 'exam' && timeLimitRaw) ? Number(timeLimitRaw) : null;
+  const scaleEl = document.querySelector('input[name="assign-scale"]:checked');
+  const scoringScale = scaleEl?.value || null; // null = backend auto-detect
 
   if (!title) { toast('Vui lòng nhập tên bài tập', 'error'); return; }
   if (!_selectedQuestionId) { toast('Vui lòng chọn một đề từ kho', 'error'); return; }
@@ -3751,6 +3801,7 @@ async function submitAssign(btn) {
       deadline:    deadline || null,
       mode,
       time_limit_minutes: timeLimitMinutes,
+      scoring_scale: scoringScale,
     });
     closeModal();
     toast('Giao bài thành công! 🎉');

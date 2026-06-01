@@ -2020,14 +2020,19 @@ function getGradedAssignments(assignments) {
   );
 }
 
+// Stats only count IELTS-scale assignments (band 0–9)
+function getIeltsGradedAssignments(assignments) {
+  return getGradedAssignments(assignments).filter(a => (a.scoring_scale || '10') === 'ielts');
+}
+
 function calculateOverallAverage(assignments) {
-  const graded = getGradedAssignments(assignments).map(a => Number(a.overall_score)).filter(Number.isFinite);
+  const graded = getIeltsGradedAssignments(assignments).map(a => Number(a.overall_score)).filter(Number.isFinite);
   if (!graded.length) return null;
   return graded.reduce((sum, score) => sum + score, 0) / graded.length;
 }
 
 function getSkillGradedAssignments(assignments, skill) {
-  return getGradedAssignments(assignments)
+  return getIeltsGradedAssignments(assignments)
     .filter(a => a.skill === skill)
     .sort((a, b) => new Date(a.submitted_at || a.created_at) - new Date(b.submitted_at || b.created_at));
 }
@@ -2705,8 +2710,9 @@ function renderProfile(assignments) {
     ? (allScores.reduce((s, v) => s + v, 0) / allScores.length).toFixed(1) : '—';
 
   const SKILLS = ['reading', 'listening', 'writing', 'speaking'];
+  const ieltsGraded = getIeltsGradedAssignments(assignments);
   const skillStats = SKILLS.map(sk => {
-    const subs = gradedAssignments.filter(a => a.skill === sk)
+    const subs = ieltsGraded.filter(a => a.skill === sk)
       .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
     const scores = subs.map(a => Number(a.overall_score)).filter(v => v > 0);
     const avg  = scores.length ? scores.reduce((s, v) => s + v, 0) / scores.length : null;

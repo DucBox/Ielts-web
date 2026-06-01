@@ -694,6 +694,7 @@ async function loadStudentAssignmentAccess(sql, assignmentId, studentId) {
       a.is_active,
       a.mode,
       a.time_limit_minutes,
+      a.scoring_scale,
       q.skill,
       q.title AS question_title,
       q.content_text,
@@ -1399,7 +1400,32 @@ async function enqueueDeadline1DayEmails(sql) {
 
 // ─── Auto-grade ───────────────────────────────────────────────────────────────
 
-function autoGrade(studentAnswers, questionsData) {
+const IELTS_BAND_TABLE = [
+  [0, 0.0], [1, 1.0], [2, 2.0],
+  [3, 2.5], [4, 2.5],
+  [5, 3.0], [6, 3.0],
+  [7, 3.5], [8, 3.5], [9, 3.5],
+  [10, 4.0], [11, 4.0], [12, 4.0],
+  [13, 4.5], [14, 4.5], [15, 4.5],
+  [16, 5.0], [17, 5.0],
+  [18, 5.5], [19, 5.5], [20, 5.5], [21, 5.5], [22, 5.5],
+  [23, 6.0], [24, 6.0], [25, 6.0], [26, 6.0],
+  [27, 6.5], [28, 6.5], [29, 6.5],
+  [30, 7.0], [31, 7.0], [32, 7.0],
+  [33, 7.5], [34, 7.5],
+  [35, 8.0], [36, 8.0],
+  [37, 8.5], [38, 8.5],
+  [39, 9.0], [40, 9.0],
+];
+
+function correctCountToIeltsBand(correct) {
+  const clamped = Math.max(0, Math.min(40, correct));
+  const entry = IELTS_BAND_TABLE.find(([c]) => c === clamped);
+  return entry ? entry[1] : null;
+}
+
+// scoringScale: 'ielts' | '10' (default '10')
+function autoGrade(studentAnswers, questionsData, scoringScale = '10') {
   if (!questionsData || questionsData.length === 0) return null;
   if (!studentAnswers || studentAnswers.length === 0) return 0;
   let correct = 0;
@@ -1409,7 +1435,10 @@ function autoGrade(studentAnswers, questionsData) {
     const normalized = (sa.answer || '').toLowerCase().trim();
     if (q.answers.some(a => a.toLowerCase().trim() === normalized)) correct++;
   }
-  return Math.round((correct / questionsData.length) * 9 * 10) / 10;
+  if (scoringScale === 'ielts') {
+    return correctCountToIeltsBand(correct);
+  }
+  return Math.round((correct / questionsData.length) * 10 * 10) / 10;
 }
 
 // ─── AI Feedback helpers ──────────────────────────────────────────────────────
@@ -1945,6 +1974,7 @@ export default {
               sub.overall_score::float AS overall_score,
               sub.submitted_at, sub.status, sub.is_overtime,
               q.skill, a.deadline, a.is_active, a.title AS assignment_title,
+              a.scoring_scale,
               s.full_name AS student_name
             FROM submissions sub
             JOIN assignments a ON a.id = sub.assignment_id
@@ -1954,7 +1984,7 @@ export default {
             ORDER BY sub.submitted_at ASC
           `,
           sql`
-            SELECT a.id, a.title, a.deadline, a.is_active, a.mode, a.time_limit_minutes, q.skill
+            SELECT a.id, a.title, a.deadline, a.is_active, a.mode, a.time_limit_minutes, a.scoring_scale, q.skill
             FROM assignments a
             JOIN question_pool q ON q.id = a.question_id
             WHERE a.class_id = ${classId}
@@ -2946,10 +2976,20 @@ export default {
             return err('class_id, question_id, title là bắt buộc');
           const assignMode = body.mode === 'practice' ? 'practice' : 'exam';
           const timeLimitMinutes = (assignMode === 'exam' && body.time_limit_minutes) ? Number(body.time_limit_minutes) : null;
-          const [question] = await sql`SELECT skill FROM question_pool WHERE id = ${body.question_id}`;
+          const [question] = await sql`SELECT skill, questions_data FROM question_pool WHERE id = ${body.question_id}`;
+          // Determine scoring_scale: speaking/writing always ielts; R/L use body value or auto-detect by 40q
+          let scoringScale = body.scoring_scale || null;
+          if (!scoringScale) {
+            if (question?.skill === 'speaking' || question?.skill === 'writing') {
+              scoringScale = 'ielts';
+            } else {
+              const qCount = Array.isArray(question?.questions_data) ? question.questions_data.length : 0;
+              scoringScale = qCount === 40 ? 'ielts' : '10';
+            }
+          }
           const [row] = await sql`
-            INSERT INTO assignments (class_id, question_id, title, deadline, is_active, mode, time_limit_minutes)
-            VALUES (${body.class_id}, ${body.question_id}, ${body.title}, ${body.deadline ?? null}, true, ${assignMode}, ${timeLimitMinutes})
+            INSERT INTO assignments (class_id, question_id, title, deadline, is_active, mode, time_limit_minutes, scoring_scale)
+            VALUES (${body.class_id}, ${body.question_id}, ${body.title}, ${body.deadline ?? null}, true, ${assignMode}, ${timeLimitMinutes}, ${scoringScale})
             RETURNING *
           `;
           // Notify all students in the class about the new assignment
@@ -3181,7 +3221,7 @@ export default {
 
         let overallScore = null;
         if ((assignment.skill === 'reading' || assignment.skill === 'listening') && studentAnswers) {
-          overallScore = autoGrade(studentAnswers, assignment.questions_data);
+          overallScore = autoGrade(studentAnswers, assignment.questions_data, assignment.scoring_scale || '10');
         }
 
         // Determine overtime: exam mode with time limit, check against exam_sessions
@@ -3627,7 +3667,7 @@ export default {
 
         await autoCloseExpired(sql, { classId });
         const rows = await sql`
-          SELECT a.id, a.question_id, a.title, a.deadline, a.is_active, a.created_at, a.mode, a.time_limit_minutes,
+          SELECT a.id, a.question_id, a.title, a.deadline, a.is_active, a.created_at, a.mode, a.time_limit_minutes, a.scoring_scale,
             q.skill, q.title AS question_title, q.content_text, q.content_blocks, q.content_url,
             jsonb_array_length(COALESCE(q.vocabulary, '[]'::jsonb)) AS vocab_count,
             sub.id AS submission_id, sub.overall_score, sub.status AS submission_status,
@@ -4273,11 +4313,13 @@ export default {
           speakingScript = parts.join('\n\n\n');
         }
 
-        // Auto-grade reading/listening
+        // Auto-grade reading/listening (shared pool: IELTS scale if 40 questions)
         let overallScore = null, maxScore = null;
         if ((poolQ.skill === 'reading' || poolQ.skill === 'listening') && studentAnswers) {
-          overallScore = autoGrade(studentAnswers, poolQ.questions_data);
-          maxScore     = Array.isArray(poolQ.questions_data) ? poolQ.questions_data.length : null;
+          const poolQCount = Array.isArray(poolQ.questions_data) ? poolQ.questions_data.length : 0;
+          const poolScale = poolQCount === 40 ? 'ielts' : '10';
+          overallScore = autoGrade(studentAnswers, poolQ.questions_data, poolScale);
+          maxScore     = poolQCount || null;
         }
 
         // Determine overtime for real_test with time limit
@@ -4684,10 +4726,12 @@ export default {
           }
         }
 
-        // Auto-grade reading/listening
+        // Auto-grade reading/listening (composite section: IELTS if 40q)
         let score = null;
         if ((section.skill === 'reading' || section.skill === 'listening') && answers) {
-          score = autoGrade(answers, section.questions_data);
+          const secQCount = Array.isArray(section.questions_data) ? section.questions_data.length : 0;
+          const secScale = secQCount === 40 ? 'ielts' : '10';
+          score = autoGrade(answers, section.questions_data, secScale);
         }
 
         // Overtime detection using exam_session for this section

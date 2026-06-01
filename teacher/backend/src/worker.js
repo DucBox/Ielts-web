@@ -1967,7 +1967,7 @@ export default {
         if (method !== 'GET') return err('Method not allowed', 405);
 
         const classId = p.id;
-        const [submissions, allAssignments, allStudents] = await Promise.all([
+        const [submissions, allAssignments, allStudents, compositeSubmissions] = await Promise.all([
           sql`
             SELECT
               sub.id, sub.student_id, sub.assignment_id,
@@ -1996,6 +1996,23 @@ export default {
             JOIN student_classes sc ON sc.student_id = s.id
             WHERE sc.class_id = ${classId}
             ORDER BY s.full_name ASC
+          `,
+          // Per-student composite submissions: one row per (assignment, student) with avg score of scored sections
+          sql`
+            SELECT
+              css.assignment_id,
+              css.student_id,
+              MAX(css.submitted_at) AS submitted_at,
+              a.deadline, a.is_active,
+              COUNT(css.id)::int AS section_count,
+              COUNT(css.id) FILTER (WHERE css.score IS NOT NULL)::int AS scored_count,
+              AVG(css.score) FILTER (WHERE css.score IS NOT NULL)::float AS avg_score,
+              s.full_name AS student_name
+            FROM composite_section_submissions css
+            JOIN assignments a ON a.id = css.assignment_id
+            JOIN students s ON s.id = css.student_id
+            WHERE a.class_id = ${classId}
+            GROUP BY css.assignment_id, css.student_id, a.deadline, a.is_active, s.full_name
           `,
         ]);
 
@@ -2119,6 +2136,17 @@ export default {
           if (sub.overall_score !== null) a.scores.push(Number(sub.overall_score));
           if (!sub.is_active && sub.deadline) {
             if (new Date(sub.submitted_at) <= new Date(sub.deadline)) a.onTime++;
+            else a.late++;
+          }
+        }
+        // Composite: count one submission per student (regardless of section count)
+        for (const csub of compositeSubmissions) {
+          const a = assignMap[csub.assignment_id];
+          if (!a) continue;
+          a.submitted++;
+          if (csub.avg_score !== null) a.scores.push(Number(csub.avg_score));
+          if (!csub.is_active && csub.deadline) {
+            if (new Date(csub.submitted_at) <= new Date(csub.deadline)) a.onTime++;
             else a.late++;
           }
         }

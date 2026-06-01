@@ -2125,7 +2125,7 @@ export default {
         const perAssignment = allAssignments.map(a => {
           const d = assignMap[a.id];
           return {
-            id: d.id, title: d.title, skill: d.skill, mode: a.mode, time_limit_minutes: a.time_limit_minutes ?? null,
+            id: d.id, title: d.title, skill: d.skill, mode: a.mode, scoring_scale: a.scoring_scale ?? '10', time_limit_minutes: a.time_limit_minutes ?? null,
             deadline: d.deadline, is_active: d.is_active,
             submitted: d.submitted, total: d.total,
             avg_score: avg(d.scores),

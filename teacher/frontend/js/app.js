@@ -1703,7 +1703,7 @@ function renderStatsTab(container, data) {
       <div class="stats-filter-group">
         <span class="stats-filter-label">Loại bài:</span>
         <div class="stats-filter-pills">
-          ${[['ielts', '🎯 IELTS Test'], ['10', '📊 Practice Test']].map(([v, l]) => `
+          ${[['ielts', '🎯 IELTS Test'], ['10', '📊 Practice Test'], ['composite', '🧩 Mixed Skills']].map(([v, l]) => `
             <button class="stats-filter-pill${_statsScaleFilter === v ? ' active' : ''}"
               onclick="_statsScaleFilter='${v}';applyStatsFilter()">
               ${l}

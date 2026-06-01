@@ -2106,6 +2106,30 @@ export default {
             is_overtime: sub.is_overtime ?? false,
           });
         }
+        // Add composite submissions to per-student stats (skill breakdown intentionally excluded)
+        for (const csub of compositeSubmissions) {
+          const st = studentMap[csub.student_id];
+          if (!st) continue;
+          st.submitted++;
+          const score = csub.avg_score !== null ? Number(csub.avg_score) : null;
+          if (score !== null) st.scores.push(score);
+          if (!csub.is_active && csub.deadline) {
+            st.closedTotal++;
+            if (new Date(csub.submitted_at) <= new Date(csub.deadline)) st.onTime++;
+            else st.late++;
+          }
+          st.subs.push({
+            assignment_id: csub.assignment_id,
+            assignment_title: null,
+            skill: 'composite',
+            overall_score: score,
+            submitted_at: csub.submitted_at,
+            is_active: csub.is_active,
+            deadline: csub.deadline,
+            on_time: csub.deadline ? new Date(csub.submitted_at) <= new Date(csub.deadline) : null,
+            is_overtime: false,
+          });
+        }
         const perStudent = Object.values(studentMap).map(st => ({
           id: st.id, name: st.name,
           submitted: st.submitted, total: st.total,

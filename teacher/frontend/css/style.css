@@ -2181,17 +2181,62 @@ body.resizing-image {
   border-radius: 99px;
 }
 
-.annotation-delete {
+.annotation-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.annotation-delete,
+.annotation-edit {
   background: none;
   border: none;
   cursor: pointer;
   color: var(--gray-400);
-  font-size: 16px;
   line-height: 1;
   padding: 0 2px;
   transition: color .15s;
+  display: flex;
+  align-items: center;
 }
+.annotation-delete { font-size: 16px; }
 .annotation-delete:hover { color: var(--danger); }
+.annotation-edit:hover { color: #2563eb; }
+
+.annotation-edit-input {
+  width: 100%;
+  border: 1px solid var(--gray-300);
+  border-radius: 4px;
+  padding: 4px 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
+  color: var(--gray-800);
+  background: var(--white);
+  font-family: inherit;
+  box-sizing: border-box;
+  margin-top: 2px;
+}
+.annotation-edit-input:focus { outline: none; border-color: #2563eb; }
+
+.annotation-edit-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 5px;
+}
+.annotation-save-btn,
+.annotation-cancel-btn {
+  border: none;
+  border-radius: 4px;
+  padding: 3px 10px;
+  font-size: 11px;
+  cursor: pointer;
+  font-weight: 600;
+}
+.annotation-save-btn { background: #2563eb; color: #fff; }
+.annotation-save-btn:hover { background: #1d4ed8; }
+.annotation-cancel-btn { background: var(--gray-200); color: var(--gray-600); }
+.annotation-cancel-btn:hover { background: var(--gray-300); }
 
 .annotation-quote {
   color: var(--gray-400);

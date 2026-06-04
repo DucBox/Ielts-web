@@ -3206,10 +3206,13 @@ function refreshAnnotationsList() {
     <div class="annotation-card" id="ann-card-${ann.id}">
       <div class="annotation-card-header">
         <span class="annotation-number">${i + 1}</span>
-        <button class="annotation-delete" onclick="removeAnnotation('${ann.id}')">×</button>
+        <div class="annotation-actions">
+          <button class="annotation-edit" onclick="editAnnotation('${ann.id}')" title="Sửa nhận xét"><svg width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M9.5 2.5l2 2L4 12H2v-2L9.5 2.5z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M8 4l2 2" stroke="currentColor" stroke-width="1.4"/></svg></button>
+          <button class="annotation-delete" onclick="removeAnnotation('${ann.id}')" title="Xoá nhận xét">×</button>
+        </div>
       </div>
       <div class="annotation-quote">"${escapeHtml(ann.text.slice(0, 70))}${ann.text.length > 70 ? '…' : ''}"</div>
-      <div class="annotation-comment">${escapeHtml(ann.comment)}</div>
+      <div class="annotation-comment" id="ann-comment-${ann.id}">${escapeHtml(ann.comment)}</div>
     </div>`).join('');
 }
 
@@ -3345,6 +3348,33 @@ function confirmAnnotation(start, end) {
 
 function removeAnnotation(id) {
   _gradingAnnotations = _gradingAnnotations.filter(a => a.id !== id);
+  refreshWritingDisplay();
+  refreshAnnotationsList();
+}
+
+function editAnnotation(id) {
+  const ann = _gradingAnnotations.find(a => a.id === id);
+  if (!ann) return;
+  const commentEl = document.getElementById(`ann-comment-${id}`);
+  if (!commentEl || commentEl.querySelector('textarea')) return;
+  commentEl.innerHTML = `
+    <textarea class="annotation-edit-input" rows="3"></textarea>
+    <div class="annotation-edit-actions">
+      <button class="annotation-save-btn" onclick="saveAnnotation('${id}')">Lưu</button>
+      <button class="annotation-cancel-btn" onclick="refreshAnnotationsList()">Huỷ</button>
+    </div>`;
+  const ta = commentEl.querySelector('textarea');
+  ta.value = ann.comment;
+  ta.focus();
+}
+
+function saveAnnotation(id) {
+  const textarea = document.getElementById(`ann-comment-${id}`)?.querySelector('textarea');
+  if (!textarea) return;
+  const newComment = textarea.value.trim();
+  if (!newComment) { toast('Vui lòng nhập nhận xét', 'error'); return; }
+  const ann = _gradingAnnotations.find(a => a.id === id);
+  if (ann) ann.comment = newComment;
   refreshWritingDisplay();
   refreshAnnotationsList();
 }
@@ -7828,6 +7858,8 @@ window.closeAnnotationPopup    = closeAnnotationPopup;
 window.confirmAnnotation       = confirmAnnotation;
 window.removeAnnotation        = removeAnnotation;
 window.scrollToAnnotation      = scrollToAnnotation;
+window.editAnnotation          = editAnnotation;
+window.saveAnnotation          = saveAnnotation;
 window.saveGrading             = saveGrading;
 window.SKILL_LABELS            = SKILL_LABELS;
 window.openAddStudentModal      = openAddStudentModal;

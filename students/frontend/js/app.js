@@ -5237,14 +5237,15 @@ function renderWritingFeedback(sub) {
     <div class="section-label">Nhận xét tổng thể</div>
     <div class="feedback-overall">${escapeHtml(overall)}</div>` : '';
 
+  const _annColors = _annColorMap(annotations);
   const annSidebar = annotations.length === 0
     ? `<div style="color:var(--gray-400);font-size:13px;text-align:center;padding-top:48px">Không có nhận xét theo đoạn</div>`
     : `<div class="section-label">Nhận xét theo đoạn</div>
        <div class="feedback-annotations">
          ${annotations.map((ann, i) => `
-           <div class="feedback-ann-card feedback-ann-clickable" onclick="scrollToFeedbackMark(${i})" title="Bấm để tới đoạn được nhận xét">
+           <div class="feedback-ann-card feedback-ann-c${_annColors.get(ann.id)} feedback-ann-clickable" onclick="scrollToFeedbackMark(${i})" title="Bấm để tới đoạn được nhận xét">
              <div class="feedback-ann-header">
-               <span class="feedback-ann-number">${i + 1}</span>
+               <span class="feedback-ann-number feedback-ann-num-c${_annColors.get(ann.id)}">${i + 1}</span>
                <span class="feedback-ann-quote">"${escapeHtml(ann.text.slice(0, 80))}${ann.text.length > 80 ? '…' : ''}"</span>
              </div>
              <div class="feedback-ann-comment">${escapeHtml(ann.comment)}</div>
@@ -5265,7 +5266,7 @@ function renderWritingFeedback(sub) {
         <div class="content-pane" id="feedback-content-pane">
           ${overallBlock}
           <div class="section-label"${overall ? ' style="margin-top:20px"' : ''}>Bài làm của bạn
-            ${annotations.length > 0 ? '<span class="feedback-hint">Bôi vàng = nhận xét · Bấm số để xem</span>' : ''}
+            ${annotations.length > 0 ? '<span class="feedback-hint">Màu highlight = nhận xét · Bấm số để xem</span>' : ''}
           </div>
           <div class="submitted-content feedback-essay">${buildAnnotatedHtml(sub.writing_content || '', annotations)}</div>
           <div style="font-size:12px;color:var(--gray-400);margin-top:8px;text-align:right">${wordCount} từ</div>
@@ -5277,27 +5278,58 @@ function renderWritingFeedback(sub) {
     </div>`;
 }
 
+const ANN_COLORS = ['ann-c0', 'ann-c1', 'ann-c2', 'ann-c3', 'ann-c4', 'ann-c5'];
+
+function _annColorMap(annotations) {
+  if (!annotations || !annotations.length) return new Map();
+  const depths = new Map(annotations.map(a => [a.id, 0]));
+  const bySize = [...annotations].sort((a, b) => (a.end - a.start) - (b.end - b.start));
+  for (const inner of bySize) {
+    for (const outer of annotations) {
+      if (outer !== inner && outer.start <= inner.start && outer.end >= inner.end) {
+        depths.set(outer.id, Math.max(depths.get(outer.id), depths.get(inner.id) + 1));
+      }
+    }
+  }
+  return new Map(annotations.map(a => [a.id, Math.min(depths.get(a.id), ANN_COLORS.length - 1)]));
+}
+
 function buildAnnotatedHtml(text, annotations) {
   if (!text) return '<span style="color:var(--gray-400)">(Trống)</span>';
   if (!annotations || annotations.length === 0) return escapeHtml(text);
-  const sorted = [...annotations].sort((a, b) => a.start - b.start);
-  let html = '';
-  let pos  = 0;
-  let markIdx = 0;
-  for (let i = 0; i < sorted.length; i++) {
-    const ann   = sorted[i];
-    const start = Math.max(ann.start, pos);
-    const end   = Math.min(ann.end, text.length);
-    if (start >= end) continue;
-    if (start > pos) html += escapeHtml(text.slice(pos, start));
-    html += `<mark class="ann-highlight" id="ann-mark-${markIdx}" title="${escapeHtml(ann.comment)}">`;
-    html += escapeHtml(text.slice(start, end));
-    html += `<sup class="ann-marker">${markIdx + 1}</sup></mark>`;
-    pos = end;
-    markIdx++;
+
+  const colorIdx = _annColorMap(annotations);
+  const byStart = [...annotations].sort((a, b) => a.start - b.start);
+  const markerNum = new Map(byStart.map((ann, i) => [ann.id, i + 1]));
+
+  function renderSpan(lo, hi, anns) {
+    if (lo >= hi) return '';
+    if (!anns.length) return escapeHtml(text.slice(lo, hi));
+    const sorted = [...anns].sort((a, b) => a.start - b.start || (b.end - b.start) - (a.end - a.start));
+    let html = '';
+    let pos = lo;
+    const done = new Set();
+    for (const ann of sorted) {
+      if (done.has(ann.id)) continue;
+      const effectiveStart = Math.max(ann.start, pos);
+      if (effectiveStart >= ann.end) continue;
+      html += escapeHtml(text.slice(pos, effectiveStart));
+      const children = sorted.filter(a => !done.has(a.id) && a !== ann && a.start >= ann.start && a.end <= ann.end);
+      children.forEach(c => done.add(c.id));
+      done.add(ann.id);
+      const idx = markerNum.get(ann.id) - 1;
+      const colorCls = ANN_COLORS[colorIdx.get(ann.id)];
+      html += `<mark class="ann-highlight ${colorCls}" id="ann-mark-${idx}" title="${escapeHtml(ann.comment)}">`;
+      html += renderSpan(effectiveStart, ann.end, children);
+      html += `<sup class="ann-marker ann-marker-c${colorIdx.get(ann.id)}">${markerNum.get(ann.id)}</sup>`;
+      html += `</mark>`;
+      pos = ann.end;
+    }
+    html += escapeHtml(text.slice(pos, hi));
+    return html;
   }
-  if (pos < text.length) html += escapeHtml(text.slice(pos));
-  return html;
+
+  return renderSpan(0, text.length, annotations);
 }
 
 function scrollToFeedbackMark(i) {
@@ -5364,14 +5396,15 @@ function renderSpeakingFeedback(sub) {
     <div class="section-label">Nhận xét tổng thể</div>
     <div class="feedback-overall">${escapeHtml(overall)}</div>` : '';
 
+  const _annColors = _annColorMap(annotations);
   const annSidebar = annotations.length === 0
     ? `<div style="color:var(--gray-400);font-size:13px;text-align:center;padding-top:48px">Không có nhận xét theo đoạn</div>`
     : `<div class="section-label">Nhận xét theo đoạn</div>
        <div class="feedback-annotations">
          ${annotations.map((ann, i) => `
-           <div class="feedback-ann-card feedback-ann-clickable" onclick="scrollToFeedbackMark(${i})" title="Bấm để tới đoạn được nhận xét">
+           <div class="feedback-ann-card feedback-ann-c${_annColors.get(ann.id)} feedback-ann-clickable" onclick="scrollToFeedbackMark(${i})" title="Bấm để tới đoạn được nhận xét">
              <div class="feedback-ann-header">
-               <span class="feedback-ann-number">${i + 1}</span>
+               <span class="feedback-ann-number feedback-ann-num-c${_annColors.get(ann.id)}">${i + 1}</span>
                <span class="feedback-ann-quote">"${escapeHtml(ann.text.slice(0, 80))}${ann.text.length > 80 ? '…' : ''}"</span>
              </div>
              <div class="feedback-ann-comment">${escapeHtml(ann.comment)}</div>
@@ -5397,7 +5430,7 @@ function renderSpeakingFeedback(sub) {
               <audio controls src="${escapeHtml(sub.speaking_audio_url)}" style="width:100%;height:36px;outline:none"></audio>
             </div>` : ''}
           <div class="section-label">Transcript (AI Generated)
-            ${annotations.length > 0 ? '<span class="feedback-hint">Bôi vàng = nhận xét · Bấm số để xem</span>' : ''}
+            ${annotations.length > 0 ? '<span class="feedback-hint">Màu highlight = nhận xét · Bấm số để xem</span>' : ''}
           </div>
           <div class="submitted-content feedback-essay">${buildAnnotatedHtml(sub.speaking_script || '', annotations)}</div>
         </div>

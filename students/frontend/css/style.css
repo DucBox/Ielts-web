@@ -1656,6 +1656,7 @@ body {
 
 .feedback-essay {
   position: relative;
+  isolation: isolate;
 }
 
 .feedback-hint {
@@ -1672,24 +1673,34 @@ body {
 
 /* Annotation highlights (read-only, same visual as teacher) */
 .ann-highlight {
-  background: #fef08a;
-  border-bottom: 2px solid #eab308;
   border-radius: 2px;
   padding: 1px 0;
   cursor: default;
+  mix-blend-mode: multiply;
 }
+.ann-highlight.ann-c0 { background: #fef08a; border-bottom: 2px solid #eab308; }
+.ann-highlight.ann-c1 { background: #bfdbfe; border-bottom: 2px solid #2563eb; }
+.ann-highlight.ann-c2 { background: #fecaca; border-bottom: 2px solid #dc2626; }
+.ann-highlight.ann-c3 { background: #bbf7d0; border-bottom: 2px solid #16a34a; }
+.ann-highlight.ann-c4 { background: #e9d5ff; border-bottom: 2px solid #9333ea; }
+.ann-highlight.ann-c5 { background: #fed7aa; border-bottom: 2px solid #ea580c; }
 
 .ann-marker {
   font-size: 9px;
   font-weight: 800;
   color: #fff;
-  background: #ca8a04;
   padding: 1px 4px;
   border-radius: 99px;
   margin-left: 2px;
   vertical-align: super;
   line-height: 1;
 }
+.ann-marker-c0 { background: #ca8a04; }
+.ann-marker-c1 { background: #2563eb; }
+.ann-marker-c2 { background: #dc2626; }
+.ann-marker-c3 { background: #16a34a; }
+.ann-marker-c4 { background: #9333ea; }
+.ann-marker-c5 { background: #ea580c; }
 
 /* Overall feedback box */
 /* ── AI Criterion Cards ───────────────────────────────────────────────────── */
@@ -1866,6 +1877,12 @@ body {
   padding: 14px 16px;
   border-left: 3px solid #eab308;
 }
+.feedback-ann-card.feedback-ann-c0 { border-left-color: #eab308; }
+.feedback-ann-card.feedback-ann-c1 { border-left-color: #2563eb; }
+.feedback-ann-card.feedback-ann-c2 { border-left-color: #dc2626; }
+.feedback-ann-card.feedback-ann-c3 { border-left-color: #16a34a; }
+.feedback-ann-card.feedback-ann-c4 { border-left-color: #9333ea; }
+.feedback-ann-card.feedback-ann-c5 { border-left-color: #ea580c; }
 
 .feedback-ann-header {
   display: flex;
@@ -1884,6 +1901,12 @@ body {
   flex-shrink: 0;
   margin-top: 1px;
 }
+.feedback-ann-number.feedback-ann-num-c0 { background: #ca8a04; }
+.feedback-ann-number.feedback-ann-num-c1 { background: #2563eb; }
+.feedback-ann-number.feedback-ann-num-c2 { background: #dc2626; }
+.feedback-ann-number.feedback-ann-num-c3 { background: #16a34a; }
+.feedback-ann-number.feedback-ann-num-c4 { background: #9333ea; }
+.feedback-ann-number.feedback-ann-num-c5 { background: #ea580c; }
 
 .feedback-ann-quote {
   font-size: 12px;

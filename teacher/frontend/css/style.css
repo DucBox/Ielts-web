@@ -2124,27 +2124,48 @@ body.resizing-image {
 
 /* Annotation highlights */
 .ann-highlight {
-  background: #fef08a;
-  border-bottom: 2px solid #eab308;
   border-radius: 2px;
   cursor: pointer;
   padding: 1px 0;
   transition: background .15s;
   position: relative;
 }
-.ann-highlight:hover { background: #fde047; }
+
+/* c0 yellow (default) */
+.ann-highlight.ann-c0 { background: #fef08a; border-bottom: 2px solid #eab308; }
+.ann-highlight.ann-c0:hover { background: #fde047; }
+/* c1 blue */
+.ann-highlight.ann-c1 { background: #bfdbfe; border-bottom: 2px solid #2563eb; }
+.ann-highlight.ann-c1:hover { background: #93c5fd; }
+/* c2 green */
+.ann-highlight.ann-c2 { background: #bbf7d0; border-bottom: 2px solid #16a34a; }
+.ann-highlight.ann-c2:hover { background: #86efac; }
+/* c3 pink */
+.ann-highlight.ann-c3 { background: #fecaca; border-bottom: 2px solid #dc2626; }
+.ann-highlight.ann-c3:hover { background: #fca5a5; }
+/* c4 purple */
+.ann-highlight.ann-c4 { background: #e9d5ff; border-bottom: 2px solid #9333ea; }
+.ann-highlight.ann-c4:hover { background: #d8b4fe; }
+/* c5 orange */
+.ann-highlight.ann-c5 { background: #fed7aa; border-bottom: 2px solid #ea580c; }
+.ann-highlight.ann-c5:hover { background: #fdba74; }
 
 .ann-marker {
   font-size: 9px;
   font-weight: 800;
   color: #fff;
-  background: #ca8a04;
   padding: 1px 4px;
   border-radius: 99px;
   margin-left: 2px;
   vertical-align: super;
   line-height: 1;
 }
+.ann-marker-c0 { background: #ca8a04; }
+.ann-marker-c1 { background: #2563eb; }
+.ann-marker-c2 { background: #16a34a; }
+.ann-marker-c3 { background: #dc2626; }
+.ann-marker-c4 { background: #9333ea; }
+.ann-marker-c5 { background: #ea580c; }
 
 /* Annotation cards in sidebar */
 .annotations-list { display: flex; flex-direction: column; gap: 8px; }
@@ -2164,6 +2185,19 @@ body.resizing-image {
   background: var(--gray-50);
   font-size: 12px;
 }
+.annotation-card.ann-card-c0 { border-left-color: #eab308; }
+.annotation-card.ann-card-c1 { border-left-color: #2563eb; }
+.annotation-card.ann-card-c2 { border-left-color: #16a34a; }
+.annotation-card.ann-card-c3 { border-left-color: #dc2626; }
+.annotation-card.ann-card-c4 { border-left-color: #9333ea; }
+.annotation-card.ann-card-c5 { border-left-color: #ea580c; }
+
+.annotation-number.ann-num-c0 { background: #ca8a04; }
+.annotation-number.ann-num-c1 { background: #2563eb; }
+.annotation-number.ann-num-c2 { background: #16a34a; }
+.annotation-number.ann-num-c3 { background: #dc2626; }
+.annotation-number.ann-num-c4 { background: #9333ea; }
+.annotation-number.ann-num-c5 { background: #ea580c; }
 
 .annotation-card-header {
   display: flex;

@@ -3202,10 +3202,11 @@ function refreshAnnotationsList() {
     el.innerHTML = `<div class="annotations-empty">Chưa có nhận xét nào. Bôi đen đoạn văn để thêm.</div>`;
     return;
   }
+  const colorIdx = _annColorMap();
   el.innerHTML = sorted.map((ann, i) => `
-    <div class="annotation-card" id="ann-card-${ann.id}">
+    <div class="annotation-card ann-card-c${colorIdx.get(ann.id)}" id="ann-card-${ann.id}">
       <div class="annotation-card-header">
-        <span class="annotation-number">${i + 1}</span>
+        <span class="annotation-number ann-num-c${colorIdx.get(ann.id)}">${i + 1}</span>
         <div class="annotation-actions">
           <button class="annotation-edit" onclick="editAnnotation('${ann.id}')" title="Sửa nhận xét"><svg width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M9.5 2.5l2 2L4 12H2v-2L9.5 2.5z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M8 4l2 2" stroke="currentColor" stroke-width="1.4"/></svg></button>
           <button class="annotation-delete" onclick="removeAnnotation('${ann.id}')" title="Xoá nhận xét">×</button>
@@ -3216,25 +3217,49 @@ function refreshAnnotationsList() {
     </div>`).join('');
 }
 
+const ANN_COLORS = ['ann-c0', 'ann-c1', 'ann-c2', 'ann-c3', 'ann-c4', 'ann-c5'];
+
+function _annColorMap() {
+  return new Map(_gradingAnnotations.map((a, i) => [a.id, i % ANN_COLORS.length]));
+}
+
 function buildAnnotatedHtml(text, annotations) {
   if (!text) return '<span style="color:var(--gray-400)">(Trống)</span>';
-  const sorted = [...annotations].sort((a, b) => a.start - b.start);
+  if (!annotations.length) return escapeHtml(text);
+
+  const colorIdx = _annColorMap();
+
+  // Marker numbers ordered by start position
+  const byStart = [...annotations].sort((a, b) => a.start - b.start);
+  const markerNum = new Map(byStart.map((ann, i) => [ann.id, i + 1]));
+
+  // Split text at every annotation boundary
+  const bounds = [...new Set([0, text.length, ...annotations.flatMap(a => [a.start, a.end])])]
+    .sort((a, b) => a - b);
+
+  // Smaller range = more specific = higher visual priority
+  const bySize = [...annotations].sort((a, b) => (a.end - a.start) - (b.end - b.start));
+
   let html = '';
-  let pos = 0;
-  for (let i = 0; i < sorted.length; i++) {
-    const ann = sorted[i];
-    const start = Math.max(ann.start, pos);
-    const end   = Math.min(ann.end, text.length);
-    if (start >= end) continue;
-    if (start > pos) html += escapeHtml(text.slice(pos, start));
-    html += `<mark class="ann-highlight" data-id="${ann.id}"
-      onclick="scrollToAnnotation('${ann.id}')"
-      title="${escapeHtml(ann.comment)}">`;
-    html += escapeHtml(text.slice(start, end));
-    html += `<sup class="ann-marker">${i + 1}</sup></mark>`;
-    pos = end;
+  for (let i = 0; i < bounds.length - 1; i++) {
+    const s = bounds[i], e = bounds[i + 1];
+    const seg = text.slice(s, e);
+    const covering = bySize.filter(a => a.start <= s && a.end >= e);
+
+    if (!covering.length) { html += escapeHtml(seg); continue; }
+
+    const top = covering[0];
+    const colorCls = ANN_COLORS[colorIdx.get(top.id)];
+    const title = covering.map(a => escapeHtml(a.comment)).join(' | ');
+
+    html += `<mark class="ann-highlight ${colorCls}" data-id="${top.id}" onclick="scrollToAnnotation('${top.id}')" title="${title}">`;
+    html += escapeHtml(seg);
+    // Place marker at the right edge of each annotation ending here
+    byStart.filter(a => a.end === e && covering.includes(a)).forEach(a => {
+      html += `<sup class="ann-marker ann-marker-c${colorIdx.get(a.id)}">${markerNum.get(a.id)}</sup>`;
+    });
+    html += `</mark>`;
   }
-  if (pos < text.length) html += escapeHtml(text.slice(pos));
   return html;
 }
 
@@ -3270,13 +3295,6 @@ function handleTextSelection() {
   const end   = _plainTextOffset(container, range.endContainer, range.endOffset);
   const selectedText = range.toString();
   if (!selectedText.trim()) return;
-
-  // Reject overlapping
-  if (_gradingAnnotations.some(a => a.start < end && a.end > start)) {
-    toast('Đoạn này đã có nhận xét rồi.', 'error');
-    selection.removeAllRanges();
-    return;
-  }
 
   const rect = range.getBoundingClientRect();
   showAnnotationPopup(start, end, selectedText, rect);

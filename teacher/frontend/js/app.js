@@ -3228,39 +3228,50 @@ function buildAnnotatedHtml(text, annotations) {
   if (!annotations.length) return escapeHtml(text);
 
   const colorIdx = _annColorMap();
-
-  // Marker numbers ordered by start position
   const byStart = [...annotations].sort((a, b) => a.start - b.start);
   const markerNum = new Map(byStart.map((ann, i) => [ann.id, i + 1]));
 
-  // Split text at every annotation boundary
-  const bounds = [...new Set([0, text.length, ...annotations.flatMap(a => [a.start, a.end])])]
-    .sort((a, b) => a - b);
+  // Recursive render: outer annotations wrap inner ones so mix-blend-mode shows both colors
+  function renderSpan(lo, hi, anns) {
+    if (lo >= hi) return '';
+    if (!anns.length) return escapeHtml(text.slice(lo, hi));
 
-  // Smaller range = more specific = higher visual priority
-  const bySize = [...annotations].sort((a, b) => (a.end - a.start) - (b.end - b.start));
+    // Sort: earlier start first, then larger range first (outer before inner at same start)
+    const sorted = [...anns].sort((a, b) => a.start - b.start || (b.end - b.start) - (a.end - a.start));
 
-  let html = '';
-  for (let i = 0; i < bounds.length - 1; i++) {
-    const s = bounds[i], e = bounds[i + 1];
-    const seg = text.slice(s, e);
-    const covering = bySize.filter(a => a.start <= s && a.end >= e);
+    let html = '';
+    let pos = lo;
+    const done = new Set();
 
-    if (!covering.length) { html += escapeHtml(seg); continue; }
+    for (const ann of sorted) {
+      if (done.has(ann.id)) continue;
 
-    const top = covering[0];
-    const colorCls = ANN_COLORS[colorIdx.get(top.id)];
-    const title = covering.map(a => escapeHtml(a.comment)).join(' | ');
+      // Partial overlap already passed: render only the remaining tail
+      const effectiveStart = Math.max(ann.start, pos);
+      if (effectiveStart >= ann.end) continue;
 
-    html += `<mark class="ann-highlight ${colorCls}" data-id="${top.id}" onclick="scrollToAnnotation('${top.id}')" title="${title}">`;
-    html += escapeHtml(seg);
-    // Place marker at the right edge of each annotation ending here
-    byStart.filter(a => a.end === e && covering.includes(a)).forEach(a => {
-      html += `<sup class="ann-marker ann-marker-c${colorIdx.get(a.id)}">${markerNum.get(a.id)}</sup>`;
-    });
-    html += `</mark>`;
+      // Gap before this annotation
+      html += escapeHtml(text.slice(pos, effectiveStart));
+
+      // Children: annotations fully inside [ann.start, ann.end] not yet rendered
+      const children = sorted.filter(a => !done.has(a.id) && a !== ann && a.start >= ann.start && a.end <= ann.end);
+      children.forEach(c => done.add(c.id));
+      done.add(ann.id);
+
+      const colorCls = ANN_COLORS[colorIdx.get(ann.id)];
+      html += `<mark class="ann-highlight ${colorCls}" data-id="${ann.id}" onclick="scrollToAnnotation('${ann.id}')" title="${escapeHtml(ann.comment)}">`;
+      html += renderSpan(effectiveStart, ann.end, children);
+      html += `<sup class="ann-marker ann-marker-c${colorIdx.get(ann.id)}">${markerNum.get(ann.id)}</sup>`;
+      html += `</mark>`;
+
+      pos = ann.end;
+    }
+
+    html += escapeHtml(text.slice(pos, hi));
+    return html;
   }
-  return html;
+
+  return renderSpan(0, text.length, annotations);
 }
 
 // ─── Selection → Annotation popup ────────────────────────────────────────────

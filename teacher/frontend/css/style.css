@@ -2120,6 +2120,7 @@ body.resizing-image {
   user-select: text;
   color: var(--gray-800);
   min-height: 300px;
+  isolation: isolate;
 }
 
 /* Annotation highlights */
@@ -2129,6 +2130,7 @@ body.resizing-image {
   padding: 1px 0;
   transition: background .15s;
   position: relative;
+  mix-blend-mode: multiply;
 }
 
 /* c0 yellow (default) */

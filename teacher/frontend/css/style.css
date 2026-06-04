@@ -2133,18 +2133,18 @@ body.resizing-image {
   mix-blend-mode: multiply;
 }
 
-/* c0 yellow (default) */
+/* c0 yellow — standalone / innermost */
 .ann-highlight.ann-c0 { background: #fef08a; border-bottom: 2px solid #eab308; }
 .ann-highlight.ann-c0:hover { background: #fde047; }
-/* c1 blue */
+/* c1 blue — wraps 1 level */
 .ann-highlight.ann-c1 { background: #bfdbfe; border-bottom: 2px solid #2563eb; }
 .ann-highlight.ann-c1:hover { background: #93c5fd; }
-/* c2 green */
-.ann-highlight.ann-c2 { background: #bbf7d0; border-bottom: 2px solid #16a34a; }
-.ann-highlight.ann-c2:hover { background: #86efac; }
-/* c3 pink */
-.ann-highlight.ann-c3 { background: #fecaca; border-bottom: 2px solid #dc2626; }
-.ann-highlight.ann-c3:hover { background: #fca5a5; }
+/* c2 red — wraps 2 levels */
+.ann-highlight.ann-c2 { background: #fecaca; border-bottom: 2px solid #dc2626; }
+.ann-highlight.ann-c2:hover { background: #fca5a5; }
+/* c3 green */
+.ann-highlight.ann-c3 { background: #bbf7d0; border-bottom: 2px solid #16a34a; }
+.ann-highlight.ann-c3:hover { background: #86efac; }
 /* c4 purple */
 .ann-highlight.ann-c4 { background: #e9d5ff; border-bottom: 2px solid #9333ea; }
 .ann-highlight.ann-c4:hover { background: #d8b4fe; }
@@ -2164,8 +2164,8 @@ body.resizing-image {
 }
 .ann-marker-c0 { background: #ca8a04; }
 .ann-marker-c1 { background: #2563eb; }
-.ann-marker-c2 { background: #16a34a; }
-.ann-marker-c3 { background: #dc2626; }
+.ann-marker-c2 { background: #dc2626; }
+.ann-marker-c3 { background: #16a34a; }
 .ann-marker-c4 { background: #9333ea; }
 .ann-marker-c5 { background: #ea580c; }
 
@@ -2189,15 +2189,15 @@ body.resizing-image {
 }
 .annotation-card.ann-card-c0 { border-left-color: #eab308; }
 .annotation-card.ann-card-c1 { border-left-color: #2563eb; }
-.annotation-card.ann-card-c2 { border-left-color: #16a34a; }
-.annotation-card.ann-card-c3 { border-left-color: #dc2626; }
+.annotation-card.ann-card-c2 { border-left-color: #dc2626; }
+.annotation-card.ann-card-c3 { border-left-color: #16a34a; }
 .annotation-card.ann-card-c4 { border-left-color: #9333ea; }
 .annotation-card.ann-card-c5 { border-left-color: #ea580c; }
 
 .annotation-number.ann-num-c0 { background: #ca8a04; }
 .annotation-number.ann-num-c1 { background: #2563eb; }
-.annotation-number.ann-num-c2 { background: #16a34a; }
-.annotation-number.ann-num-c3 { background: #dc2626; }
+.annotation-number.ann-num-c2 { background: #dc2626; }
+.annotation-number.ann-num-c3 { background: #16a34a; }
 .annotation-number.ann-num-c4 { background: #9333ea; }
 .annotation-number.ann-num-c5 { background: #ea580c; }
 

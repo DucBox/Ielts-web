@@ -3202,7 +3202,7 @@ function refreshAnnotationsList() {
     el.innerHTML = `<div class="annotations-empty">Chưa có nhận xét nào. Bôi đen đoạn văn để thêm.</div>`;
     return;
   }
-  const colorIdx = _annColorMap();
+  const colorIdx = _annColorMap(_gradingAnnotations);
   el.innerHTML = sorted.map((ann, i) => `
     <div class="annotation-card ann-card-c${colorIdx.get(ann.id)}" id="ann-card-${ann.id}">
       <div class="annotation-card-header">
@@ -3219,15 +3219,28 @@ function refreshAnnotationsList() {
 
 const ANN_COLORS = ['ann-c0', 'ann-c1', 'ann-c2', 'ann-c3', 'ann-c4', 'ann-c5'];
 
-function _annColorMap() {
-  return new Map(_gradingAnnotations.map((a, i) => [a.id, i % ANN_COLORS.length]));
+// Color = nesting depth from leaves: standalone/innermost = 0 (yellow),
+// annotation wrapping a yellow = 1 (blue), wrapping blue = 2 (red), etc.
+function _annColorMap(annotations) {
+  if (!annotations || !annotations.length) return new Map();
+  const depths = new Map(annotations.map(a => [a.id, 0]));
+  // Process small annotations first so inner depths propagate outward
+  const bySize = [...annotations].sort((a, b) => (a.end - a.start) - (b.end - b.start));
+  for (const inner of bySize) {
+    for (const outer of annotations) {
+      if (outer !== inner && outer.start <= inner.start && outer.end >= inner.end) {
+        depths.set(outer.id, Math.max(depths.get(outer.id), depths.get(inner.id) + 1));
+      }
+    }
+  }
+  return new Map(annotations.map(a => [a.id, Math.min(depths.get(a.id), ANN_COLORS.length - 1)]));
 }
 
 function buildAnnotatedHtml(text, annotations) {
   if (!text) return '<span style="color:var(--gray-400)">(Trống)</span>';
   if (!annotations.length) return escapeHtml(text);
 
-  const colorIdx = _annColorMap();
+  const colorIdx = _annColorMap(annotations);
   const byStart = [...annotations].sort((a, b) => a.start - b.start);
   const markerNum = new Map(byStart.map((ann, i) => [ann.id, i + 1]));
 

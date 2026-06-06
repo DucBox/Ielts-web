@@ -4833,7 +4833,7 @@ export default {
           assignmentId = form.get('assignment_id');
           const audioFile = form.get('audio');
           if (audioFile && audioFile.size > 0) {
-            if (audioFile.size > 50 * 1024 * 1024) return err('File quá lớn — tối đa 50MB', 413);
+            if (audioFile.size > 25 * 1024 * 1024) return err('File quá lớn — tối đa 25MB', 413);
             if (!isAudioContentType(audioFile.type)) return err('Chỉ chấp nhận file âm thanh', 415);
             if (!env.OPENAI_API_KEY) return err('Chưa cấu hình OPENAI_API_KEY', 500);
             const openaiForm = new FormData();

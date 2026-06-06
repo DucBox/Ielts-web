@@ -3665,6 +3665,12 @@ async function openAssignModal(classId, className, preSelectedId = null) {
   try {
     _questions = await api.get('/questions');
     renderAssignPicker('');
+    if (preSelectedId) {
+      const preQ = _questions.find(q => q.id === preSelectedId);
+      const skill = preQ?.skill || '';
+      const scaleGroup = $('#assign-scale-group');
+      if (scaleGroup) scaleGroup.style.display = (skill === 'reading' || skill === 'listening') ? '' : 'none';
+    }
   } catch (e) {
     toast('Không thể tải kho đề', 'error');
   }

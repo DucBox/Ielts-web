@@ -1616,10 +1616,10 @@ function buildCriterionFallbackMarkdown(criterion) {
 function normalizeAiCriterion(value, legacyText = '') {
   const obj = value && typeof value === 'object' ? value : {};
   const criterion = {
-    band_justification_md: normalizeMarkdownSection(obj.band_justification_md),
-    strengths_md: normalizeMarkdownSection(obj.strengths_md),
-    errors_md: normalizeMarkdownSection(obj.errors_md),
-    tips_md: normalizeMarkdownSection(obj.tips_md),
+    band_justification_md: normalizeMarkdownSection(obj.band_justification_md ?? obj.band_justification),
+    strengths_md: normalizeMarkdownSection(obj.strengths_md ?? obj.strengths),
+    errors_md: normalizeMarkdownSection(obj.errors_md ?? obj.errors),
+    tips_md: normalizeMarkdownSection(obj.tips_md ?? obj.tips),
   };
 
   if (!Object.values(criterion).some(Boolean) && legacyText) {
@@ -3971,12 +3971,32 @@ export default {
           return json({ started_at: session?.started_at || new Date().toISOString() });
         }
 
-        // ON CONFLICT DO NOTHING keeps the original started_at
-        await sql`
-          INSERT INTO exam_sessions (student_id, ref_type, ref_id)
-          VALUES (${studentId}, ${body.ref_type}, ${body.ref_id})
-          ON CONFLICT (student_id, ref_type, ref_id) DO NOTHING
-        `;
+        // For rewrite attempts, reset the session so the student gets a fresh timer
+        let isRewrite = false;
+        if (body.ref_type === 'assignment') {
+          const [rewriteSub] = await sql`
+            SELECT id FROM submissions
+            WHERE assignment_id = ${body.ref_id} AND student_id = ${studentId}
+              AND rewrite_status = 'requested'
+            LIMIT 1
+          `;
+          isRewrite = !!rewriteSub;
+        }
+
+        if (isRewrite) {
+          await sql`
+            INSERT INTO exam_sessions (student_id, ref_type, ref_id, started_at)
+            VALUES (${studentId}, ${body.ref_type}, ${body.ref_id}, NOW())
+            ON CONFLICT (student_id, ref_type, ref_id) DO UPDATE SET started_at = NOW()
+          `;
+        } else {
+          // ON CONFLICT DO NOTHING keeps the original started_at
+          await sql`
+            INSERT INTO exam_sessions (student_id, ref_type, ref_id)
+            VALUES (${studentId}, ${body.ref_type}, ${body.ref_id})
+            ON CONFLICT (student_id, ref_type, ref_id) DO NOTHING
+          `;
+        }
         const [session] = await sql`
           SELECT started_at FROM exam_sessions
           WHERE student_id = ${studentId} AND ref_type = ${body.ref_type} AND ref_id = ${body.ref_id}

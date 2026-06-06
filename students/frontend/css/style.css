@@ -5692,6 +5692,13 @@ th.sortable:hover { color: var(--primary, #0f766e); }
 [data-theme="dark"] .skill-chart-delta.gap,
 [data-theme="dark"] .spc-vs.gap { background: rgba(239,68,68,.15);  color: #fca5a5; }
 
+/* Version selector (attempt history bar) */
+[data-theme="dark"] .version-selector {
+  background: var(--card-bg);
+  border-color: var(--border);
+}
+[data-theme="dark"] .version-selector-label { color: var(--text-muted); }
+
 /* Practice retry buttons */
 [data-theme="dark"] .btn-practice-full {
   background: var(--surface);

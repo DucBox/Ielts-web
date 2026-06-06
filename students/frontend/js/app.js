@@ -8302,22 +8302,25 @@ window.showCompositeSectionResult = showCompositeSectionResult;
 
 function renderCompositeResult(composite) {
   const skillIcons = { reading:'📖', listening:'🎧', writing:'✍️', speaking:'🎤' };
+  const scoringScale = composite.scoring_scale || '10';
   const totalSections = composite.sections.length;
   const submittedCount = composite.sections.filter(s => s.submission_id).length;
-  const scoredSecs = composite.sections
-    .filter(s => s.submission_id && s.score != null)
-    .map(s => Number(s.score))
-    .filter(score => Number.isFinite(score));
+  const scoredSecs = composite.sections.filter(s => s.submission_id && s.score != null);
   const gradedCount = scoredSecs.length;
   const waitingCount = Math.max(submittedCount - gradedCount, 0);
-  const overallScore = scoredSecs.length > 0
-    ? (scoredSecs.reduce((sum, score) => sum + score, 0) / scoredSecs.length).toFixed(1)
-    : null;
   const statusBadge = submittedCount === totalSections && waitingCount === 0
     ? `<span class="badge badge-done">✓ Đã chấm xong</span>`
     : waitingCount > 0
       ? `<span class="badge badge-waiting">⏳ ${waitingCount} phần chờ chấm</span>`
       : `<span class="badge badge-pending">${submittedCount}/${totalSections} phần đã nộp</span>`;
+
+  function sectionScoreDisplay(sec) {
+    if (sec.score == null) return null;
+    const useIelts = (sec.skill === 'writing' || sec.skill === 'speaking') || scoringScale === 'ielts';
+    return useIelts
+      ? `Band ${Number(sec.score).toFixed(1)}/9`
+      : `${Number(sec.score).toFixed(1)}/10`;
+  }
 
   const sectionCards = composite.sections.map(sec => {
     const skillLabel = SKILL_LABELS[sec.skill] || sec.skill;
@@ -8339,8 +8342,9 @@ function renderCompositeResult(composite) {
         </div>
       </div>`;
     }
-    const score = sec.score != null
-      ? `<div class="result-score-badge">Band ${Number(sec.score).toFixed(1)}/9</div>`
+    const scoreText = sectionScoreDisplay(sec);
+    const score = scoreText
+      ? `<div class="result-score-badge">${scoreText}</div>`
       : `<span class="badge badge-waiting">⏳ Chờ chấm</span>`;
     let preview = '';
     if (sec.skill === 'writing' && sec.feedback) {
@@ -8390,28 +8394,17 @@ function renderCompositeResult(composite) {
               ${submittedCount === totalSections && waitingCount === 0 ? ' · Hoàn tất toàn bộ' : ''}
             </div>
           </div>
-          <div class="composite-result-score-panel">
-            <div class="composite-result-score-label">Điểm trung bình</div>
-            <div class="composite-result-score-value">${overallScore ?? '—'}</div>
-            <div class="composite-result-score-note">${overallScore ? '/9.0 band' : 'Chưa đủ dữ liệu'}</div>
-          </div>
-        </div>
-        <div class="composite-result-metrics">
-          <div class="composite-result-metric">
-            <span class="composite-result-metric-label">Tổng kỹ năng</span>
-            <strong>${totalSections}</strong>
-          </div>
-          <div class="composite-result-metric">
-            <span class="composite-result-metric-label">Đã nộp</span>
-            <strong>${submittedCount}</strong>
-          </div>
-          <div class="composite-result-metric">
-            <span class="composite-result-metric-label">Đã có điểm</span>
-            <strong>${gradedCount}</strong>
-          </div>
-          <div class="composite-result-metric">
-            <span class="composite-result-metric-label">Chờ chấm</span>
-            <strong>${waitingCount}</strong>
+          <div class="composite-result-skill-scores">
+            ${composite.sections.map(sec => {
+              const scoreText = sectionScoreDisplay(sec);
+              return `<div class="composite-skill-score-chip">
+                <span class="composite-skill-score-icon">${skillIcons[sec.skill]||'📝'}</span>
+                <div class="composite-skill-score-info">
+                  <span class="composite-skill-score-name">${escapeHtml(sec.label)}</span>
+                  <span class="composite-skill-score-val">${scoreText ?? (sec.submission_id ? '⏳' : '—')}</span>
+                </div>
+              </div>`;
+            }).join('')}
           </div>
         </div>
       </div>

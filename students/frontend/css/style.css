@@ -5252,37 +5252,44 @@ th.sortable:hover { color: var(--primary, #0f766e); }
   color: var(--gray-500, var(--gray-400));
 }
 
-.composite-result-score-panel {
-  min-width: 220px;
-  background: rgba(15, 118, 110, .08);
-  border: 1px solid rgba(15, 118, 110, .12);
-  border-radius: 24px;
-  padding: 22px 20px;
-  text-align: center;
+.composite-result-skill-scores {
   display: flex;
   flex-direction: column;
-  justify-content: center;
+  gap: 10px;
+  min-width: 200px;
 }
 
-.composite-result-score-label {
+.composite-skill-score-chip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: rgba(15, 118, 110, .07);
+  border: 1px solid rgba(15, 118, 110, .12);
+  border-radius: 14px;
+  padding: 10px 14px;
+}
+
+.composite-skill-score-icon {
+  font-size: 18px;
+  flex-shrink: 0;
+}
+
+.composite-skill-score-info {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.composite-skill-score-name {
   font-size: 12px;
+  color: var(--gray-500, var(--gray-400));
+  font-weight: 600;
+}
+
+.composite-skill-score-val {
+  font-size: 15px;
   font-weight: 800;
-  letter-spacing: .08em;
-  text-transform: uppercase;
-  color: var(--gray-500, var(--gray-400));
-}
-
-.composite-result-score-value {
-  font-size: clamp(42px, 6vw, 64px);
-  font-weight: 900;
-  line-height: 1;
   color: var(--primary-dk);
-  margin: 10px 0 6px;
-}
-
-.composite-result-score-note {
-  font-size: 13px;
-  color: var(--gray-500, var(--gray-400));
 }
 
 .composite-result-metrics {

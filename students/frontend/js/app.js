@@ -5190,7 +5190,10 @@ function renderWritingFeedback(sub, allVersions = null) {
   const score       = sub.overall_score ?? feedback.score;
   const wordCount   = countWords(sub.writing_content || '');
   // Always check latest version's rewrite status, regardless of which version is being viewed
-  const latestVersion = allVersions ? allVersions[allVersions.length - 1] : sub;
+  const sortedVersions = allVersions
+    ? [...allVersions].sort((a, b) => (b.attempt_number || 1) - (a.attempt_number || 1))
+    : null;
+  const latestVersion = sortedVersions ? sortedVersions[0] : sub;
   const needsRewrite = latestVersion.rewrite_status === 'requested';
   const hasMultiVersions = allVersions && allVersions.length > 1;
 
@@ -5216,7 +5219,7 @@ function renderWritingFeedback(sub, allVersions = null) {
   const versionSelector = hasMultiVersions ? `
     <div class="version-selector">
       <span class="version-selector-label">Xem kết quả:</span>
-      ${allVersions.map(v => `
+      ${[...allVersions].sort((a, b) => (a.attempt_number || 1) - (b.attempt_number || 1)).map(v => `
         <button class="version-btn${v.id === sub.id ? ' active' : ''}"
           onclick="switchWritingVersion('${v.id}','${sub.assignment_id}')">
           Lần ${v.attempt_number}${v.overall_score != null ? ` · ${v.overall_score}` : ''}

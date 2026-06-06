@@ -1310,7 +1310,9 @@ function rebuildTrendChart() {
     const student = per_student.find(st => st.id === dataset._studentId);
     if (!student) { dataset.data = []; return; }
     dataset.data = chronoAssigns.map(a => {
-      const sub = student.submissions.find(s => s.assignment_id === a.id);
+      const sub = student.submissions
+        .filter(s => s.assignment_id === a.id)
+        .sort((x, y) => (y.attempt_number || 1) - (x.attempt_number || 1))[0];
       return (sub && sub.overall_score !== null) ? Number(sub.overall_score) : null;
     });
   });
@@ -1381,14 +1383,19 @@ function renderStatsTab(container, data) {
   const activeAssignments = filteredAssignments.filter(a => a.is_active).length;
   const closedAssignmentsCount = totalAssignments - activeAssignments;
 
-  const allFilteredSubs = [];
+  // Deduplicate: keep only latest attempt per (student, assignment)
+  const latestSubMap = new Map();
   per_student.forEach(st => {
     st.submissions.forEach(s => {
-      if (filteredAssignmentIds.has(s.assignment_id)) {
-        allFilteredSubs.push({ ...s, student_name: st.name });
+      if (!filteredAssignmentIds.has(s.assignment_id)) return;
+      const key = `${st.id || st.student_id}:${s.assignment_id}`;
+      const existing = latestSubMap.get(key);
+      if (!existing || (s.attempt_number || 1) > (existing.attempt_number || 1)) {
+        latestSubMap.set(key, { ...s, student_name: st.name });
       }
     });
   });
+  const allFilteredSubs = Array.from(latestSubMap.values());
   const filteredScoredSubs = allFilteredSubs.filter(s => s.overall_score !== null);
   _statsAllScoredSubs = filteredScoredSubs;
 
@@ -1422,13 +1429,22 @@ function renderStatsTab(container, data) {
   // Build per-student display rows (recomputed from filtered submissions)
   let displayStudents = per_student.map(st => {
     const stSubs = st.submissions.filter(s => filteredAssignmentIds.has(s.assignment_id));
-    const stScored = stSubs.filter(s => s.overall_score !== null);
+    // Deduplicate stSubs: latest attempt per assignment
+    const latestStSubMap = new Map();
+    stSubs.forEach(s => {
+      const existing = latestStSubMap.get(s.assignment_id);
+      if (!existing || (s.attempt_number || 1) > (existing.attempt_number || 1)) {
+        latestStSubMap.set(s.assignment_id, s);
+      }
+    });
+    const dedupedStSubs = Array.from(latestStSubMap.values());
+    const stScored = dedupedStSubs.filter(s => s.overall_score !== null);
     const skillAvg = skill => avg(stScored.filter(s => s.skill === skill).map(s => Number(s.overall_score)));
-    const closedSubs = stSubs.filter(s => !s.is_active && s.deadline);
+    const closedSubs = dedupedStSubs.filter(s => !s.is_active && s.deadline);
     const onTimeCount = closedSubs.filter(s => s.on_time).length;
     return {
       ...st,
-      submitted: stSubs.length,
+      submitted: dedupedStSubs.length,
       total: totalAssignments,
       avg_score: sf ? skillAvg(sf) : avg(stScored.map(s => Number(s.overall_score))),
       avg_reading: skillAvg('reading'),

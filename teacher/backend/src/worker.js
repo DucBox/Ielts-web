@@ -1926,6 +1926,7 @@ export default {
                 WHERE a.class_id = c.id
                   AND sub.overall_score IS NULL
                   AND q.skill IN ('writing', 'speaking')
+                  AND sub.rewrite_status IS DISTINCT FROM 'rewritten'
               )::int AS pending_grading_count
             FROM classes c
             ORDER BY c.created_at DESC
@@ -3314,25 +3315,30 @@ export default {
         }
 
         try {
-          // If resubmitting, mark previous attempt as 'rewritten'
-          if (existing?.rewrite_status === 'requested') {
-            await sql`
-              UPDATE submissions SET rewrite_status = 'rewritten'
-              WHERE id = ${existing.id}
+          // Wrap UPDATE + INSERT in a transaction so if INSERT fails the UPDATE is rolled back
+          // (audio uploads are already done above, before any DB writes)
+          const [submission] = await sql.transaction(async (txn) => {
+            // If resubmitting, mark previous attempt as 'rewritten'
+            if (existing?.rewrite_status === 'requested') {
+              await txn`
+                UPDATE submissions SET rewrite_status = 'rewritten'
+                WHERE id = ${existing.id}
+              `;
+            }
+            const result = await txn`
+              INSERT INTO submissions
+                (assignment_id, student_id, student_answers, writing_content, speaking_script, speaking_audio_url, speaking_audio_urls, overall_score, is_overtime, attempt_number)
+              VALUES (
+                ${p.id}, ${studentId},
+                ${studentAnswers ? JSON.stringify(studentAnswers) : null},
+                ${writingContent}, ${speakingScript}, ${speakingAudioUrl},
+                ${JSON.stringify(speakingAudioUrls)}::jsonb, ${overallScore}, ${isOvertime},
+                ${nextAttemptNumber}
+              )
+              RETURNING *
             `;
-          }
-          const [submission] = await sql`
-            INSERT INTO submissions
-              (assignment_id, student_id, student_answers, writing_content, speaking_script, speaking_audio_url, speaking_audio_urls, overall_score, is_overtime, attempt_number)
-            VALUES (
-              ${p.id}, ${studentId},
-              ${studentAnswers ? JSON.stringify(studentAnswers) : null},
-              ${writingContent}, ${speakingScript}, ${speakingAudioUrl},
-              ${JSON.stringify(speakingAudioUrls)}::jsonb, ${overallScore}, ${isOvertime},
-              ${nextAttemptNumber}
-            )
-            RETURNING *
-          `;
+            return result;
+          });
           // Mark assignment-related notifications as read since student has now submitted
           await sql`
             UPDATE notifications SET is_read = true, read_at = NOW()
@@ -3345,6 +3351,10 @@ export default {
         } catch (dbErr) {
           if (audioUploadKeys) for (const k of audioUploadKeys) await env.R2.delete(k.key).catch(() => {});
           else if (uploadedR2Key) await env.R2.delete(uploadedR2Key).catch(() => {});
+          // Surface unique constraint violations with a user-friendly message
+          if (dbErr?.code === '23505' || dbErr?.message?.includes('unique') || dbErr?.message?.includes('duplicate')) {
+            return err('Bài nộp đã tồn tại, vui lòng thử lại', 409);
+          }
           throw dbErr;
         }
       }
@@ -3674,7 +3684,11 @@ export default {
             UPDATE submissions
             SET teacher_feedback = ${body.teacher_feedback != null ? JSON.stringify(body.teacher_feedback) : null}::jsonb,
                 overall_score    = COALESCE(${body.overall_score ?? null}, overall_score),
-                rewrite_status   = ${newRewriteStatus}
+                rewrite_status   = CASE
+                  WHEN ${body.action} = 'request_rewrite' THEN 'requested'
+                  WHEN rewrite_status = 'requested' THEN 'requested'
+                  ELSE NULL
+                END
             WHERE id = ${p.id}
             RETURNING *
           `;
@@ -3697,7 +3711,7 @@ export default {
               await queueStudentEmailEvent(sql, {
                 studentId: sub.student_id,
                 assignmentId: asgn.assignment_id,
-                eventType: EMAIL_EVENT_TYPES.SCORE_RELEASED,
+                eventType: `${EMAIL_EVENT_TYPES.SCORE_RELEASED}:${p.id}`,
                 email: asgn.student_email,
               });
               if (normalizeStudentEmail(asgn.student_email)) {

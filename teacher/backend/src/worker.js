@@ -578,7 +578,7 @@ async function usernameExists(sql, username) {
   return Boolean(row);
 }
 
-async function generateUniqueStudentUsername(sql, fullName, reservedUsernames = new Set()) {
+async function generateUniqueStudentUsername(sql, fullName, reservedUsernames = new Set(), existingSet = null) {
   const stem = buildStudentUsernameStem(fullName);
   if (!stem) {
     throw Object.assign(new Error('Họ tên học sinh không hợp lệ'), { statusCode: 400 });
@@ -589,8 +589,9 @@ async function generateUniqueStudentUsername(sql, fullName, reservedUsernames = 
     const candidate = `${stem}_${String(cryptoRandomInt(1000)).padStart(3, '0')}`;
     if (tried.has(candidate) || reservedUsernames.has(candidate)) continue;
     tried.add(candidate);
-    if (!(await usernameExists(sql, candidate))) {
+    if (existingSet ? !existingSet.has(candidate) : !(await usernameExists(sql, candidate))) {
       reservedUsernames.add(candidate);
+      if (existingSet) existingSet.add(candidate);
       return candidate;
     }
   }
@@ -598,8 +599,9 @@ async function generateUniqueStudentUsername(sql, fullName, reservedUsernames = 
   for (let suffix = 0; suffix < 1000; suffix++) {
     const candidate = `${stem}_${String(suffix).padStart(3, '0')}`;
     if (reservedUsernames.has(candidate)) continue;
-    if (!(await usernameExists(sql, candidate))) {
+    if (existingSet ? !existingSet.has(candidate) : !(await usernameExists(sql, candidate))) {
       reservedUsernames.add(candidate);
+      if (existingSet) existingSet.add(candidate);
       return candidate;
     }
   }
@@ -1819,12 +1821,6 @@ export default {
         const nextPasswordHash = await hashPassword(nextPassword);
         const payload = buildStudentPasswordResetEmailPayload(student, nextPassword);
 
-        await sql`
-          UPDATE students
-          SET password_hash = ${nextPasswordHash}
-          WHERE id = ${student.id}
-        `;
-
         try {
           await sendResendEmail(env, {
             to: email,
@@ -1834,21 +1830,17 @@ export default {
             idempotencyKey: `student-forgot-password:${student.id}:${Date.now()}`,
           });
         } catch (sendError) {
-          await sql`
-            UPDATE students
-            SET password_hash = ${student.password_hash}
-            WHERE id = ${student.id}
-          `.catch(restoreError => {
-            console.error('[forgot-password] rollback failed', {
-              studentId: student.id,
-              restoreError: String(restoreError?.message || restoreError || 'unknown_restore_error'),
-            });
-          });
           return err(
             String(sendError?.message || 'Không thể gửi email mật khẩu mới lúc này. Vui lòng thử lại sau.'),
             502,
           );
         }
+
+        await sql`
+          UPDATE students
+          SET password_hash = ${nextPasswordHash}
+          WHERE id = ${student.id}
+        `;
 
         return json({
           ok: true,
@@ -1866,8 +1858,13 @@ export default {
         if (!env.TEACHER_ACCESS_PASSWORD || !env.TEACHER_ACCESS_SECRET)
           return err('Server chưa cấu hình', 500);
         const body = await request.json();
-        if (body.password !== env.TEACHER_ACCESS_PASSWORD)
-          return err('Sai mật khẩu', 401);
+        const _enc = new TextEncoder();
+        const _a = _enc.encode(body.password || '');
+        const _b = _enc.encode(env.TEACHER_ACCESS_PASSWORD || '');
+        let _diff = _a.length ^ _b.length;
+        const _len = Math.min(_a.length, _b.length);
+        for (let _i = 0; _i < _len; _i++) _diff |= _a[_i] ^ _b[_i];
+        if (_diff !== 0) return err('Sai mật khẩu', 401);
         const token = await signJWT(
           { teacher: true, exp: Date.now() + 24 * 60 * 60 * 1000 },
           env.TEACHER_ACCESS_SECRET,
@@ -1983,6 +1980,7 @@ export default {
             WHERE a.class_id = ${classId}
               AND sub.rewrite_status IS DISTINCT FROM 'rewritten'
             ORDER BY sub.submitted_at ASC
+            LIMIT 5000
           `,
           sql`
             SELECT a.id, a.title, a.deadline, a.is_active, a.mode, a.time_limit_minutes, a.scoring_scale, q.skill
@@ -1990,6 +1988,7 @@ export default {
             JOIN question_pool q ON q.id = a.question_id
             WHERE a.class_id = ${classId}
             ORDER BY a.created_at DESC
+            LIMIT 500
           `,
           sql`
             SELECT s.id, s.full_name
@@ -1997,6 +1996,7 @@ export default {
             JOIN student_classes sc ON sc.student_id = s.id
             WHERE sc.class_id = ${classId}
             ORDER BY s.full_name ASC
+            LIMIT 1000
           `,
           // Per-student composite submissions: one row per (assignment, student) with avg score of scored sections
           sql`
@@ -2014,6 +2014,7 @@ export default {
             JOIN students s ON s.id = css.student_id
             WHERE a.class_id = ${classId}
             GROUP BY css.assignment_id, css.student_id, a.deadline, a.is_active, s.full_name
+            LIMIT 5000
           `,
         ]);
 
@@ -2294,8 +2295,10 @@ export default {
         const reservedUsernames = new Set();
         const preparedStudents = [];
         try {
+          const _existingRows = await sql`SELECT username FROM students`;
+          const _existingUsernames = new Set(_existingRows.map(r => r.username));
           for (const student of students) {
-            const username = await generateUniqueStudentUsername(sql, student.full_name, reservedUsernames);
+            const username = await generateUniqueStudentUsername(sql, student.full_name, reservedUsernames, _existingUsernames);
             const password = generateStudentPassword();
             const passwordHash = await hashPassword(password);
             preparedStudents.push({
@@ -2446,6 +2449,9 @@ export default {
 
       if (path === '/uploads/images/presign' && method === 'POST') {
         if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
+        const _presignIp = request.headers.get('CF-Connecting-IP') || 'unknown';
+        if (await checkRateLimit(env.KV, `presign-image:${_presignIp}`, 60, 60))
+          return err('Quá nhiều yêu cầu — thử lại sau', 429);
         const body = await request.json().catch(() => null);
         const fileName = String(body?.file_name || 'image');
         const contentType = String(body?.content_type || '').trim().toLowerCase();
@@ -2501,6 +2507,9 @@ export default {
       }
 
       if (path === '/uploads/audio/presign' && method === 'POST') {
+        const _presignIp = request.headers.get('CF-Connecting-IP') || 'unknown';
+        if (await checkRateLimit(env.KV, `presign-audio:${_presignIp}`, 60, 60))
+          return err('Quá nhiều yêu cầu — thử lại sau', 429);
         const body = await request.json().catch(() => null);
         const scope = String(body?.scope || '').trim();
         const fileName = sanitizeFileName(body?.file_name || 'audio');
@@ -2524,7 +2533,7 @@ export default {
           const assignment = await loadStudentAssignmentAccess(sql, assignmentId, studentId);
           if (!assignment) return err('Học sinh không thuộc bài tập này', 403);
           if (!assignment.is_active) return err('Bài tập đã đóng', 403);
-          maxBytes = 50 * 1024 * 1024;
+          maxBytes = 25 * 1024 * 1024;
           key = buildStudentSpeakingKey(assignmentId, studentId, fileName);
         } else if (scope === 'student-shared-speaking') {
           const claims = await requireStudentAuth(request, env);
@@ -2536,7 +2545,7 @@ export default {
             return err('Học sinh chưa thuộc lớp nào', 403);
           const [pool] = await sql`SELECT id FROM shared_pool WHERE id = ${poolId}`;
           if (!pool) return err('Không tìm thấy đề luyện tập', 404);
-          maxBytes = 50 * 1024 * 1024;
+          maxBytes = 25 * 1024 * 1024;
           key = buildSharedSpeakingKey(poolId, studentId, fileName);
         } else {
           return err('Upload scope không hợp lệ', 400);
@@ -3725,6 +3734,7 @@ export default {
               AND q.skill IN ('writing', 'speaking')
               AND sub.overall_score IS NULL
               AND sub.rewrite_status IS DISTINCT FROM 'rewritten'
+            LIMIT 100
           `,
           sql`
             SELECT
@@ -3747,14 +3757,14 @@ export default {
             WHERE c.teacher_id = ${teacherId}
               AND cqs.skill IN ('writing', 'speaking')
               AND css.score IS NULL
+            LIMIT 100
           `,
         ]);
         const rows = [
           ...standardRows.map(row => ({ ...row, submission_kind: 'assignment' })),
           ...compositeRows.map(row => ({ ...row, submission_kind: 'composite_section' })),
         ]
-          .sort((a, b) => new Date(a.submitted_at) - new Date(b.submitted_at))
-          .slice(0, 100);
+          .sort((a, b) => new Date(a.submitted_at) - new Date(b.submitted_at));
         return json(rows);
       }
 
@@ -3944,6 +3954,8 @@ export default {
         if (!body) return err('Invalid JSON', 400);
 
         const studentId    = String(claims.student_id);
+        if (await checkRateLimit(env.KV, `practice-submit:${studentId}`, 30, 60))
+          return err('Quá nhiều yêu cầu — thử lại sau', 429);
         const assignmentId = String(body.assignment_id || '');
         const attemptType  = String(body.attempt_type || '');
         const answers      = Array.isArray(body.student_answers) ? body.student_answers : [];
@@ -4778,6 +4790,8 @@ export default {
         const claims = await requireStudentAuth(request, env);
         if (!claims) return err('Unauthorized', 401);
         const studentId = String(claims.student_id);
+        if (await checkRateLimit(env.KV, `composite-submit:${studentId}`, 20, 60))
+          return err('Quá nhiều yêu cầu — thử lại sau', 429);
 
         const [section] = await sql`
           SELECT cqs.*, q.id AS composite_question_id
@@ -4905,10 +4919,14 @@ export default {
       if ((p = matchPath('/composite-section-submissions/:id/score', path)) && method === 'PATCH') {
         if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
         const body = await request.json().catch(() => null);
+        const ALLOWED_SCORE_FIELDS = new Set(['score', 'feedback']);
         const updateFields = [], updateVals = [];
         if (body?.score    !== undefined) { updateFields.push('score');    updateVals.push(Number(body.score)); }
         if (body?.feedback !== undefined) { updateFields.push('feedback'); updateVals.push(String(body.feedback)); }
         if (updateFields.length === 0) return err('score hoặc feedback là bắt buộc');
+        for (const f of updateFields) {
+          if (!ALLOWED_SCORE_FIELDS.has(f)) return err('Invalid field', 400);
+        }
         const setClauses = updateFields.map((f, i) => `${f} = $${i + 1}`).join(', ');
         const [row] = await sql(`UPDATE composite_section_submissions SET ${setClauses} WHERE id = $${updateFields.length + 1} RETURNING *`, [...updateVals, p.id]);
         if (!row) return err('Không tìm thấy bài nộp', 404);
@@ -5042,24 +5060,28 @@ export default {
   async scheduled(controller, env, ctx) {
     const sql = neon(env.DATABASE_URL);
     ctx.waitUntil((async () => {
-      const scheduledTime = Number(controller?.scheduledTime || Date.now());
-      const scheduledDate = new Date(scheduledTime);
-      const shouldEnqueueDeadlines = scheduledDate.getUTCMinutes() === 50;
-      logStudentEmail('scheduled_start', {
-        cron: controller?.cron || null,
-        scheduledTime,
-        shouldEnqueueDeadlines,
-      });
-      await autoCloseExpired(sql);
-      if (shouldEnqueueDeadlines) {
-        await enqueueDeadline1DayEmails(sql);
+      try {
+        const scheduledTime = Number(controller?.scheduledTime || Date.now());
+        const scheduledDate = new Date(scheduledTime);
+        const shouldEnqueueDeadlines = scheduledDate.getUTCMinutes() === 50;
+        logStudentEmail('scheduled_start', {
+          cron: controller?.cron || null,
+          scheduledTime,
+          shouldEnqueueDeadlines,
+        });
+        await autoCloseExpired(sql);
+        if (shouldEnqueueDeadlines) {
+          await enqueueDeadline1DayEmails(sql);
+        }
+        await processQueuedStudentEmails(sql, env, { limit: 300, delayMs: 1000 });
+        logStudentEmail('scheduled_done', {
+          cron: controller?.cron || null,
+          scheduledTime,
+          shouldEnqueueDeadlines,
+        });
+      } catch (e) {
+        console.error('[scheduled] Unhandled error in scheduled task:', e?.message || e);
       }
-      await processQueuedStudentEmails(sql, env, { limit: 300, delayMs: 1000 });
-      logStudentEmail('scheduled_done', {
-        cron: controller?.cron || null,
-        scheduledTime,
-        shouldEnqueueDeadlines,
-      });
     })());
   },
 };

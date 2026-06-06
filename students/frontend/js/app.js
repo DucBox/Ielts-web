@@ -2,15 +2,8 @@
 // HELPERS
 // ═══════════════════════════════════════════════════════════════════════════
 
-function $(sel) { return document.querySelector(sel); }
-
-function toast(msg, type = 'success') {
-  const el = document.createElement('div');
-  el.className = `toast toast-${type}`;
-  el.textContent = msg;
-  $('#toast-container').appendChild(el);
-  setTimeout(() => el.remove(), 3500);
-}
+// $, escapeHtml, renderMarkdownInline, renderSafeMarkdown, btnReset, toast,
+// setLoading, formatDateTime, isOverdue, makeSortIcon — defined in utils.js
 
 function upsertStickyToast(id, html, type = 'info') {
   const container = $('#toast-container');
@@ -30,38 +23,11 @@ function removeStickyToast(id) {
   document.querySelector(`.toast[data-toast-id="${id}"]`)?.remove();
 }
 
-function setLoading(msg = 'Đang tải...') {
-  $('#app').innerHTML = `
-    <div class="loading-screen">
-      <div class="spinner"></div>
-      <p>${msg}</p>
-    </div>`;
-}
-
 function btnLoading(btn) {
   if (!btn) return;
   btn._origHTML = btn.innerHTML;
   btn.disabled = true;
   btn.innerHTML = '<span class="btn-spinner"></span> Đang xử lý...';
-}
-
-function btnReset(btn) {
-  if (!btn) return;
-  btn.disabled = false;
-  btn.innerHTML = btn._origHTML || btn.innerHTML;
-}
-
-function formatDateTime(iso) {
-  if (!iso) return 'Không có hạn';
-  return new Date(iso).toLocaleString('vi-VN', {
-    day: '2-digit', month: '2-digit', year: 'numeric',
-    hour: '2-digit', minute: '2-digit',
-  });
-}
-
-function isOverdue(iso) {
-  if (!iso) return false;
-  return new Date(iso) < new Date();
 }
 
 function formatCountdown(iso) {
@@ -78,38 +44,6 @@ function formatCountdown(iso) {
 
 function countWords(text) {
   return (text || '').trim().split(/\s+/).filter(Boolean).length;
-}
-
-function renderMarkdownInline(text) {
-  return escapeHtml(text)
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*([^*\n]+)\*/g, '<em>$1</em>');
-}
-
-function renderSafeMarkdown(markdown) {
-  const lines = String(markdown || '').replace(/\r\n/g, '\n').split('\n');
-  const html = [];
-  let listType = null;
-  const closeList = () => { if (listType) { html.push(`</${listType}>`); listType = null; } };
-  for (const rawLine of lines) {
-    const line = rawLine.trim();
-    if (!line) { closeList(); continue; }
-    const bullet   = line.match(/^[-*]\s+(.+)$/);
-    const numbered = line.match(/^\d+\.\s+(.+)$/);
-    if (bullet || numbered) {
-      const t = bullet ? 'ul' : 'ol';
-      if (listType !== t) { closeList(); html.push(`<${t}>`); listType = t; }
-      html.push(`<li>${renderMarkdownInline((bullet || numbered)[1])}</li>`);
-      continue;
-    }
-    closeList();
-    const heading = line.match(/^#{2,4}\s+(.+)$/);
-    if (heading) html.push(`<h5>${renderMarkdownInline(heading[1])}</h5>`);
-    else html.push(`<p>${renderMarkdownInline(line)}</p>`);
-  }
-  closeList();
-  return html.join('');
 }
 
 function bandColor(score) {
@@ -154,19 +88,6 @@ function renderAiAdviceCard(icon, title, advice) {
   </div>`;
 }
 
-function makeSortIcon(col, currentCol, currentDir) {
-  if (currentCol !== col) return '<span class="sort-icon">↕</span>';
-  return `<span class="sort-icon active">${currentDir === 'asc' ? '↑' : '↓'}</span>`;
-}
-window.makeSortIcon = makeSortIcon;
-
-function escapeHtml(str) {
-  return (str || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
 
 function repairImageTokensInBlocks(blocks) {
   let counter = 0;
@@ -628,13 +549,13 @@ function renderNotifItem(n) {
          data-notif-id="${escapeHtml(String(n.id))}"
          data-nav-url="${escapeHtml(navUrl)}">
       <div class="notif-item-icon">${icon}</div>
-      <div class="notif-item-body" onclick="navigateFromNotif(this.closest('.notif-item').dataset.navUrl)">
+      <div class="notif-item-body" onclick="navigateFromNotif(this.closest('.notif-item').dataset.navUrl)" role="button" tabindex="0">
         <div class="notif-item-title">${titleText}</div>
         <div class="notif-item-desc">${escapeHtml(desc)}</div>
       </div>
       <div class="notif-item-btns">
         ${markReadBtn}
-        <button class="notif-btn-delete" onclick="deleteNotif(this);event.stopPropagation()" title="Xóa">✕</button>
+        <button class="notif-btn-delete" onclick="deleteNotif(this);event.stopPropagation()" title="Xóa" aria-label="Xóa thông báo">✕</button>
       </div>
     </div>`;
 }
@@ -4487,7 +4408,7 @@ function _renderSpeakingSlots() {
   const canRemove = _speakingSlots.length > 1;
   listEl.innerHTML = _speakingSlots.map((s, i) => {
     const removeBtn = canRemove && s.status !== 'recording'
-      ? `<button class="remove-audio-slot" onclick="removeSpeakingSlot(${i})" title="Xoá">×</button>`
+      ? `<button class="remove-audio-slot" onclick="removeSpeakingSlot(${i})" title="Xoá" aria-label="Xoá audio slot">×</button>`
       : (canRemove ? '<div style="width:28px"></div>' : '');
 
     let fileBody = '';

@@ -320,6 +320,24 @@ tbody tr:hover { background: var(--bg-surface-alt); }
 .badge-composite { background: #f0f0ff; color: #4338ca; }
 .badge-active    { background: var(--success-lt); color: #166534; }
 .badge-inactive  { background: var(--gray-100); color: var(--gray-400); }
+.badge-done      { background: var(--success-lt); color: #166534; }
+.badge-pending   { background: var(--gray-100); color: var(--gray-600); }
+.badge-overdue   { background: var(--danger-lt); color: var(--danger); }
+.badge-rewrite   { background: #fee2e2; color: #dc2626; font-weight: 700; }
+
+.mode-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.mode-badge--exam     { background: #fef3c7; color: #92400e; }
+.mode-badge--practice { background: #ede9fe; color: #5b21b6; }
 
 .stat-chip {
   display: inline-flex;
@@ -590,8 +608,8 @@ tbody tr:hover { background: var(--bg-surface-alt); }
 
 .location-pick-hint {
   font-size: 12px;
-  color: #c2410c;
-  background: #fff7ed;
+  color: var(--warning-text, #c2410c);
+  background: var(--warning-bg, #fff7ed);
   border: 1px solid #fed7aa;
   border-radius: 6px;
   padding: 6px 10px;
@@ -603,7 +621,7 @@ tbody tr:hover { background: var(--bg-surface-alt); }
 .content-composer-shell {
   border: 1px solid var(--gray-200);
   border-radius: 12px;
-  background: #fff;
+  background: var(--card-bg, #fff);
   overflow: clip; /* clip visual but not scroll context — keeps sticky working */
 }
 .content-composer-toolbar {
@@ -625,7 +643,7 @@ tbody tr:hover { background: var(--bg-surface-alt); }
   align-items: center;
   gap: 2px;
   padding: 5px 12px;
-  background: #fff;
+  background: var(--card-bg, #fff);
   border-bottom: 1px solid var(--gray-200);
   position: sticky;
   top: 0;
@@ -665,7 +683,7 @@ tbody tr:hover { background: var(--bg-surface-alt); }
   padding: 0 5px;
   border: 1px solid var(--gray-200);
   border-radius: 5px;
-  background: #fff;
+  background: var(--card-bg, #fff);
   font-size: 12px;
   color: var(--gray-700);
   cursor: pointer;
@@ -689,7 +707,7 @@ tbody tr:hover { background: var(--bg-surface-alt); }
   font-weight: 700;
   color: var(--gray-800);
   pointer-events: none;
-  border-bottom: 3px solid #1a1a1a;
+  border-bottom: 3px solid var(--text-main, #1a1a1a);
   line-height: 1;
   padding-bottom: 1px;
 }
@@ -698,7 +716,7 @@ tbody tr:hover { background: var(--bg-surface-alt); }
   top: calc(100% + 4px);
   left: 0;
   z-index: 999;
-  background: #fff;
+  background: var(--card-bg, #fff);
   border: 1px solid var(--gray-200);
   border-radius: 8px;
   box-shadow: 0 4px 16px rgba(0,0,0,.12);
@@ -767,12 +785,12 @@ tbody tr:hover { background: var(--bg-surface-alt); }
 }
 .content-document-surface {
   padding: 14px;
-  background: #fff;
+  background: var(--card-bg, #fff);
 }
 .content-composer-host {
   border: 1px solid var(--gray-200);
   border-radius: 12px;
-  background: #fff;
+  background: var(--card-bg, #fff);
   padding: 14px 16px;
   min-height: 260px;
   display: block;
@@ -2607,6 +2625,10 @@ body.resizing-image {
 [data-theme="dark"] .breadcrumb { color: var(--text-muted); }
 [data-theme="dark"] .breadcrumb-item { color: var(--text); }
 [data-theme="dark"] .breadcrumb-item.active { color: var(--text-strong); }
+[data-theme="dark"] .location-pick-hint {
+  color: #fb923c;
+  background: #431407;
+}
 
 /* ═══ PAGE TRANSITION ════════════════════════════════════════════════════════ */
 #app { transition: opacity .12s ease; }
@@ -2834,6 +2856,9 @@ body.resizing-image {
 }
 [data-theme="dark"] .grading-question-details { border-color: var(--border); }
 [data-theme="dark"] .grading-question-summary { background: var(--bg-subtle); }
+[data-theme="dark"] .grading-rewrite-btn { border-color: #fb923c; color: #fb923c; }
+[data-theme="dark"] .grading-rewrite-btn:hover { background: #431407; }
+[data-theme="dark"] .stats-overtime-pill { background: #431407; color: #fb923c; border-color: #9a3412; }
 
 /* ═══ CLASS CARD ENHANCEMENTS ══════════════════════════════════════════════ */
 .card-progress {
@@ -3927,6 +3952,11 @@ tr[draggable="true"]:active { cursor: grabbing; }
 
   /* Annotation popup: cap to viewport */
   .ann-popup { width: min(320px, calc(100vw - 24px)) !important; }
+
+  .annotation-popup {
+    width: calc(100vw - 20px);
+    max-width: 340px;
+  }
 }
 
 /* ═══ VOCAB ADD ROW → STACK on mobile ════════════════════════════════════════ */
@@ -4618,4 +4648,8 @@ tr[draggable="true"]:active { cursor: grabbing; }
 
 [data-theme="dark"] .composite-q-list { background: var(--bg-card); }
 [data-theme="dark"] .composite-q-item:hover { background: rgba(255,255,255,.06); }
+
+/* Mode badges dark mode */
+[data-theme="dark"] .mode-badge--exam     { background: rgba(146,64,14,.25);  color: #fcd34d; }
+[data-theme="dark"] .mode-badge--practice { background: rgba(91,33,182,.25);  color: #c4b5fd; }
 

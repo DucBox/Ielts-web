@@ -2,7 +2,8 @@
 // HELPERS
 // ═══════════════════════════════════════════════════════════════════════════
 
-function $(sel) { return document.querySelector(sel); }
+// $, escapeHtml, renderMarkdownInline, renderSafeMarkdown, btnReset, toast,
+// setLoading, formatDateTime, isOverdue, makeSortIcon — defined in utils.js
 
 function toggleSidebar() {
   const sidebar = document.getElementById('sidebar');
@@ -40,62 +41,6 @@ window.closeMobileSidebar = closeMobileSidebar;
   }
 })();
 
-function escapeHtml(str) {
-  return String(str ?? '')
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
-function renderMarkdownInline(text) {
-  return escapeHtml(text)
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*([^*\n]+)\*/g, '<em>$1</em>');
-}
-
-function renderSafeMarkdown(markdown) {
-  const lines = String(markdown || '').replace(/\r\n/g, '\n').split('\n');
-  const html = [];
-  let listType = null;
-  const closeList = () => {
-    if (!listType) return;
-    html.push(`</${listType}>`);
-    listType = null;
-  };
-
-  for (const rawLine of lines) {
-    const line = rawLine.trim();
-    if (!line) {
-      closeList();
-      continue;
-    }
-
-    const bullet = line.match(/^[-*]\s+(.+)$/);
-    const numbered = line.match(/^\d+\.\s+(.+)$/);
-    if (bullet || numbered) {
-      const nextListType = bullet ? 'ul' : 'ol';
-      if (listType !== nextListType) {
-        closeList();
-        html.push(`<${nextListType}>`);
-        listType = nextListType;
-      }
-      html.push(`<li>${renderMarkdownInline((bullet || numbered)[1])}</li>`);
-      continue;
-    }
-
-    closeList();
-    const heading = line.match(/^(#{2,4})\s+(.+)$/);
-    if (heading) {
-      html.push(`<h5>${renderMarkdownInline(heading[2])}</h5>`);
-    } else {
-      html.push(`<p>${renderMarkdownInline(line)}</p>`);
-    }
-  }
-
-  closeList();
-  return html.join('');
-}
-
 function btnLoading(btn) {
   if (!btn) return;
   btn._origHTML = btn.innerHTML;
@@ -106,27 +51,6 @@ function btnLoading(btn) {
     : '<span class="btn-spinner"></span> Đang xử lý...';
 }
 
-function btnReset(btn) {
-  if (!btn) return;
-  btn.disabled = false;
-  btn.innerHTML = btn._origHTML || btn.innerHTML;
-}
-
-function toast(msg, type = 'success') {
-  const el = document.createElement('div');
-  el.className = `toast toast-${type}`;
-  el.textContent = msg;
-  $('#toast-container').appendChild(el);
-  setTimeout(() => el.remove(), 3500);
-}
-
-function setLoading(msg = 'Đang tải...') {
-  $('#app').innerHTML = `
-    <div class="loading-screen">
-      <div class="spinner"></div>
-      <p>${msg}</p>
-    </div>`;
-}
 
 function renderRouteError(title, error, retryHash = window.location.hash.slice(1) || '/classes') {
   const message = error?.error || error?.message || 'Không thể tải dữ liệu. Vui lòng thử lại.';
@@ -238,7 +162,7 @@ function setQuestionChipValues(container, input, values = []) {
     const chip = document.createElement('span');
     chip.className = 'chip';
     chip.dataset.value = String(value).trim();
-    chip.innerHTML = `${escapeHtml(String(value).trim())} <button type="button" class="chip-remove">×</button>`;
+    chip.innerHTML = `${escapeHtml(String(value).trim())} <button type="button" class="chip-remove" aria-label="Xoá">×</button>`;
     chip.querySelector('.chip-remove').onclick = () => chip.remove();
     container.insertBefore(chip, input);
   });
@@ -491,19 +415,6 @@ function formatDate(iso) {
   });
 }
 
-function formatDateTime(iso) {
-  if (!iso) return 'Không có hạn';
-  const d = new Date(iso);
-  return d.toLocaleString('vi-VN', {
-    day: '2-digit', month: '2-digit', year: 'numeric',
-    hour: '2-digit', minute: '2-digit'
-  });
-}
-
-function isOverdue(iso) {
-  if (!iso) return false;
-  return new Date(iso) < new Date();
-}
 
 const SKILL_LABELS = {
   reading:   { icon: '📖', label: 'Reading',   badge: 'badge-reading' },
@@ -724,7 +635,7 @@ function _createAnswerRow(qNo, data = null) {
       const chip = document.createElement('span');
       chip.className = 'chip';
       chip.dataset.value = a;
-      chip.innerHTML = `${escapeHtml(a)} <button class="chip-remove" title="Xoá">×</button>`;
+      chip.innerHTML = `${escapeHtml(a)} <button class="chip-remove" title="Xoá" aria-label="Xoá">×</button>`;
       chip.querySelector('.chip-remove').onclick = () => chip.remove();
       chipContainer.appendChild(chip);
     }
@@ -737,6 +648,7 @@ function _createAnswerRow(qNo, data = null) {
   const deleteBtn = document.createElement('button');
   deleteBtn.className = 'btn-delete-row';
   deleteBtn.title = 'Xoá câu này';
+  deleteBtn.setAttribute('aria-label', 'Xoá câu này');
   deleteBtn.textContent = '×';
   deleteBtn.onclick = function() { removeAnswerRow(this.closest('.answer-row')); };
 
@@ -751,7 +663,7 @@ function _createAnswerRow(qNo, data = null) {
     <span class="location-text-display">${data?.location || 'Chưa chọn'}</span>
     <input type="hidden" class="answer-location" value="${escapeHtml(data?.location || '')}" />
     <input type="hidden" class="answer-location-meta" value="${data?.location_meta ? escapeHtml(JSON.stringify(data.location_meta)) : ''}" />
-    <button class="btn-clear-location${data?.location ? '' : ' hidden'}" onclick="clearLocationValue(this.closest('.answer-row'))">×</button>
+    <button class="btn-clear-location${data?.location ? '' : ' hidden'}" onclick="clearLocationValue(this.closest('.answer-row'))" aria-label="Xoá vị trí">×</button>
     <button class="btn-pick-location" onclick="activateLocationPick(this.closest('.answer-row'))">Chọn</button>`;
 
   const expRow = document.createElement('div');
@@ -1263,12 +1175,6 @@ function destroyStatsCharts() {
   _statsCharts = [];
 }
 
-function makeSortIcon(col, currentCol, currentDir) {
-  if (currentCol !== col) return '<span class="sort-icon">↕</span>';
-  return `<span class="sort-icon active">${currentDir === 'asc' ? '↑' : '↓'}</span>`;
-}
-window.makeSortIcon = makeSortIcon;
-
 function refreshStatsTab() {
   const container = document.getElementById('tab-stats');
   if (container) delete container.dataset.loadedFor;
@@ -1428,7 +1334,7 @@ function showHistogramStudents(bucketIdx) {
     <div class="stats-hist-detail-header">
       Điểm <strong>${labels[bucketIdx]}</strong> — ${matching.length} bài
       <button onclick="document.getElementById('stats-hist-detail').style.display='none'"
-        style="float:right;background:none;border:none;cursor:pointer;color:var(--gray-400);font-size:16px">✕</button>
+        style="float:right;background:none;border:none;cursor:pointer;color:var(--gray-400);font-size:16px" aria-label="Đóng">✕</button>
     </div>
     <div class="stats-hist-detail-list">
       ${matching.map(s => `
@@ -2200,9 +2106,9 @@ function renderClassDetail(cls, students = []) {
                 </span>
                 📊 ${a.submission_count}/${cls.student_count} nộp
               </button>
-              <button class="btn-icon" title="Đổi hạn nộp"
+              <button class="btn-icon" title="Đổi hạn nộp" aria-label="Đổi hạn nộp"
                 onclick="changeDeadline('${a.id}')">📅</button>
-              <button class="btn-icon danger" title="Xoá"
+              <button class="btn-icon danger" title="Xoá" aria-label="Xoá bài tập"
                 onclick="deleteAssignment('${a.id}', '${cls.id}', this)">🗑</button>
             </div>
           </td>
@@ -2388,9 +2294,9 @@ function filterAssignments(search, skill) {
               </span>
               📊 ${a.submission_count}/${cls.student_count} nộp
             </button>
-            <button class="btn-icon" title="Đổi hạn nộp"
+            <button class="btn-icon" title="Đổi hạn nộp" aria-label="Đổi hạn nộp"
               onclick="changeDeadline('${a.id}')">📅</button>
-            <button class="btn-icon danger" title="Xoá"
+            <button class="btn-icon danger" title="Xoá" aria-label="Xoá bài tập"
               onclick="deleteAssignment('${a.id}', '${cls.id}', this)">🗑</button>
           </div>
         </td>
@@ -2511,7 +2417,7 @@ function buildStudentRows(students, classId) {
         <div class="td-actions">
           <button class="btn btn-sm btn-outline" title="Đổi mật khẩu"
             onclick="openResetPasswordModal('${s.id}', '${s.full_name.replace(/'/g, "\\'")}', this)">🔑 Đổi MK</button>
-          <button class="btn-icon danger" title="Xoá khỏi lớp này"
+          <button class="btn-icon danger" title="Xoá khỏi lớp này" aria-label="Xoá học sinh khỏi lớp"
             onclick="removeStudentFromClass('${s.id}', '${classId}', this)">🗑</button>
         </div>
       </td>
@@ -3233,8 +3139,8 @@ function refreshAnnotationsList() {
       <div class="annotation-card-header">
         <span class="annotation-number ann-num-c${colorIdx.get(ann.id)}">${i + 1}</span>
         <div class="annotation-actions">
-          <button class="annotation-edit" onclick="editAnnotation('${ann.id}')" title="Sửa nhận xét"><svg width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M9.5 2.5l2 2L4 12H2v-2L9.5 2.5z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M8 4l2 2" stroke="currentColor" stroke-width="1.4"/></svg></button>
-          <button class="annotation-delete" onclick="removeAnnotation('${ann.id}')" title="Xoá nhận xét">×</button>
+          <button class="annotation-edit" onclick="editAnnotation('${ann.id}')" title="Sửa nhận xét" aria-label="Sửa nhận xét"><svg width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M9.5 2.5l2 2L4 12H2v-2L9.5 2.5z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M8 4l2 2" stroke="currentColor" stroke-width="1.4"/></svg></button>
+          <button class="annotation-delete" onclick="removeAnnotation('${ann.id}')" title="Xoá nhận xét" aria-label="Xoá nhận xét">×</button>
         </div>
       </div>
       <div class="annotation-quote">"${escapeHtml(ann.text.slice(0, 70))}${ann.text.length > 70 ? '…' : ''}"</div>
@@ -3994,14 +3900,14 @@ function _buildFolderSidebar() {
   return `
     <div class="folder-sidebar-header">
       <span class="folder-sidebar-title">Thư mục</span>
-      <button class="btn-icon folder-add-root" title="Thêm thư mục" onclick="createFolderPrompt(null)">&#xff0b;</button>
+      <button class="btn-icon folder-add-root" title="Thêm thư mục" aria-label="Thêm thư mục" onclick="createFolderPrompt(null)">&#xff0b;</button>
     </div>
-    <div class="folder-item ${_currentFolderFilter === null ? 'active' : ''}" onclick="setFolderFilter(null)">
+    <div class="folder-item ${_currentFolderFilter === null ? 'active' : ''}" onclick="setFolderFilter(null)" role="button" tabindex="0">
       <span class="folder-icon">🗂</span>
       <span class="folder-name">Tất cả</span>
       <span class="folder-count">${allCount}</span>
     </div>
-    <div class="folder-item ${_currentFolderFilter === 'root' ? 'active' : ''}" onclick="setFolderFilter('root')">
+    <div class="folder-item ${_currentFolderFilter === 'root' ? 'active' : ''}" onclick="setFolderFilter('root')" role="button" tabindex="0">
       <span class="folder-icon">📄</span>
       <span class="folder-name">Chưa phân loại</span>
       <span class="folder-count">${rootCount}</span>
@@ -4023,14 +3929,14 @@ function _buildFolderTreeItems(parentId, depth) {
       const safeName    = escapeHtml(f.name).replace(/'/g, '&#39;');
       return `
         <div class="folder-item ${isActive ? 'active' : ''}" style="padding-left:${12 + depth * 14}px"
-             onclick="setFolderFilter('${f.id}')">
+             onclick="setFolderFilter('${f.id}')" role="button" tabindex="0">
           <span class="folder-icon">${hasChildren ? '📂' : '📁'}</span>
           <span class="folder-name">${escapeHtml(f.name)}</span>
           <span class="folder-count">${count}</span>
           <span class="folder-item-actions" onclick="event.stopPropagation()">
-            <button class="folder-action-btn" title="Thêm thư mục con" onclick="createFolderPrompt('${f.id}')">&#xff0b;</button>
-            <button class="folder-action-btn" title="Đổi tên" onclick="renameFolderPrompt('${f.id}','${safeName}')">&#x270f;</button>
-            <button class="folder-action-btn danger" title="Xoá" onclick="deleteFolderConfirm('${f.id}','${safeName}')">&#x1f5d1;</button>
+            <button class="folder-action-btn" title="Thêm thư mục con" aria-label="Thêm thư mục con" onclick="createFolderPrompt('${f.id}')">&#xff0b;</button>
+            <button class="folder-action-btn" title="Đổi tên" aria-label="Đổi tên thư mục" onclick="renameFolderPrompt('${f.id}','${safeName}')">&#x270f;</button>
+            <button class="folder-action-btn danger" title="Xoá" aria-label="Xoá thư mục" onclick="deleteFolderConfirm('${f.id}','${safeName}')">&#x1f5d1;</button>
           </span>
         </div>
         ${_buildFolderTreeItems(f.id, depth + 1)}`;
@@ -4159,13 +4065,13 @@ function _buildQuestionTableRows(filtered) {
         <td style="font-size:12px;color:var(--gray-400)">${formatDate(q.created_at)}</td>
         <td>
           <div class="td-actions">
-            <button class="btn-icon" title="Xem / Sửa"
+            <button class="btn-icon" title="Xem / Sửa" aria-label="Xem và sửa câu hỏi"
               onclick="navigate('/questions/${q.id}')">✏️</button>
-            <button class="btn-icon" title="Di chuyển vào thư mục"
+            <button class="btn-icon" title="Di chuyển vào thư mục" aria-label="Di chuyển vào thư mục"
               onclick="openMoveQuestionModal('${q.id}')">📁</button>
-            <button class="btn-icon" title="Sao chép đề"
+            <button class="btn-icon" title="Sao chép đề" aria-label="Sao chép câu hỏi"
               onclick="duplicateQuestion('${q.id}', this)">📋</button>
-            <button class="btn-icon danger" title="Xoá đề"
+            <button class="btn-icon danger" title="Xoá đề" aria-label="Xoá câu hỏi"
               onclick="deleteQuestion('${q.id}', this)">🗑</button>
           </div>
         </td>
@@ -4487,7 +4393,7 @@ function renderQuestions() {
       }
       if (bar) {
         bar.innerHTML = _questionTagFilter
-          ? `Lọc tag: <span class="tag-chip tag-chip-active">${escapeHtml(_questionTagFilter)}<button class="tag-chip-remove" onclick="setQuestionTagFilter('')">×</button></span>`
+          ? `Lọc tag: <span class="tag-chip tag-chip-active">${escapeHtml(_questionTagFilter)}<button class="tag-chip-remove" onclick="setQuestionTagFilter('')" aria-label="Xoá bộ lọc tag">×</button></span>`
           : '';
         if (!_questionTagFilter) bar.remove();
       }
@@ -4513,7 +4419,7 @@ function renderQuestions() {
           <input id="question-search-input" class="form-input search-input"
             placeholder="🔍 Tìm theo tên đề hoặc tag..."
             value="${escapeHtml(_questionSearch)}" />
-          ${_questionTagFilter ? `<div class="tag-filter-bar">Lọc tag: <span class="tag-chip tag-chip-active">${escapeHtml(_questionTagFilter)}<button class="tag-chip-remove" onclick="setQuestionTagFilter('')">×</button></span></div>` : ''}
+          ${_questionTagFilter ? `<div class="tag-filter-bar">Lọc tag: <span class="tag-chip tag-chip-active">${escapeHtml(_questionTagFilter)}<button class="tag-chip-remove" onclick="setQuestionTagFilter('')" aria-label="Xoá bộ lọc tag">×</button></span></div>` : ''}
         </div>
 
         <div class="skill-tabs">
@@ -5197,7 +5103,7 @@ function initStickyPreview() {
   floatEl.innerHTML = `
     <div class="preview-sticky-float-header">
       <span class="content-composer-preview-title" style="margin:0">Xem trước nội dung</span>
-      <button class="preview-sticky-close" onclick="dismissStickyPreview()" title="Ẩn">✕</button>
+      <button class="preview-sticky-close" onclick="dismissStickyPreview()" title="Ẩn" aria-label="Ẩn xem trước">✕</button>
     </div>
     <div id="preview-sticky-float-body" class="content-composer-preview-body"></div>`;
 
@@ -6480,7 +6386,7 @@ function renderVocabList() {
       ${v.example ? `<span class="vocab-example">${escapeHtml(v.example)}</span>` : ''}
       <div class="vocab-actions">
         <button class="vocab-edit" onclick="editVocabItem(${i})">Sửa</button>
-        <button class="vocab-remove" onclick="removeVocabItem(${i})">×</button>
+        <button class="vocab-remove" onclick="removeVocabItem(${i})" aria-label="Xoá từ vựng">×</button>
       </div>
     </div>`).join('');
 }
@@ -6868,7 +6774,7 @@ function _renderAudioSlots() {
   listEl.innerHTML = _audioSlots.map((s, i) => {
     const canRemove = _audioSlots.length > 1;
     const removeBtn = canRemove
-      ? `<button class="remove-audio-slot" onclick="removeAudioSlot(${i})" title="Xoá slot">×</button>`
+      ? `<button class="remove-audio-slot" onclick="removeAudioSlot(${i})" title="Xoá slot" aria-label="Xoá audio slot">×</button>`
       : '';
     let fileBody = '';
     if (s.status === 'idle') {
@@ -7408,7 +7314,7 @@ function renderProfileFieldsPage(fields) {
             <td><div class="pf-label-cell">${escapeHtml(f.label)}${opts}</div></td>
             <td><span class="pf-type-badge">${PF_TYPE_LABELS[f.field_type] || f.field_type}</span></td>
             <td>${role}</td>
-            <td><button class="btn-icon danger" onclick="deleteProfileField('${f.id}')">🗑</button></td>
+            <td><button class="btn-icon danger" onclick="deleteProfileField('${f.id}')" aria-label="Xoá trường hồ sơ">🗑</button></td>
           </tr>`;
         }).join('')}</tbody>
       </table>`;
@@ -8193,7 +8099,7 @@ async function showSharedPoolStats(id, title) {
     <div class="modal modal-wide" onclick="event.stopPropagation()">
       <div class="modal-header">
         <h3>📊 Thống kê: ${escapeHtml(title)}</h3>
-        <button class="modal-close" onclick="closeSharedStatsModal()">×</button>
+        <button class="modal-close" onclick="closeSharedStatsModal()" aria-label="Đóng">×</button>
       </div>
       <div class="modal-body sp-stats-body">
         <div style="text-align:center;padding:40px 0"><div class="spinner"></div><p style="color:var(--gray-400);margin-top:12px">Đang tải thống kê...</p></div>
@@ -8700,7 +8606,7 @@ function renderCQSectionsUI() {
       </div>
       <div style="display:flex;gap:6px">
         <button class="btn btn-sm btn-outline" onclick="editCQSection(${idx})">✏️ Sửa</button>
-        <button class="btn-icon danger" onclick="removeCQSection(${idx})">×</button>
+        <button class="btn-icon danger" onclick="removeCQSection(${idx})" aria-label="Xoá phần này">×</button>
       </div>
     </div>`;
   }).join('');

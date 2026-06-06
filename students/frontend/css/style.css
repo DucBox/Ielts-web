@@ -595,7 +595,7 @@ body {
   max-width: 320px;
 }
 
-.toast-success { background: #1a1a2e; color: #fff; }
+.toast-success { background: #166534; color: #fff; }
 .toast-error   { background: var(--danger); color: #fff; }
 .toast-info    { background: var(--primary); color: #fff; }
 .toast-warning {

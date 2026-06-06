@@ -1578,6 +1578,12 @@ body {
   }
   .assignment-toolbar {
     padding: 10px 16px;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .assignment-toolbar #submit-btn {
+    width: 100%;
+    order: 10;
   }
   .q-navigator {
     top: calc(var(--header-h) + 53px - 24px);
@@ -5528,5 +5534,19 @@ th.sortable:hover { color: var(--primary, #0f766e); }
 
   .composite-result-card-title {
     font-size: 18px;
+  }
+}
+
+@media (max-width: 360px) {
+  .assignment-toolbar {
+    padding: 8px 10px;
+    gap: 6px;
+  }
+  .assign-countdown-wrap {
+    min-width: 90px;
+    font-size: 12px;
+  }
+  .assignment-toolbar-title {
+    font-size: 13px;
   }
 }

@@ -2432,7 +2432,8 @@ function buildStudentRows(students, classId) {
       <td>
         <div class="td-actions">
           <button class="btn btn-sm btn-outline" title="Đổi mật khẩu"
-            onclick="openResetPasswordModal('${s.id}', '${s.full_name.replace(/'/g, "\\'")}', this)">🔑 Đổi MK</button>
+            data-sid="${s.id}" data-sname="${escapeHtml(s.full_name)}"
+            onclick="openResetPasswordModal(this.dataset.sid, this.dataset.sname, this)">🔑 Đổi MK</button>
           <button class="btn-icon danger" title="Xoá khỏi lớp này" aria-label="Xoá học sinh khỏi lớp"
             onclick="removeStudentFromClass('${s.id}', '${classId}', this)">🗑</button>
         </div>

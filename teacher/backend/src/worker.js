@@ -23,15 +23,28 @@ async function checkRateLimit(kv, key, limit, windowSecs) {
 }
 
 // ─── Simple HTML sanitizer (strip dangerous tags/attrs for block.html) ───────
+function decodeHtmlEntitiesForUrlCheck(s) {
+  return s
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCharCode(parseInt(h, 16)))
+    .replace(/&#(\d+);/gi, (_, d) => String.fromCharCode(parseInt(d, 10)))
+    .replace(/&amp;/gi, '&')
+    .replace(/\s/g, '');
+}
+
 function sanitizeHtml(html) {
   if (!html || typeof html !== 'string') return '';
   // Remove script, style, iframe, object, embed, form tags entirely
   let s = html.replace(/<(script|style|iframe|object|embed|form|base|meta|link)\b[\s\S]*?<\/\1>/gi, '');
   s = s.replace(/<(script|style|iframe|object|embed|form|base|meta|link)\b[^>]*>/gi, '');
-  // Remove dangerous event handlers and javascript: in attributes
+  // Remove dangerous event handlers
   s = s.replace(/\s+on\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]*)/gi, '');
-  s = s.replace(/\s+href\s*=\s*["']?\s*javascript:[^"'\s>]*/gi, '');
-  s = s.replace(/\s+src\s*=\s*["']?\s*javascript:[^"'\s>]*/gi, '');
+  // Remove href/src with dangerous schemes (including entity-encoded variants like java&#x73;cript:)
+  s = s.replace(/\s+(href|src)\s*=\s*("[^"]*"|'[^']*'|[^\s>]*)/gi, (match, attr, val) => {
+    const raw = val.replace(/^["']|["']$/g, '');
+    const decoded = decodeHtmlEntitiesForUrlCheck(raw).toLowerCase();
+    if (decoded.startsWith('javascript:') || decoded.startsWith('data:text/html') || decoded.startsWith('vbscript:')) return '';
+    return match;
+  });
   return s;
 }
 
@@ -69,6 +82,11 @@ function matchPath(pattern, pathname) {
     }
   }
   return params;
+}
+
+function redactQuestionsData(questionsData) {
+  if (!Array.isArray(questionsData)) return questionsData;
+  return questionsData.map(({ answers: _a, explanation: _e, ...rest }) => rest);
 }
 
 function getStudentPasswordValidationError(password) {
@@ -276,6 +294,10 @@ function buildStudentSpeakingKey(assignmentId, studentId, fileName) {
 
 function isExpectedStudentSpeakingKey(key, assignmentId, studentId) {
   return String(key || '').startsWith(`speaking/${assignmentId}/${studentId}-`);
+}
+
+function isExpectedCompositeSpeakingKey(key, compositeQuestionId, studentId) {
+  return String(key || '').startsWith(`speaking/${compositeQuestionId}/${studentId}-`);
 }
 
 async function r2RefIncrement(sql, key) {
@@ -1431,7 +1453,10 @@ function autoGrade(studentAnswers, questionsData, scoringScale = '10') {
   if (!questionsData || questionsData.length === 0) return null;
   if (!studentAnswers || studentAnswers.length === 0) return 0;
   let correct = 0;
+  const seenQNos = new Set();
   for (const sa of studentAnswers) {
+    if (seenQNos.has(sa.q_no)) continue; // deduplicate: only first answer per q_no counts
+    seenQNos.add(sa.q_no);
     const q = questionsData.find(q => q.q_no === sa.q_no);
     if (!q || !q.answers || q.answers.length === 0) continue;
     const normalized = (sa.answer || '').toLowerCase().trim();
@@ -1604,10 +1629,10 @@ function normalizeAiCriterion(value, legacyText = '') {
   return criterion;
 }
 
-function normalizeAiFeedbackPayload(feedback) {
-  const lr = normalizeAiCriterion(feedback.lr, feedback.lr_feedback);
+function normalizeAiFeedbackPayload(feedback, skill = 'writing') {
+  const lr  = normalizeAiCriterion(feedback.lr,  feedback.lr_feedback);
   const gra = normalizeAiCriterion(feedback.gra, feedback.gra_feedback);
-  return {
+  const base = {
     schema_version: 2,
     lr_score: feedback.lr_score,
     lr,
@@ -1615,8 +1640,31 @@ function normalizeAiFeedbackPayload(feedback) {
     gra_score: feedback.gra_score,
     gra,
     gra_feedback: buildCriterionFallbackMarkdown(gra),
+    overall_score: feedback.overall_score,
+    overall_comment: feedback.overall_comment || '',
     generated_at: new Date().toISOString(),
   };
+  if (skill === 'writing') {
+    const tr = normalizeAiCriterion(feedback.tr);
+    const cc = normalizeAiCriterion(feedback.cc);
+    return {
+      ...base,
+      tr_score: feedback.tr_score,
+      tr,
+      tr_feedback: buildCriterionFallbackMarkdown(tr),
+      cc_score: feedback.cc_score,
+      cc,
+      cc_feedback: buildCriterionFallbackMarkdown(cc),
+    };
+  }
+  if (skill === 'speaking') {
+    return {
+      ...base,
+      fc_advice: feedback.fc_advice || '',
+      pron_advice: feedback.pron_advice || '',
+    };
+  }
+  return base;
 }
 
 // ─── Shared pool AI helper ───────────────────────────────────────────────────
@@ -2929,6 +2977,19 @@ export default {
           if (row.skill === 'composite' && Array.isArray(body.sections)) {
             const incomingSections = body.sections;
             const incomingIds = incomingSections.map(s => s._id).filter(Boolean);
+            // Guard: reject if any section being removed already has student submissions
+            const removedCheck = incomingIds.length > 0
+              ? await sql`
+                  SELECT 1 FROM composite_section_submissions css
+                  JOIN composite_question_sections cqs ON cqs.id = css.section_id
+                  WHERE cqs.composite_id = ${p.id} AND cqs.id != ALL(${incomingIds}::uuid[])
+                  LIMIT 1`
+              : await sql`
+                  SELECT 1 FROM composite_section_submissions css
+                  JOIN composite_question_sections cqs ON cqs.id = css.section_id
+                  WHERE cqs.composite_id = ${p.id}
+                  LIMIT 1`;
+            if (removedCheck.length > 0) return err('Không thể xoá section đã có bài nộp của học sinh', 409);
             // Delete sections not in the incoming list
             if (incomingIds.length > 0) {
               await sql`DELETE FROM composite_question_sections WHERE composite_id = ${p.id} AND id != ALL(${incomingIds}::uuid[])`;
@@ -3151,7 +3212,7 @@ export default {
         const assignment = await loadStudentAssignmentAccess(sql, p.id, String(claims.student_id));
         if (!assignment) return err('Không tìm thấy bài tập', 404);
         if (!assignment.is_active) return err('Bài tập đã đóng', 403);
-        return json(assignment);
+        return json({ ...assignment, questions_data: redactQuestionsData(assignment.questions_data) });
       }
 
       if ((p = matchPath('/assignments/:id/vocabulary', path)) && method === 'GET') {
@@ -3256,7 +3317,6 @@ export default {
           // Multi-file presigned upload path
           const validKeys = audioUploadKeys.filter(item => item.key && isExpectedStudentSpeakingKey(item.key, p.id, studentId));
           if (validKeys.length === 0) {
-            for (const k of audioUploadKeys) await env.R2.delete(k.key).catch(() => {});
             return err('audio_upload_keys không hợp lệ', 400);
           }
           const parts = [];
@@ -3280,7 +3340,6 @@ export default {
         } else if (directUploadKey) {
           // Legacy single presigned key
           if (!isExpectedStudentSpeakingKey(directUploadKey, p.id, studentId)) {
-            await env.R2.delete(directUploadKey).catch(() => {});
             return err('audio_upload_key không hợp lệ', 400);
           }
           uploadedR2Key = directUploadKey;
@@ -3307,11 +3366,10 @@ export default {
             SELECT started_at FROM exam_sessions
             WHERE student_id = ${studentId} AND ref_type = 'assignment' AND ref_id = ${p.id}
           `;
-          if (session) {
-            const elapsedSec = (Date.now() - new Date(session.started_at).getTime()) / 1000;
-            const limitSec   = assignment.time_limit_minutes * 60 + 30; // 30s grace
-            isOvertime = elapsedSec > limitSec;
-          }
+          if (!session) return err('Phiên thi không tồn tại — vui lòng bắt đầu bài thi trước khi nộp', 403);
+          const elapsedSec = (Date.now() - new Date(session.started_at).getTime()) / 1000;
+          const limitSec   = assignment.time_limit_minutes * 60 + 30; // 30s grace
+          isOvertime = elapsedSec > limitSec;
         }
 
         try {
@@ -3478,13 +3536,13 @@ export default {
             text: {
               format: {
                 type: 'json_schema',
-                name: 'ielts_ai_feedback',
+                name: sub.skill === 'speaking' ? 'ielts_speaking_feedback' : 'ielts_writing_feedback',
                 strict: true,
-                schema: AI_FEEDBACK_RESPONSE_SCHEMA,
+                schema: sub.skill === 'speaking' ? SPEAKING_AI_SCHEMA : WRITING_AI_SCHEMA,
               },
             },
             input: [
-              { role: 'developer', content: IELTS_SYSTEM_PROMPT },
+              { role: 'developer', content: sub.skill === 'speaking' ? SPEAKING_AI_SYSTEM_PROMPT : WRITING_AI_SYSTEM_PROMPT },
               { role: 'user',      content: prompt },
             ],
           }),
@@ -3515,7 +3573,7 @@ export default {
           return err('AI trả về định dạng không hợp lệ', 502);
         }
 
-        const aiFeedback = normalizeAiFeedbackPayload(feedback);
+        const aiFeedback = normalizeAiFeedbackPayload(feedback, sub.skill);
 
         const [updated] = await sql`
           UPDATE submissions
@@ -4425,7 +4483,7 @@ export default {
         if (!membership) return err('Bạn chưa vào lớp nào', 403);
         const [row] = await sql`SELECT * FROM shared_pool WHERE id = ${p.id}`;
         if (!row) return err('Không tìm thấy đề', 404);
-        return json(row);
+        return json({ ...row, questions_data: redactQuestionsData(row.questions_data) });
       }
 
       // Submit a shared pool attempt
@@ -4460,7 +4518,6 @@ export default {
         if (audioUploadKeys) {
           const validKeys = audioUploadKeys.filter(item => item.key && isExpectedSharedSpeakingKey(item.key, p.id, studentId));
           if (validKeys.length === 0) {
-            for (const k of audioUploadKeys) await env.R2.delete(k.key).catch(() => {});
             return err('audio_upload_keys không hợp lệ', 400);
           }
           const parts = [];
@@ -4494,11 +4551,10 @@ export default {
             SELECT started_at FROM exam_sessions
             WHERE student_id = ${studentId} AND ref_type = 'shared_pool' AND ref_id = ${p.id}
           `;
-          if (session) {
-            const elapsedSec = (Date.now() - new Date(session.started_at).getTime()) / 1000;
-            const limitSec   = poolQ.time_limit_minutes * 60 + 30; // 30s grace
-            isOvertime = elapsedSec > limitSec;
-          }
+          if (!session) return err('Phiên thi không tồn tại — vui lòng bắt đầu bài thi trước khi nộp', 403);
+          const elapsedSec = (Date.now() - new Date(session.started_at).getTime()) / 1000;
+          const limitSec   = poolQ.time_limit_minutes * 60 + 30; // 30s grace
+          isOvertime = elapsedSec > limitSec;
         }
 
         const [attempt] = await sql`
@@ -4803,9 +4859,10 @@ export default {
             WHERE cqs.composite_id = ${assignment.question_id}
             ORDER BY cqs.display_order
           `;
-          return json({ ...assignment, sections });
+          const sectionsRedacted = sections.map(s => ({ ...s, questions_data: redactQuestionsData(s.questions_data) }));
+          return json({ ...assignment, questions_data: redactQuestionsData(assignment.questions_data), sections: sectionsRedacted });
         }
-        return json(assignment);
+        return json({ ...assignment, questions_data: redactQuestionsData(assignment.questions_data) });
       }
 
       // ── Student: submit a composite section ───────────────────────────────────
@@ -4827,6 +4884,7 @@ export default {
         const ct = request.headers.get('Content-Type') || '';
         let assignmentId = null, answers = null, content = null, audioUrl = null, audioKey = null;
         let directUploadKey = null, audioUploadKeys = null;
+        let pendingAudioFile = null; // hold audio until after access check
 
         if (ct.includes('multipart/form-data')) {
           const form = await request.formData();
@@ -4835,18 +4893,7 @@ export default {
           if (audioFile && audioFile.size > 0) {
             if (audioFile.size > 25 * 1024 * 1024) return err('File quá lớn — tối đa 25MB', 413);
             if (!isAudioContentType(audioFile.type)) return err('Chỉ chấp nhận file âm thanh', 415);
-            if (!env.OPENAI_API_KEY) return err('Chưa cấu hình OPENAI_API_KEY', 500);
-            const openaiForm = new FormData();
-            openaiForm.append('file', audioFile, audioFile.name || 'audio.webm');
-            openaiForm.append('model', 'gpt-4o-mini-transcribe');
-            openaiForm.append('response_format', 'json');
-            const sttUrl = getOpenAIEndpoint(env, '/v1/audio/transcriptions', 'stt');
-            const aiRes = await fetch(sttUrl, { method: 'POST', headers: { 'Authorization': `Bearer ${getOpenAIAuthToken(env, sttUrl, 'stt')}` }, body: openaiForm });
-            if (!aiRes.ok) { const t = await aiRes.text(); if (isUnsupportedRegionOpenAIError(t)) return err('Dịch vụ nhận diện giọng nói đang bị chặn', 502); return err('Không thể nhận diện giọng nói', 500); }
-            content = (await aiRes.json()).text || '';
-            audioKey = `speaking/${section.composite_question_id}/${studentId}-${crypto.randomUUID()}-${sanitizeFileName(audioFile.name)}`;
-            await env.R2.put(audioKey, audioFile.stream(), { httpMetadata: { contentType: audioFile.type } });
-            audioUrl = buildR2PublicUrl(env, audioKey);
+            pendingAudioFile = audioFile; // defer STT + R2 until access validated
           }
         } else {
           const body = await request.json().catch(() => null);
@@ -4860,7 +4907,7 @@ export default {
 
         if (!assignmentId) return err('assignment_id là bắt buộc', 400);
 
-        // Verify student access via assignment
+        // Verify student access via assignment BEFORE any external calls (STT/R2)
         const [assignment] = await sql`
           SELECT a.id, a.is_active, a.deadline, a.mode, a.time_limit_minutes, a.class_id
           FROM assignments a
@@ -4871,6 +4918,22 @@ export default {
         `;
         if (!assignment) return err('Không tìm thấy bài tập', 404);
         if (!assignment.is_active) return err('Bài tập đã đóng', 403);
+
+        // Now safe to process audio (access confirmed)
+        if (pendingAudioFile) {
+          if (!env.OPENAI_API_KEY) return err('Chưa cấu hình OPENAI_API_KEY', 500);
+          const openaiForm = new FormData();
+          openaiForm.append('file', pendingAudioFile, pendingAudioFile.name || 'audio.webm');
+          openaiForm.append('model', 'gpt-4o-mini-transcribe');
+          openaiForm.append('response_format', 'json');
+          const sttUrl = getOpenAIEndpoint(env, '/v1/audio/transcriptions', 'stt');
+          const aiRes = await fetch(sttUrl, { method: 'POST', headers: { 'Authorization': `Bearer ${getOpenAIAuthToken(env, sttUrl, 'stt')}` }, body: openaiForm });
+          if (!aiRes.ok) { const t = await aiRes.text(); if (isUnsupportedRegionOpenAIError(t)) return err('Dịch vụ nhận diện giọng nói đang bị chặn', 502); return err('Không thể nhận diện giọng nói', 500); }
+          content = (await aiRes.json()).text || '';
+          audioKey = `speaking/${section.composite_question_id}/${studentId}-${crypto.randomUUID()}-${sanitizeFileName(pendingAudioFile.name)}`;
+          await env.R2.put(audioKey, pendingAudioFile.stream(), { httpMetadata: { contentType: pendingAudioFile.type } });
+          audioUrl = buildR2PublicUrl(env, audioKey);
+        }
         if (assignment.deadline && new Date(assignment.deadline) < new Date()) return err('Đã hết hạn nộp bài', 403);
 
         const [existing] = await sql`
@@ -4881,15 +4944,31 @@ export default {
 
         // Handle R2 pre-uploaded audio for speaking
         if (section.skill === 'speaking' && (directUploadKey || audioUploadKeys) && !content) {
-          const r2Key = directUploadKey || audioUploadKeys[0]?.key;
-          try {
-            content  = (await transcribeR2Audio(env, r2Key)).text || '';
-            audioUrl = buildR2PublicUrl(env, r2Key);
-            audioKey = r2Key;
-          } catch (sttErr) {
-            if (directUploadKey) await env.R2.delete(directUploadKey).catch(() => {});
-            else if (audioUploadKeys) for (const k of audioUploadKeys) await env.R2.delete(k.key).catch(() => {});
-            return err(sttErr.message || 'Không thể nhận diện giọng nói', sttErr.statusCode || 500);
+          const compositeQId = section.composite_question_id;
+          if (directUploadKey) {
+            if (!isExpectedCompositeSpeakingKey(directUploadKey, compositeQId, studentId))
+              return err('audio_upload_key không hợp lệ', 400);
+            try {
+              content  = (await transcribeR2Audio(env, directUploadKey)).text || '';
+              audioUrl = buildR2PublicUrl(env, directUploadKey);
+              audioKey = directUploadKey;
+            } catch (sttErr) {
+              return err(sttErr.message || 'Không thể nhận diện giọng nói', sttErr.statusCode || 500);
+            }
+          } else if (audioUploadKeys) {
+            const validKeys = audioUploadKeys.filter(item => item.key && isExpectedCompositeSpeakingKey(item.key, compositeQId, studentId));
+            if (validKeys.length === 0) return err('audio_upload_keys không hợp lệ', 400);
+            const parts = [];
+            try {
+              for (const item of validKeys) {
+                const transcriptData = await transcribeR2Audio(env, item.key);
+                parts.push(`--- Transcript: ${item.name || item.key.split('/').pop()} ---\n${transcriptData.text || ''}`);
+                if (!audioUrl) { audioUrl = buildR2PublicUrl(env, item.key); audioKey = item.key; }
+              }
+            } catch (sttErr) {
+              return err(sttErr.message || 'Không thể nhận diện giọng nói', sttErr.statusCode || 500);
+            }
+            content = parts.join('\n\n\n');
           }
         }
 
@@ -4944,7 +5023,11 @@ export default {
         const body = await request.json().catch(() => null);
         const ALLOWED_SCORE_FIELDS = new Set(['score', 'feedback']);
         const updateFields = [], updateVals = [];
-        if (body?.score    !== undefined) { updateFields.push('score');    updateVals.push(Number(body.score)); }
+        if (body?.score !== undefined && body?.score !== null) {
+          const scoreNum = Number(body.score);
+          if (!isFinite(scoreNum) || scoreNum < 0 || scoreNum > 9) return err('Score không hợp lệ (0–9)', 400);
+          updateFields.push('score'); updateVals.push(scoreNum);
+        }
         if (body?.feedback !== undefined) { updateFields.push('feedback'); updateVals.push(String(body.feedback)); }
         if (updateFields.length === 0) return err('score hoặc feedback là bắt buộc');
         for (const f of updateFields) {
@@ -5086,7 +5169,8 @@ export default {
       try {
         const scheduledTime = Number(controller?.scheduledTime || Date.now());
         const scheduledDate = new Date(scheduledTime);
-        const shouldEnqueueDeadlines = scheduledDate.getUTCMinutes() === 50;
+        // Run on every tick — email event deduplication in enqueueDeadline1DayEmails prevents duplicate sends
+        const shouldEnqueueDeadlines = true;
         logStudentEmail('scheduled_start', {
           cron: controller?.cron || null,
           scheduledTime,
@@ -5104,6 +5188,7 @@ export default {
         });
       } catch (e) {
         console.error('[scheduled] Unhandled error in scheduled task:', e?.message || e);
+        throw e;
       }
     })());
   },

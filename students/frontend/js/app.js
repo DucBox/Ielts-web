@@ -776,13 +776,16 @@ function flushAutoSave() {
 
 // ── Assignment countdown timer ────────────────────────────────────────────────
 
+let _assignDeadlineTs = 0;
+
 function startAssignmentCountdown(secs, ctx) {
   stopAssignmentCountdown();
-  _assignSecsLeft = Math.floor(secs);
+  _assignDeadlineTs = Date.now() + Math.floor(secs) * 1000;
   _assignCountdownCtx = ctx;
+  _assignSecsLeft = Math.floor(secs);
   _updateAssignCountdownDisplay();
   _assignCountdownInterval = setInterval(() => {
-    _assignSecsLeft--;
+    _assignSecsLeft = Math.max(0, Math.round((_assignDeadlineTs - Date.now()) / 1000));
     _updateAssignCountdownDisplay();
     if (_assignSecsLeft <= 0) {
       const ctx = _assignCountdownCtx;
@@ -4239,9 +4242,13 @@ async function submitAnswers(assignmentId, qCount, skill, btn, isAuto = false) {
     toast('Nộp bài thành công! 🎉');
     navigate(`/result/${assignmentId}`);
   } catch (e) {
-    btnReset(btn);
     if (e.error?.includes('đã nộp')) { navigate(`/result/${assignmentId}`); return; }
-    toast('Lỗi nộp bài: ' + (e.error || e.message), 'error');
+    if (isAuto) {
+      toast('⏰ Hết giờ — nộp tự động thất bại. Vui lòng liên hệ giáo viên.', 'error');
+    } else {
+      btnReset(btn);
+      toast('Lỗi nộp bài: ' + (e.error || e.message), 'error');
+    }
   }
 }
 
@@ -4341,9 +4348,13 @@ async function submitWriting(assignmentId, btn, isAuto = false) {
     toast('Nộp bài thành công! 🎉');
     navigate(`/result/${assignmentId}`);
   } catch (e) {
-    btnReset(btn);
     if (e.error?.includes('đã nộp')) { navigate(`/result/${assignmentId}`); return; }
-    toast('Lỗi nộp bài: ' + (e.error || e.message), 'error');
+    if (isAuto) {
+      toast('⏰ Hết giờ — nộp tự động thất bại. Vui lòng liên hệ giáo viên.', 'error');
+    } else {
+      btnReset(btn);
+      toast('Lỗi nộp bài: ' + (e.error || e.message), 'error');
+    }
   }
 }
 
@@ -6629,12 +6640,15 @@ async function startSharedAttempt(poolId, mode) {
 window.startSharedAttempt = startSharedAttempt;
 
 // ── Countdown timer ───────────────────────────────────────────────────────
+let _sharedDeadlineTs = 0;
+
 function startSharedCountdownTimer(secs) {
   stopSharedCountdownTimer();
+  _sharedDeadlineTs = Date.now() + Math.floor(secs) * 1000;
   _sharedSecsLeft = Math.floor(secs);
   _updateSharedTimerDisplay();
   _sharedCountdownInterval = setInterval(() => {
-    _sharedSecsLeft--;
+    _sharedSecsLeft = Math.max(0, Math.round((_sharedDeadlineTs - Date.now()) / 1000));
     _updateSharedTimerDisplay();
     if (_sharedSecsLeft <= 0) {
       stopSharedCountdownTimer();

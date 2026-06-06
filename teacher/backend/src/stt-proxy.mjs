@@ -138,12 +138,14 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    if (STT_PROXY_TOKEN) {
-      const token = getBearerToken(req);
-      if (token !== STT_PROXY_TOKEN) {
-        sendJson(res, 401, { error: 'Unauthorized' });
-        return;
-      }
+    if (!STT_PROXY_TOKEN) {
+      sendJson(res, 503, { error: 'STT_PROXY_TOKEN not configured' });
+      return;
+    }
+    const token = getBearerToken(req);
+    if (token !== STT_PROXY_TOKEN) {
+      sendJson(res, 401, { error: 'Unauthorized' });
+      return;
     }
 
     const ct = String(req.headers['content-type'] || '');

@@ -813,12 +813,20 @@ function _updateAssignCountdownDisplay() {
   el.classList.toggle('timer-urgent', _assignSecsLeft <= 60);
 }
 
+function freezeExamInputs() {
+  const page = document.querySelector('.assignment-page') || document.getElementById('app');
+  if (!page) return;
+  page.querySelectorAll('input, textarea, select, button').forEach(el => { el.disabled = true; });
+  page.querySelectorAll('[contenteditable]').forEach(el => { el.contentEditable = 'false'; });
+  page.style.pointerEvents = 'none';
+}
+
 async function autoSubmitAssignment(ctx) {
   const { assignmentId, skill, qCount } = ctx || {};
   if (!assignmentId) return;
+  freezeExamInputs();
   toast('⏰ Hết giờ! Đang tự động nộp bài...', 'warning');
   const btn = document.getElementById('submit-btn');
-  if (btn) btn.disabled = true;
 
   if (skill === 'reading' || skill === 'listening') {
     await submitAnswers(assignmentId, qCount, skill, btn, true);
@@ -6903,9 +6911,9 @@ async function autoSubmitSharedAttempt() {
   const ctx = _sharedCtx;
   if (!ctx) return;
   const { poolQ, mode } = ctx;
+  freezeExamInputs();
   toast('⏰ Hết giờ! Đang tự động nộp bài...', 'warning');
   const btn = $('#submit-btn');
-  if (btn) btn.disabled = true;
 
   if (poolQ.skill === 'reading' || poolQ.skill === 'listening') {
     await submitSharedReadingListening(null, true);

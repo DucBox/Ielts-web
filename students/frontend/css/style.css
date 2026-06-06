@@ -12,6 +12,9 @@
   --success-lt:  #dcfce7;
   --warning:     #f59e0b;
   --warning-lt:  #fef3c7;
+  --white:       #ffffff;
+  --bg-card:     #ffffff;
+  --radius-lg:   16px;
   --gray-50:     #f9fafb;
   --gray-100:    #f3f4f6;
   --gray-200:    #e5e7eb;
@@ -2034,6 +2037,8 @@ body {
   --gray-800: #f8fafc;
   --gray-900: #f8fafc;
   --text-secondary: #94a3b8;
+  --primary-lt:  rgba(20,184,166,.15);
+  --warning-lt:  rgba(245,158,11,.15);
   --success-lt: rgba(34,197,94,.15);
   --danger-lt:  rgba(239,68,68,.15);
   --bg-app:      #111827;
@@ -2046,6 +2051,8 @@ body {
   --border:      rgba(148, 163, 184, .18);
   --border-strong: rgba(148, 163, 184, .34);
   --card-bg:     #182235;
+  --bg-card:     #182235;
+  --white:       #1f2937;
   --surface:     #1f2937;
   --sidebar-bg:  #0f172a;
   --overlay:     rgba(2, 6, 23, .72);
@@ -5562,3 +5569,125 @@ th.sortable:hover { color: var(--primary, #0f766e); }
     font-size: 13px;
   }
 }
+
+/* ═══ DARK MODE — SUPPLEMENTAL OVERRIDES ════════════════════════════════════ */
+
+/* Countdown chip (deadline timer on assignment cards) */
+[data-theme="dark"] .countdown-chip {
+  background: rgba(194,65,12,.2);
+  color: #fca5a5;
+  border-color: rgba(194,65,12,.4);
+}
+
+/* Listening once notice */
+[data-theme="dark"] .listening-once-notice {
+  background: rgba(245,158,11,.12);
+  border-color: rgba(245,158,11,.3);
+  color: #fcd34d;
+}
+
+/* Pending feedback box */
+[data-theme="dark"] .pending-feedback {
+  background: rgba(245,158,11,.1);
+  border-color: rgba(245,158,11,.3);
+}
+
+/* Feedback hint pill */
+[data-theme="dark"] .feedback-hint {
+  background: rgba(245,158,11,.15);
+  color: #fcd34d;
+}
+
+/* Badge waiting (ungraded) */
+[data-theme="dark"] .badge-waiting {
+  background: rgba(245,158,11,.2);
+  color: #fcd34d;
+}
+
+/* Practice retry wrong-answers button */
+[data-theme="dark"] .btn-practice-wrong {
+  background: rgba(245,158,11,.15);
+  color: #fcd34d;
+  border-color: rgba(245,158,11,.4);
+}
+[data-theme="dark"] .btn-practice-wrong:hover {
+  background: rgba(245,158,11,.3);
+  color: #fff;
+}
+
+/* Question flag button when flagged */
+[data-theme="dark"] .q-flag-btn.flagged {
+  background: rgba(245,158,11,.2);
+  border-color: rgba(245,158,11,.4);
+}
+
+/* Match game finish streak box */
+[data-theme="dark"] .match-finish-streak {
+  background: rgba(245,158,11,.15);
+  border-color: rgba(245,158,11,.3);
+  color: #fcd34d;
+}
+
+/* Cue card (speaking prompt) */
+[data-theme="dark"] .cue-card {
+  background: rgba(20,184,166,.1);
+  border-color: rgba(20,184,166,.25);
+}
+
+/* Vocab mode count pill ("15 thẻ") */
+[data-theme="dark"] .vocab-mode-count {
+  background: rgba(20,184,166,.15);
+  color: #5eead4;
+}
+
+/* Composite result score badge (green pill) */
+[data-theme="dark"] .result-score-badge {
+  background: rgba(34,197,94,.15);
+  color: #86efac;
+}
+
+/* Composite skill score chips */
+[data-theme="dark"] .composite-skill-score-chip {
+  background: rgba(20,184,166,.1);
+  border-color: rgba(20,184,166,.2);
+}
+
+/* Composite result card icon */
+[data-theme="dark"] .composite-result-card-icon {
+  background: rgba(20,184,166,.15);
+}
+
+/* Table header in reading passage */
+[data-theme="dark"] .mixed-content-text table th,
+[data-theme="dark"] .mixed-content-text .editor-table th {
+  background: rgba(148,163,184,.1);
+  border-color: rgba(148,163,184,.2);
+}
+[data-theme="dark"] .mixed-content-text table td,
+[data-theme="dark"] .mixed-content-text .editor-table td {
+  border-color: rgba(148,163,184,.15);
+}
+
+/* Image placeholder background */
+[data-theme="dark"] .mixed-content-image {
+  background: var(--surface);
+}
+
+/* Annotation highlights — swap multiply → screen for dark bg */
+[data-theme="dark"] .ann-highlight { mix-blend-mode: screen; }
+[data-theme="dark"] .ann-highlight.ann-c0 { background: rgba(234,179,8,.3); border-bottom-color: #ca8a04; }
+[data-theme="dark"] .ann-highlight.ann-c1 { background: rgba(37,99,235,.3); border-bottom-color: #3b82f6; }
+[data-theme="dark"] .ann-highlight.ann-c2 { background: rgba(220,38,38,.3); border-bottom-color: #f87171; }
+
+/* Student highlights */
+[data-theme="dark"] .student-highlight { color: inherit; }
+[data-theme="dark"] .hl-yellow { background: rgba(234,179,8,.3);  border-bottom-color: #ca8a04; }
+[data-theme="dark"] .hl-green  { background: rgba(34,197,94,.25); border-bottom-color: #16a34a; }
+[data-theme="dark"] .hl-blue   { background: rgba(59,130,246,.3); border-bottom-color: #2563eb; }
+[data-theme="dark"] .hl-pink   { background: rgba(236,72,153,.3); border-bottom-color: #db2777; }
+
+/* Skill chart delta pills */
+[data-theme="dark"] .skill-chart-delta.ok,
+[data-theme="dark"] .spc-vs.ok  { background: rgba(34,197,94,.15); color: #86efac; }
+[data-theme="dark"] .skill-chart-delta.gap,
+[data-theme="dark"] .spc-vs.gap { background: rgba(239,68,68,.15);  color: #fca5a5; }

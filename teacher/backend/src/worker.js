@@ -1981,6 +1981,7 @@ export default {
             JOIN question_pool q ON q.id = a.question_id
             JOIN students s ON s.id = sub.student_id
             WHERE a.class_id = ${classId}
+              AND sub.rewrite_status IS DISTINCT FROM 'rewritten'
             ORDER BY sub.submitted_at ASC
           `,
           sql`
@@ -3182,13 +3183,18 @@ export default {
         }
 
         const [existing] = await sql`
-          SELECT id FROM submissions WHERE assignment_id = ${p.id} AND student_id = ${studentId}
+          SELECT id, attempt_number, rewrite_status
+          FROM submissions
+          WHERE assignment_id = ${p.id} AND student_id = ${studentId}
+          ORDER BY attempt_number DESC
+          LIMIT 1
         `;
-        if (existing) {
+        if (existing && existing.rewrite_status !== 'requested') {
           if (audioUploadKeys) for (const k of audioUploadKeys) await env.R2.delete(k.key).catch(() => {});
           else if (directUploadKey) await env.R2.delete(directUploadKey).catch(() => {});
           return err('Bạn đã nộp bài này rồi', 409);
         }
+        const nextAttemptNumber = existing ? existing.attempt_number + 1 : 1;
         if (!assignment.is_active) {
           if (audioUploadKeys) for (const k of audioUploadKeys) await env.R2.delete(k.key).catch(() => {});
           else if (directUploadKey) await env.R2.delete(directUploadKey).catch(() => {});
@@ -3291,14 +3297,22 @@ export default {
         }
 
         try {
+          // If resubmitting, mark previous attempt as 'rewritten'
+          if (existing?.rewrite_status === 'requested') {
+            await sql`
+              UPDATE submissions SET rewrite_status = 'rewritten'
+              WHERE id = ${existing.id}
+            `;
+          }
           const [submission] = await sql`
             INSERT INTO submissions
-              (assignment_id, student_id, student_answers, writing_content, speaking_script, speaking_audio_url, speaking_audio_urls, overall_score, is_overtime)
+              (assignment_id, student_id, student_answers, writing_content, speaking_script, speaking_audio_url, speaking_audio_urls, overall_score, is_overtime, attempt_number)
             VALUES (
               ${p.id}, ${studentId},
               ${studentAnswers ? JSON.stringify(studentAnswers) : null},
               ${writingContent}, ${speakingScript}, ${speakingAudioUrl},
-              ${JSON.stringify(speakingAudioUrls)}::jsonb, ${overallScore}, ${isOvertime}
+              ${JSON.stringify(speakingAudioUrls)}::jsonb, ${overallScore}, ${isOvertime},
+              ${nextAttemptNumber}
             )
             RETURNING *
           `;
@@ -3357,6 +3371,22 @@ export default {
 
       // ── Submissions ────────────────────────────────────────────────────────
 
+      // Student: fetch a specific submission version by ID (ownership-verified)
+      if ((p = matchPath('/submissions/:id/by-student', path)) && method === 'GET') {
+        const claims = await requireStudentAuth(request, env);
+        if (!claims) return err('Unauthorized', 401);
+        const studentId = String(claims.student_id);
+        const [sub] = await sql`
+          SELECT sub.*, a.title AS assignment_title, q.skill, q.questions_data, q.content_text, q.content_blocks, q.content_url, q.content_urls, q.vocabulary, q.script
+          FROM submissions sub
+          JOIN assignments a ON a.id = sub.assignment_id
+          JOIN question_pool q ON q.id = a.question_id
+          WHERE sub.id = ${p.id} AND sub.student_id = ${studentId}
+        `;
+        if (!sub) return err('Không tìm thấy bài nộp', 404);
+        return json(sub);
+      }
+
       if (path === '/submissions') {
         if (method === 'GET') {
           // Student endpoint — require JWT; use student_id from token
@@ -3375,6 +3405,8 @@ export default {
             JOIN assignments a ON a.id = sub.assignment_id
             JOIN question_pool q ON q.id = a.question_id
             WHERE sub.assignment_id = ${assignmentId} AND sub.student_id = ${studentId}
+            ORDER BY sub.attempt_number DESC
+            LIMIT 1
           `;
           if (!sub) return err('Không tìm thấy bài nộp', 404);
           return json(sub);
@@ -3481,7 +3513,19 @@ export default {
             JOIN students s ON s.id = sub.student_id
             WHERE sub.id = ${p.id}
           `;
-          if (sub) return json({ ...sub, submission_kind: 'assignment', supports_ai_feedback: true });
+          if (sub) {
+            const prevAttempts = sub.attempt_number > 1
+              ? await sql`
+                  SELECT id, attempt_number, overall_score, teacher_feedback, submitted_at, rewrite_status
+                  FROM submissions
+                  WHERE assignment_id = ${sub.assignment_id}
+                    AND student_id = ${sub.student_id}
+                    AND id != ${sub.id}
+                  ORDER BY attempt_number ASC
+                `
+              : [];
+            return json({ ...sub, submission_kind: 'assignment', supports_ai_feedback: true, previous_attempts: prevAttempts });
+          }
 
           const [compositeSub] = await sql`
             SELECT
@@ -3608,10 +3652,12 @@ export default {
             }
             return json(updatedComposite);
           }
+          const newRewriteStatus = body.action === 'request_rewrite' ? 'requested' : null;
           const [sub] = await sql`
             UPDATE submissions
             SET teacher_feedback = ${body.teacher_feedback != null ? JSON.stringify(body.teacher_feedback) : null}::jsonb,
-                overall_score    = COALESCE(${body.overall_score ?? null}, overall_score)
+                overall_score    = COALESCE(${body.overall_score ?? null}, overall_score),
+                rewrite_status   = ${newRewriteStatus}
             WHERE id = ${p.id}
             RETURNING *
           `;
@@ -3642,7 +3688,18 @@ export default {
               }
             }
           }
-          return json(sub);
+          // Return previous attempts so teacher UI can show history
+          const prevAttempts = sub.attempt_number > 1
+            ? await sql`
+                SELECT id, attempt_number, overall_score, teacher_feedback, submitted_at, rewrite_status
+                FROM submissions
+                WHERE assignment_id = ${sub.assignment_id}
+                  AND student_id = ${sub.student_id}
+                  AND id != ${sub.id}
+                ORDER BY attempt_number ASC
+              `
+            : [];
+          return json({ ...sub, previous_attempts: prevAttempts });
         }
       }
 
@@ -3655,6 +3712,7 @@ export default {
           sql`
             SELECT sub.id AS submission_id, sub.submitted_at, sub.overall_score, sub.status,
               sub.teacher_feedback IS NOT NULL AS has_teacher_feedback,
+              sub.attempt_number, sub.rewrite_status,
               st.full_name AS student_name,
               a.id AS assignment_id, a.title AS assignment_title,
               q.skill, c.class_name, c.id AS class_id
@@ -3666,6 +3724,7 @@ export default {
             WHERE c.teacher_id = ${teacherId}
               AND q.skill IN ('writing', 'speaking')
               AND sub.overall_score IS NULL
+              AND sub.rewrite_status IS DISTINCT FROM 'rewritten'
           `,
           sql`
             SELECT
@@ -3723,7 +3782,7 @@ export default {
             q.skill, q.title AS question_title, q.content_text, q.content_blocks, q.content_url,
             jsonb_array_length(COALESCE(q.vocabulary, '[]'::jsonb)) AS vocab_count,
             sub.id AS submission_id, sub.overall_score, sub.status AS submission_status,
-            sub.submitted_at,
+            sub.submitted_at, sub.rewrite_status, sub.attempt_number,
             CASE WHEN q.skill = 'composite' THEN (
               SELECT json_agg(json_build_object(
                 'id', cqs.id, 'label', cqs.label, 'skill', cqs.skill,
@@ -3738,12 +3797,31 @@ export default {
             ) ELSE NULL END AS composite_sections
           FROM assignments a
           JOIN question_pool q ON q.id = a.question_id
-          LEFT JOIN submissions sub
-            ON sub.assignment_id = a.id AND sub.student_id = ${studentId}
+          LEFT JOIN LATERAL (
+            SELECT id, overall_score, status, submitted_at, rewrite_status, attempt_number
+            FROM submissions
+            WHERE assignment_id = a.id AND student_id = ${studentId}
+            ORDER BY attempt_number DESC
+            LIMIT 1
+          ) sub ON true
           WHERE a.class_id = ${classId}
           ORDER BY a.created_at DESC
         `;
         return json(rows);
+      }
+
+      // ── All submission versions for a student (version selector) ─────────────
+      if ((p = matchPath('/assignments/:id/my-submissions', path)) && method === 'GET') {
+        const claims = await requireStudentAuth(request, env);
+        if (!claims) return err('Unauthorized', 401);
+        const studentId = String(claims.student_id);
+        const versions = await sql`
+          SELECT id, attempt_number, overall_score, teacher_feedback, submitted_at, rewrite_status, writing_content
+          FROM submissions
+          WHERE assignment_id = ${p.id} AND student_id = ${studentId}
+          ORDER BY attempt_number ASC
+        `;
+        return json(versions);
       }
 
       // POST /exam-sessions — record (or retrieve) when student first opened an exam

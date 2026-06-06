@@ -983,7 +983,10 @@ function buildInboxRows(items) {
       <tr>
         <td>${skillBadge(it.skill)}</td>
         <td><strong>${escapeHtml(it.student_name)}</strong></td>
-        <td>${escapeHtml(it.assignment_title)}</td>
+        <td>
+          ${escapeHtml(it.assignment_title)}
+          ${(it.attempt_number || 1) > 1 ? `<span class="inbox-rewrite-badge">BÀI VIẾT LẠI · Lần ${it.attempt_number}</span>` : ''}
+        </td>
         <td><span class="inbox-class">${escapeHtml(it.class_name)}</span></td>
         <td style="font-size:12px;color:var(--gray-400)">${formatDateTime(it.submitted_at)}</td>
         <td>
@@ -3010,7 +3013,7 @@ function bindGradingShortcuts() {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
         e.preventDefault();
         const saveBtn = document.querySelector('#save-btn, [onclick*="saveGrading"]');
-        if (saveBtn) saveGrading(saveBtn);
+        if (saveBtn) saveGrading(saveBtn, 'complete');
       }
       return;
     }
@@ -3067,6 +3070,8 @@ function renderGradingPage(sub) {
   const supportsAiFeedback = sub.supports_ai_feedback !== false;
 
   const titleSkill = sub.skill === 'speaking' ? '🎤 Chấm bài Speaking' : '✏️ Chấm bài Writing';
+  const isRewrite = (sub.attempt_number || 1) > 1;
+  const prevAttempts = sub.previous_attempts || [];
   
   let mediaHtml = '';
   if (sub.skill === 'speaking') {
@@ -3099,7 +3104,10 @@ function renderGradingPage(sub) {
 
     <div class="page-header">
       <div>
-        <div class="page-title">${titleSkill}</div>
+        <div class="page-title">
+          ${titleSkill}
+          ${isRewrite ? `<span class="rewrite-badge-title">BÀI VIẾT LẠI · Lần ${sub.attempt_number}</span>` : ''}
+        </div>
         <div class="page-subtitle">
           ${escapeHtml(sub.student_name || '')}
           ${sub.student_username ? `<span style="color:var(--gray-400);font-family:monospace;font-size:11px">(${escapeHtml(sub.student_username)})</span>` : ''}
@@ -3107,7 +3115,7 @@ function renderGradingPage(sub) {
           <span style="color:var(--gray-400);font-size:12px">· Nộp ${formatDateTime(sub.submitted_at)}</span>
         </div>
       </div>
-      <button class="btn btn-primary" id="save-btn" onclick="saveGrading(this)">💾 Lưu nhận xét</button>
+      <button class="btn btn-primary" id="save-btn" onclick="saveGrading(this, 'complete')">✅ Hoàn thành</button>
     </div>
 
     <div class="grading-layout">
@@ -3150,9 +3158,27 @@ function renderGradingPage(sub) {
           <span style="font-size:13px;color:var(--gray-400)">/9</span>
         </div>
 
-        <button class="btn btn-primary" style="width:100%;margin-top:4px" onclick="saveGrading(this)">
-          💾 Lưu nhận xét
-        </button>
+        <div class="grading-action-buttons">
+          <button class="btn btn-primary" style="flex:1" onclick="saveGrading(this, 'complete')">✅ Hoàn thành</button>
+          <button class="btn btn-outline grading-rewrite-btn" onclick="saveGrading(this, 'request_rewrite')">✏️ Yêu cầu viết lại</button>
+        </div>
+
+        ${prevAttempts.length > 0 ? `
+        <details class="prev-attempts-details" style="margin-top:12px">
+          <summary class="prev-attempts-summary">📋 Lần chấm trước (${prevAttempts.length})</summary>
+          <div class="prev-attempts-list">
+            ${prevAttempts.map(a => `
+              <div class="prev-attempt-card">
+                <div class="prev-attempt-header">
+                  <span class="prev-attempt-label">Lần ${a.attempt_number}</span>
+                  <span class="prev-attempt-score">${a.overall_score != null ? `${a.overall_score} Band` : 'Chưa có điểm'}</span>
+                  <span class="prev-attempt-date">${formatDateTime(a.submitted_at)}</span>
+                </div>
+                ${a.teacher_feedback?.overall ? `<div class="prev-attempt-overall">${escapeHtml(a.teacher_feedback.overall)}</div>` : ''}
+                ${(a.teacher_feedback?.annotations?.length > 0) ? `<div class="prev-attempt-ann-count">${a.teacher_feedback.annotations.length} nhận xét highlight</div>` : ''}
+              </div>`).join('')}
+          </div>
+        </details>` : ''}
 
         ${supportsAiFeedback ? `
         <div class="grading-sidebar-section ai-feedback-section" style="margin-top:16px;border-top:1px solid var(--gray-200);padding-top:16px">
@@ -3426,7 +3452,7 @@ function scrollToAnnotation(id) {
     ?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
-async function saveGrading(btn) {
+async function saveGrading(btn, action = 'complete') {
   const overall = document.getElementById('overall-feedback')?.value.trim() || '';
   const scoreRaw = document.getElementById('grading-score')?.value;
   const score = scoreRaw !== '' && scoreRaw != null ? parseFloat(scoreRaw) : null;
@@ -3441,10 +3467,14 @@ async function saveGrading(btn) {
     await api.patch(`/submissions/${_gradingSubmissionId}`, {
       teacher_feedback: { annotations: _gradingAnnotations, overall, score },
       overall_score: score,
+      action,
     });
-    // Sync both save buttons
-    document.querySelectorAll('#save-btn, [onclick="saveGrading(this)"]').forEach(b => btnReset(b));
-    toast('Đã lưu nhận xét! ✓');
+    document.querySelectorAll('#save-btn, .grading-rewrite-btn').forEach(b => btnReset(b));
+    if (action === 'request_rewrite') {
+      toast('Đã yêu cầu học sinh viết lại! ✓');
+    } else {
+      toast('Đã hoàn thành chấm bài! ✓');
+    }
   } catch (e) {
     btnReset(btn);
     toast('Lỗi lưu: ' + (e.error || e.message), 'error');

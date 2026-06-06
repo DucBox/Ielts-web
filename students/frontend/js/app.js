@@ -3844,12 +3844,20 @@ function renderAssignments(assignments) {
       rightContent = '';
     } else if (isDone) {
       const hasScore = a.overall_score !== null && a.overall_score !== undefined;
-      statusBadge = hasScore
-        ? `<span class="badge badge-done">✅ Đã có điểm</span>`
-        : `<span class="badge badge-waiting">⏳ Chờ chấm</span>`;
-      rightContent = hasScore
-        ? `<div class="score-band">${a.overall_score}</div><div class="score-label">Band</div>`
-        : `<div class="score-pending-icon">⏳</div>`;
+      const needsRewrite = a.rewrite_status === 'requested';
+      if (needsRewrite) {
+        statusBadge = `<span class="badge badge-rewrite">✏️ YÊU CẦU VIẾT LẠI</span>`;
+        rightContent = hasScore
+          ? `<div class="score-band rewrite-score">${a.overall_score}</div><div class="score-label">Band</div>`
+          : `<div class="score-pending-icon">✏️</div>`;
+      } else {
+        statusBadge = hasScore
+          ? `<span class="badge badge-done">✅ Đã có điểm</span>`
+          : `<span class="badge badge-waiting">⏳ Chờ chấm</span>`;
+        rightContent = hasScore
+          ? `<div class="score-band">${a.overall_score}</div><div class="score-label">Band</div>`
+          : `<div class="score-pending-icon">⏳</div>`;
+      }
     } else if (overdue && a.deadline) {
       statusBadge  = `<span class="badge badge-overdue">⚠️ Quá hạn</span>`;
       rightContent = '';
@@ -3969,12 +3977,15 @@ async function showAssignment({ id }) {
   try {
     const assignment = await api.get(`/assignments/${id}/question`);
 
-    // If already submitted → go to result
+    // If already submitted → go to result (unless rewrite is requested)
     try {
-      await api.get(`/submissions?assignment_id=${id}&student_id=${_student.id}`);
-      clearAllDrafts(id);
-      navigate(`/result/${id}`);
-      return;
+      const existing = await api.get(`/submissions?assignment_id=${id}&student_id=${_student.id}`);
+      if (existing.rewrite_status !== 'requested') {
+        clearAllDrafts(id);
+        navigate(`/result/${id}`);
+        return;
+      }
+      // rewrite_status === 'requested': allow student to submit again — fall through to render
     } catch {}
 
     // For exam mode with time limit: register/retrieve server-side start time
@@ -4858,17 +4869,22 @@ async function showResult({ id }) {
     const sub = await api.get(
       `/submissions?assignment_id=${id}&student_id=${_student.id}`
     );
-    renderResult(sub);
+    // Fetch all versions for writing (version selector)
+    let allVersions = null;
+    if (sub.skill === 'writing') {
+      try { allVersions = await api.get(`/assignments/${id}/my-submissions`); } catch {}
+    }
+    renderResult(sub, allVersions);
   } catch (e) {
     toast('Lỗi tải kết quả: ' + (e.error || e.message), 'error');
     navigate('/assignments');
   }
 }
 
-function renderResult(sub) {
+function renderResult(sub, allVersions = null) {
   const skill = sub.skill;
   if (skill === 'reading' || skill === 'listening') renderGradedResult(sub);
-  else if (skill === 'writing')  renderWritingResult(sub);
+  else if (skill === 'writing')  renderWritingResult(sub, allVersions);
   else if (skill === 'speaking') renderSpeakingResult(sub);
 }
 
@@ -5187,14 +5203,14 @@ function locateInElement(container, searchText) {
   toast('Không tìm thấy đoạn này trong bài', 'error');
 }
 
-function renderWritingResult(sub) {
+function renderWritingResult(sub, allVersions = null) {
   const feedback = sub.teacher_feedback;
   const isGraded = sub.overall_score != null
     || (feedback?.annotations?.length > 0)
     || feedback?.overall;
 
   if (isGraded) {
-    renderWritingFeedback(sub);
+    renderWritingFeedback(sub, allVersions);
   } else {
     renderWritingPending(sub);
   }
@@ -5226,12 +5242,14 @@ function renderWritingPending(sub) {
     </div>`;
 }
 
-function renderWritingFeedback(sub) {
+function renderWritingFeedback(sub, allVersions = null) {
   const feedback    = sub.teacher_feedback || {};
   const annotations = (feedback.annotations || []).sort((a, b) => a.start - b.start);
   const overall     = feedback.overall || '';
   const score       = sub.overall_score ?? feedback.score;
   const wordCount   = countWords(sub.writing_content || '');
+  const needsRewrite = sub.rewrite_status === 'requested';
+  const hasMultiVersions = allVersions && allVersions.length > 1;
 
   const overallBlock = overall ? `
     <div class="section-label">Nhận xét tổng thể</div>
@@ -5252,16 +5270,37 @@ function renderWritingFeedback(sub) {
            </div>`).join('')}
        </div>`;
 
+  const versionSelector = hasMultiVersions ? `
+    <div class="version-selector">
+      <span class="version-selector-label">Xem kết quả:</span>
+      ${allVersions.map(v => `
+        <button class="version-btn${v.id === sub.id ? ' active' : ''}"
+          onclick="switchWritingVersion('${v.id}','${sub.assignment_id}')">
+          Lần ${v.attempt_number}${v.overall_score != null ? ` · ${v.overall_score}` : ''}
+        </button>`).join('')}
+    </div>` : '';
+
+  const rewriteBar = needsRewrite ? `
+    <div class="rewrite-request-bar">
+      <div class="rewrite-request-text">
+        <span class="rewrite-request-icon">✏️</span>
+        <span>Giáo viên yêu cầu bạn viết lại bài này</span>
+      </div>
+      <button class="btn btn-danger" onclick="navigate('/assignment/${sub.assignment_id}')">Bắt đầu viết lại</button>
+    </div>` : '';
+
   $('#app').innerHTML = `
     <div class="assignment-page">
       <div class="assignment-toolbar">
         <button class="btn-back" onclick="navigate('${getResultBackHref()}')">${getResultBackLabel()}</button>
         <div class="assignment-toolbar-title">${skillBadge(sub.skill)} ${escapeHtml(sub.assignment_title || '')}</div>
-        <div class="score-chip">
+        <div class="score-chip ${needsRewrite ? 'score-chip-rewrite' : ''}">
           <span class="score-chip-val">${score ?? '—'}</span>
           <span class="score-chip-label">/9.0</span>
         </div>
       </div>
+      ${rewriteBar}
+      ${versionSelector}
       <div class="assignment-content">
         <div class="content-pane" id="feedback-content-pane">
           ${overallBlock}
@@ -5276,6 +5315,19 @@ function renderWritingFeedback(sub) {
         </div>
       </div>
     </div>`;
+}
+
+async function switchWritingVersion(submissionId, assignmentId) {
+  setLoading('Đang tải...');
+  try {
+    const [sub, allVersions] = await Promise.all([
+      api.get(`/submissions/${submissionId}/by-student`),
+      api.get(`/assignments/${assignmentId}/my-submissions`),
+    ]);
+    renderWritingFeedback(sub, allVersions);
+  } catch (e) {
+    toast('Lỗi: ' + (e.error || e.message), 'error');
+  }
 }
 
 const ANN_COLORS = ['ann-c0', 'ann-c1', 'ann-c2', 'ann-c3', 'ann-c4', 'ann-c5'];
@@ -6043,7 +6095,8 @@ window.selectCalDay        = selectCalDay;
 window.toggleExplanation   = toggleExplanation;
 window.toggleVocabItem     = toggleVocabItem;
 window.locateInText        = locateInText;
-window.scrollToFeedbackMark = scrollToFeedbackMark;
+window.scrollToFeedbackMark   = scrollToFeedbackMark;
+window.switchWritingVersion   = switchWritingVersion;
 window.submitPractice      = submitPractice;
 window.togglePracticeExp   = togglePracticeExp;
 

@@ -2110,6 +2110,90 @@ body.resizing-image {
   border-top: 1px solid var(--gray-200);
 }
 
+/* Rewrite feature */
+.rewrite-badge-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #dc2626;
+  background: #fee2e2;
+  padding: 2px 8px;
+  border-radius: 99px;
+  margin-left: 8px;
+  vertical-align: middle;
+  text-transform: uppercase;
+  letter-spacing: .3px;
+}
+
+.grading-action-buttons {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.grading-rewrite-btn {
+  flex: 1;
+  border-color: #f97316;
+  color: #f97316;
+}
+.grading-rewrite-btn:hover { background: #fff7ed; }
+
+.prev-attempts-details {
+  border: 1px solid var(--gray-200);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.prev-attempts-summary {
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  background: var(--gray-50);
+  color: var(--gray-600);
+  list-style: none;
+  user-select: none;
+}
+.prev-attempts-summary:hover { background: var(--gray-100); }
+.prev-attempts-list {
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.prev-attempt-card {
+  background: var(--white);
+  border: 1px solid var(--gray-200);
+  border-left: 3px solid var(--gray-300);
+  border-radius: 4px;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+.prev-attempt-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.prev-attempt-label {
+  font-weight: 700;
+  color: var(--gray-600);
+  background: var(--gray-100);
+  padding: 1px 6px;
+  border-radius: 99px;
+}
+.prev-attempt-score { font-weight: 600; color: var(--primary); }
+.prev-attempt-date { color: var(--gray-400); margin-left: auto; }
+.prev-attempt-overall {
+  color: var(--gray-700);
+  line-height: 1.5;
+  margin-top: 4px;
+  white-space: pre-wrap;
+}
+.prev-attempt-ann-count {
+  font-size: 11px;
+  color: var(--gray-400);
+  margin-top: 2px;
+}
+
 /* Writing text display */
 .writing-display {
   font-size: 15px;
@@ -3448,6 +3532,20 @@ th.sortable:hover { color: var(--primary); }
 .inbox-class { color: var(--primary, #3b82f6); }
 .inbox-time { font-size: 11px; color: var(--gray-400); margin-top: 2px; }
 .inbox-grade-btn { white-space: nowrap; }
+
+.inbox-rewrite-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  color: #dc2626;
+  background: #fee2e2;
+  padding: 1px 6px;
+  border-radius: 99px;
+  margin-left: 6px;
+  vertical-align: middle;
+  text-transform: uppercase;
+  letter-spacing: .3px;
+}
 
 /* ═══ B4.10 — WAVEFORM ═════════════════════════════════════════════════════ */
 .waveform-container {

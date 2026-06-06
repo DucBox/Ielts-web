@@ -3730,6 +3730,10 @@ export default {
         }
         if (method === 'PATCH') {
           const body = await request.json();
+          if (body.overall_score != null) {
+            const s = Number(body.overall_score);
+            if (!isFinite(s) || s < 0 || s > 10) return err('Score không hợp lệ (0–10)', 400);
+          }
           // Capture previous score to detect first-time grading
           const [prev] = await sql`SELECT overall_score FROM submissions WHERE id = ${p.id}`;
           const wasUnscored = prev && prev.overall_score == null;
@@ -4923,7 +4927,7 @@ export default {
             WHERE cqs.composite_id = ${assignment.question_id}
             ORDER BY cqs.display_order
           `;
-          const sectionsRedacted = sections.map(s => ({ ...s, questions_data: redactQuestionsData(s.questions_data) }));
+          const sectionsRedacted = sections.map(({ script: _script, ...s }) => ({ ...s, questions_data: redactQuestionsData(s.questions_data) }));
           return json({ ...assignment, questions_data: redactQuestionsData(assignment.questions_data), sections: sectionsRedacted });
         }
         return json({ ...assignment, questions_data: redactQuestionsData(assignment.questions_data) });
@@ -5074,7 +5078,13 @@ export default {
           `;
           return json(submission, 201);
         } catch (dbErr) {
-          if (audioKey && !directUploadKey && !audioUploadKeys) await env.R2.delete(audioKey).catch(() => {});
+          if (audioKey && !directUploadKey && !audioUploadKeys) {
+            await env.R2.delete(audioKey).catch(() => {});
+          } else if (directUploadKey) {
+            await env.R2.delete(directUploadKey).catch(() => {});
+          } else if (audioUploadKeys) {
+            for (const item of audioUploadKeys) await env.R2.delete(item.key).catch(() => {});
+          }
           throw dbErr;
         }
       }

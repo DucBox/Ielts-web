@@ -3669,7 +3669,7 @@ async function openAssignModal(classId, className, preSelectedId = null) {
       const preQ = _questions.find(q => q.id === preSelectedId);
       const skill = preQ?.skill || '';
       const scaleGroup = $('#assign-scale-group');
-      if (scaleGroup) scaleGroup.style.display = (skill === 'reading' || skill === 'listening') ? '' : 'none';
+      if (scaleGroup) scaleGroup.style.display = (skill === 'reading' || skill === 'listening' || skill === 'composite') ? '' : 'none';
     }
   } catch (e) {
     toast('Không thể tải kho đề', 'error');
@@ -3795,7 +3795,7 @@ function selectQuestion(id, el) {
   el.querySelector('input[type=radio]').checked = true;
   const skill = el.dataset.skill || '';
   const scaleGroup = $('#assign-scale-group');
-  if (scaleGroup) scaleGroup.style.display = (skill === 'reading' || skill === 'listening') ? '' : 'none';
+  if (scaleGroup) scaleGroup.style.display = (skill === 'reading' || skill === 'listening' || skill === 'composite') ? '' : 'none';
 }
 
 function _syncAssignTimeLimitVisibility() {

@@ -4973,7 +4973,7 @@ export default {
 
         // Verify student access via assignment BEFORE any external calls (STT/R2)
         const [assignment] = await sql`
-          SELECT a.id, a.is_active, a.deadline, a.mode, a.time_limit_minutes, a.class_id
+          SELECT a.id, a.is_active, a.deadline, a.mode, a.time_limit_minutes, a.class_id, a.scoring_scale
           FROM assignments a
           JOIN student_classes sc ON sc.class_id = a.class_id
           WHERE a.id = ${assignmentId} AND a.question_id = ${section.composite_question_id}
@@ -5036,12 +5036,10 @@ export default {
           }
         }
 
-        // Auto-grade reading/listening (composite section: IELTS if 40q)
+        // Auto-grade reading/listening using assignment scoring_scale
         let score = null;
         if ((section.skill === 'reading' || section.skill === 'listening') && answers) {
-          const secQCount = Array.isArray(section.questions_data) ? section.questions_data.length : 0;
-          const secScale = secQCount === 40 ? 'ielts' : '10';
-          score = autoGrade(answers, section.questions_data, secScale);
+          score = autoGrade(answers, section.questions_data, assignment.scoring_scale || '10');
         }
 
         // Overtime detection using exam_session for this section

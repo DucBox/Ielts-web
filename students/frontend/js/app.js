@@ -7771,9 +7771,10 @@ window.showCompositeSectionExam = showCompositeSectionExam;
 
 function _renderCompositeSectionFullScreen(compositeId, sec, timerSecs) {
   const sectionId = sec.id;
+  const secDraftId = `${compositeId}_${sectionId}`;
   // Mirror individual assignment state for all helpers
-  _activeAssignmentId = sectionId;
-  const flagDraft = loadDraft(sectionId, 'flags');
+  _activeAssignmentId = secDraftId;
+  const flagDraft = loadDraft(secDraftId, 'flags');
   _flaggedSet = new Set(Array.isArray(flagDraft?.data) ? flagDraft.data : []);
   const qCount = sec.question_count || 0;
 
@@ -7791,7 +7792,7 @@ function _renderCompositeSectionFullScreen(compositeId, sec, timerSecs) {
       answerRows += `<div class="answer-row">
         <span class="q-label">Q${i}</span>
         <input class="answer-input" id="ans-${i}" type="text" placeholder="Đáp án câu ${i}"
-          oninput="updateNavigatorState();scheduleAnswerDraftSave('${sectionId}',${qCount})" />
+          oninput="updateNavigatorState();scheduleAnswerDraftSave('${secDraftId}',${qCount})" />
         <button class="q-flag-btn${flagged}" data-flag-q="${i}" onclick="toggleFlag(${i})" title="Đánh dấu xem lại">🚩</button>
       </div>`;
     }
@@ -7811,10 +7812,10 @@ function _renderCompositeSectionFullScreen(compositeId, sec, timerSecs) {
         </div>
       </div>`;
     postRender = () => {
-      restoreAnswerDraft(sectionId, qCount);
+      restoreAnswerDraft(secDraftId, qCount);
       bindReadingTextInteractions();
       updateNavigatorState();
-      startAutoSave(() => persistAnswerDraft(sectionId, qCount));
+      startAutoSave(() => persistAnswerDraft(secDraftId, qCount));
     };
 
   } else if (sec.skill === 'listening') {
@@ -7824,7 +7825,7 @@ function _renderCompositeSectionFullScreen(compositeId, sec, timerSecs) {
       answerRows += `<div class="answer-row">
         <span class="q-label">Q${i}</span>
         <input class="answer-input" id="ans-${i}" type="text" placeholder="Đáp án câu ${i}"
-          oninput="updateNavigatorState();scheduleAnswerDraftSave('${sectionId}',${qCount})" />
+          oninput="updateNavigatorState();scheduleAnswerDraftSave('${secDraftId}',${qCount})" />
         <button class="q-flag-btn${flagged}" data-flag-q="${i}" onclick="toggleFlag(${i})" title="Đánh dấu xem lại">🚩</button>
       </div>`;
     }
@@ -7846,11 +7847,11 @@ function _renderCompositeSectionFullScreen(compositeId, sec, timerSecs) {
         </div>
       </div>`;
     postRender = () => {
-      restoreAnswerDraft(sectionId, qCount);
+      restoreAnswerDraft(secDraftId, qCount);
       if (_compositeExam.mode !== 'practice') setupLockedListeningAudio();
       bindReadingTextInteractions();
       updateNavigatorState();
-      startAutoSave(() => persistAnswerDraft(sectionId, qCount));
+      startAutoSave(() => persistAnswerDraft(secDraftId, qCount));
     };
 
   } else if (sec.skill === 'writing') {
@@ -7864,7 +7865,7 @@ function _renderCompositeSectionFullScreen(compositeId, sec, timerSecs) {
           <div class="section-title">Bài làm của bạn</div>
           <textarea id="writing-answer" class="writing-textarea"
             placeholder="Viết bài của bạn vào đây..."
-            oninput="updateWordCount(this);scheduleWritingDraftSave('${sectionId}')"></textarea>
+            oninput="updateWordCount(this);scheduleWritingDraftSave('${secDraftId}')"></textarea>
           <div id="word-count" class="word-count word-count-extended">
             <span data-stat="words">0 từ</span>
             <span data-stat="chars">0 ký tự</span>
@@ -7875,9 +7876,9 @@ function _renderCompositeSectionFullScreen(compositeId, sec, timerSecs) {
         </div>
       </div>`;
     postRender = () => {
-      const draft = loadDraft(sectionId, 'writing');
+      const draft = loadDraft(secDraftId, 'writing');
       if (draft?.data) { const ta = $('#writing-answer'); if (ta) { ta.value = draft.data; updateWordCount(ta); } }
-      startAutoSave(() => persistWritingDraft(sectionId));
+      startAutoSave(() => persistWritingDraft(secDraftId));
     };
 
   } else if (sec.skill === 'speaking') {
@@ -8049,6 +8050,7 @@ async function _submitCompositeSectionAndBack(compositeId, sectionId, btn, isAut
     body.assignment_id = _compositeExam.id;
 
     const result = await api.post(`/student/composite-sections/${sectionId}/submit`, body);
+    clearAllDrafts(`${compositeId}_${sectionId}`);
     const secIdx = _compositeExam.sections.findIndex(s => s.id === sectionId);
     if (secIdx >= 0) Object.assign(_compositeExam.sections[secIdx], {
       submission_id: result.id, answers: result.answers, content: result.content,

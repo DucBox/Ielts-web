@@ -3164,21 +3164,20 @@ function renderGradingPage(sub) {
         </div>
 
         ${prevAttempts.length > 0 ? `
-        <details class="prev-attempts-details" style="margin-top:12px">
-          <summary class="prev-attempts-summary">📋 Lần chấm trước (${prevAttempts.length})</summary>
-          <div class="prev-attempts-list">
-            ${prevAttempts.map(a => `
-              <div class="prev-attempt-card">
-                <div class="prev-attempt-header">
-                  <span class="prev-attempt-label">Lần ${a.attempt_number}</span>
-                  <span class="prev-attempt-score">${a.overall_score != null ? `${a.overall_score} Band` : 'Chưa có điểm'}</span>
-                  <span class="prev-attempt-date">${formatDateTime(a.submitted_at)}</span>
-                </div>
-                ${a.teacher_feedback?.overall ? `<div class="prev-attempt-overall">${escapeHtml(a.teacher_feedback.overall)}</div>` : ''}
-                ${(a.teacher_feedback?.annotations?.length > 0) ? `<div class="prev-attempt-ann-count">${a.teacher_feedback.annotations.length} nhận xét highlight</div>` : ''}
-              </div>`).join('')}
-          </div>
-        </details>` : ''}
+        <div class="prev-attempts-section">
+          <div class="prev-attempts-title">📋 Lần chấm trước</div>
+          ${prevAttempts.map(a => `
+            <div class="prev-attempt-card">
+              <div class="prev-attempt-header">
+                <span class="prev-attempt-label">Lần ${a.attempt_number}</span>
+                <span class="prev-attempt-score">${a.overall_score != null ? `${a.overall_score} Band` : 'Chưa có điểm'}</span>
+                <span class="prev-attempt-date">${formatDateTime(a.submitted_at)}</span>
+              </div>
+              ${a.teacher_feedback?.overall
+                ? `<div class="prev-attempt-overall">${escapeHtml(a.teacher_feedback.overall)}</div>`
+                : `<div class="prev-attempt-overall" style="color:var(--gray-400);font-style:italic">Không có nhận xét tổng</div>`}
+            </div>`).join('')}
+        </div>` : ''}
 
         ${supportsAiFeedback ? `
         <div class="grading-sidebar-section ai-feedback-section" style="margin-top:16px;border-top:1px solid var(--gray-200);padding-top:16px">

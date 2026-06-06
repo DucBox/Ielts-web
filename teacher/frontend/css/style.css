@@ -2137,29 +2137,19 @@ body.resizing-image {
 }
 .grading-rewrite-btn:hover { background: #fff7ed; }
 
-.prev-attempts-details {
-  border: 1px solid var(--gray-200);
-  border-radius: 8px;
-  overflow: hidden;
-}
-.prev-attempts-summary {
-  padding: 8px 12px;
-  font-size: 12px;
-  font-weight: 700;
-  cursor: pointer;
-  background: var(--gray-50);
-  color: var(--gray-600);
-  list-style: none;
-  user-select: none;
-}
-.prev-attempts-summary:hover { background: var(--gray-100); }
-.prev-attempts-list {
-  padding: 8px;
+.prev-attempts-section {
+  margin-top: 12px;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-height: 320px;
-  overflow-y: auto;
+}
+.prev-attempts-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--gray-500);
+  text-transform: uppercase;
+  letter-spacing: .4px;
+  margin-bottom: 2px;
 }
 .prev-attempt-card {
   background: var(--white);

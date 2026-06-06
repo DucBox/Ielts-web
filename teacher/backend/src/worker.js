@@ -3024,7 +3024,7 @@ export default {
           await autoCloseExpired(sql, { classId });
           const rows = await sql`
             SELECT a.*, q.title AS question_title, q.skill,
-              (SELECT COUNT(*) FROM submissions sub WHERE sub.assignment_id = a.id)::int AS submission_count
+              (SELECT COUNT(DISTINCT student_id) FROM submissions sub WHERE sub.assignment_id = a.id AND sub.rewrite_status IS DISTINCT FROM 'rewritten')::int AS submission_count
             FROM assignments a
             JOIN question_pool q ON q.id = a.question_id
             WHERE a.class_id = ${classId}
@@ -3121,12 +3121,20 @@ export default {
 
         const students = await sql`
           SELECT s.id AS student_id, s.full_name, s.username,
-            sub.id AS submission_id, sub.overall_score,
-            sub.status AS submission_status, sub.submitted_at
+            sub.submission_id, sub.overall_score,
+            sub.submission_status, sub.submitted_at,
+            sub.attempt_number, sub.rewrite_status
           FROM student_classes sc
           JOIN students s ON s.id = sc.student_id
-          LEFT JOIN submissions sub
-            ON sub.student_id = s.id AND sub.assignment_id = ${p.id}
+          LEFT JOIN LATERAL (
+            SELECT id AS submission_id, overall_score,
+              status AS submission_status, submitted_at,
+              attempt_number, rewrite_status
+            FROM submissions
+            WHERE student_id = s.id AND assignment_id = ${p.id}
+            ORDER BY attempt_number DESC
+            LIMIT 1
+          ) sub ON true
           WHERE sc.class_id = ${assignment.class_id}
           ORDER BY s.full_name ASC
         `;

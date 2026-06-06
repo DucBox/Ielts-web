@@ -3317,15 +3317,15 @@ export default {
         try {
           // Wrap UPDATE + INSERT in a transaction so if INSERT fails the UPDATE is rolled back
           // (audio uploads are already done above, before any DB writes)
-          const [submission] = await sql.transaction(async (txn) => {
-            // If resubmitting, mark previous attempt as 'rewritten'
+          const txResults = await sql.transaction(txn => {
+            const queries = [];
             if (existing?.rewrite_status === 'requested') {
-              await txn`
+              queries.push(txn`
                 UPDATE submissions SET rewrite_status = 'rewritten'
                 WHERE id = ${existing.id}
-              `;
+              `);
             }
-            const result = await txn`
+            queries.push(txn`
               INSERT INTO submissions
                 (assignment_id, student_id, student_answers, writing_content, speaking_script, speaking_audio_url, speaking_audio_urls, overall_score, is_overtime, attempt_number)
               VALUES (
@@ -3336,9 +3336,10 @@ export default {
                 ${nextAttemptNumber}
               )
               RETURNING *
-            `;
-            return result;
+            `);
+            return queries;
           });
+          const [submission] = txResults[txResults.length - 1];
           // Mark assignment-related notifications as read since student has now submitted
           await sql`
             UPDATE notifications SET is_read = true, read_at = NOW()

@@ -3468,12 +3468,9 @@ async function saveGrading(btn, action = 'complete') {
       overall_score: score,
       action,
     });
-    document.querySelectorAll('#save-btn, .grading-rewrite-btn').forEach(b => btnReset(b));
-    if (action === 'request_rewrite') {
-      toast('Đã yêu cầu học sinh viết lại! ✓');
-    } else {
-      toast('Đã hoàn thành chấm bài! ✓');
-    }
+    const msg = action === 'request_rewrite' ? 'Đã yêu cầu học sinh viết lại! ✓' : 'Đã hoàn thành chấm bài! ✓';
+    toast(msg);
+    setTimeout(() => navigate('/inbox'), 800);
   } catch (e) {
     btnReset(btn);
     toast('Lỗi lưu: ' + (e.error || e.message), 'error');

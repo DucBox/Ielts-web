@@ -5248,7 +5248,9 @@ function renderWritingFeedback(sub, allVersions = null) {
   const overall     = feedback.overall || '';
   const score       = sub.overall_score ?? feedback.score;
   const wordCount   = countWords(sub.writing_content || '');
-  const needsRewrite = sub.rewrite_status === 'requested';
+  // Always check latest version's rewrite status, regardless of which version is being viewed
+  const latestVersion = allVersions ? allVersions[allVersions.length - 1] : sub;
+  const needsRewrite = latestVersion.rewrite_status === 'requested';
   const hasMultiVersions = allVersions && allVersions.length > 1;
 
   const overallBlock = overall ? `

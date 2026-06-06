@@ -875,7 +875,7 @@ function buildQuestionNavigator(qCount, assignmentId) {
   for (let i = 1; i <= qCount; i++) {
     cells += `<button class="q-nav-btn" data-nav-q="${i}" onclick="jumpToQuestion(${i})">${i}</button>`;
   }
-  const noteKey = `note_${assignmentId}`;
+  const noteKey = `note_${_student?.id || 'anon'}_${assignmentId}`;
   const savedNote = (() => { try { return localStorage.getItem(noteKey) || ''; } catch { return ''; } })();
   return `
     <div class="q-navigator">
@@ -982,7 +982,7 @@ window.setHighlightColor = setHighlightColor;
 function saveNotePanel(assignmentId) {
   const ta = document.getElementById(`note-area-${assignmentId}`);
   if (!ta) return;
-  try { localStorage.setItem(`note_${assignmentId}`, ta.value); } catch {}
+  try { localStorage.setItem(`note_${_student?.id || 'anon'}_${assignmentId}`, ta.value); } catch {}
 }
 
 // ── Listening replay (B1.6) ────────────────────────────────────────────────
@@ -1822,10 +1822,7 @@ function chooseClass(classId, className) {
 function toDateKey(value) {
   const d = value instanceof Date ? new Date(value) : new Date(value);
   if (Number.isNaN(d.getTime())) return '';
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
+  return d.toLocaleDateString('sv-SE', { timeZone: 'Asia/Ho_Chi_Minh' });
 }
 
 function dateFromKey(key) {

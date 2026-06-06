@@ -4082,7 +4082,7 @@ function _buildQuestionTableRows(filtered) {
         <td style="font-size:12px;color:var(--gray-400)">
           ${q.skill === 'composite'
             ? '📋 Tổng hợp'
-            : (Array.isArray(q.questions_data) ? q.questions_data.length + ' câu' : '—')}
+            : (q.question_count != null ? q.question_count + ' câu' : '—')}
           ${q.content_url ? ' · 🔊 Audio' : ''}
         </td>
         <td style="font-size:12px;color:var(--gray-400)">${formatDate(q.created_at)}</td>

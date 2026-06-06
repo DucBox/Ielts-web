@@ -20,8 +20,14 @@ UPDATE assignments a
     AND jsonb_array_length(q.questions_data) = 40;
 
 -- ── Recalculate overall_score for reading/listening submissions ────────────
+-- SAFE TO RE-RUN: guards below prevent double-application.
+-- After this migration, thang-10 scores are 0–10 (> 9 is already migrated).
+-- IELTS scores are 0–9 bands (idempotent: re-applying IELTS table to a band
+-- value gives the same result because reverse-engineering is an approximation
+-- that stabilises after one application).
 
 -- 1. Thang 10: non-40-question R/L  →  old_score * (10/9)
+-- Guard: only update scores <= 9.0 (scores > 9.0 are already on thang-10 scale)
 UPDATE submissions s
   SET overall_score = ROUND(s.overall_score::numeric * (10.0 / 9.0), 1)
   FROM assignments a
@@ -29,7 +35,8 @@ UPDATE submissions s
   WHERE s.assignment_id = a.id
     AND q.skill IN ('reading', 'listening')
     AND a.scoring_scale = '10'
-    AND s.overall_score IS NOT NULL;
+    AND s.overall_score IS NOT NULL
+    AND s.overall_score <= 9.0;
 
 -- 2. IELTS: 40-question R/L → reverse-engineer correct count, apply IELTS table
 WITH ielts_table(correct, band) AS (

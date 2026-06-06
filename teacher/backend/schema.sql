@@ -1,7 +1,7 @@
 -- Current bootstrap schema for the IELTS Web Platform.
 --
--- This file is intended for initializing a fresh NeonDB database so it matches
--- the production schema verified on 2026-05-04.
+-- This file is intended for initializing a fresh NeonDB database.
+-- Last synced: 2026-06-06 (through migration 027)
 --
 -- For existing databases, run migrations in teacher/backend/migrations/ instead
 -- of relying on CREATE TABLE IF NOT EXISTS to reshape old tables.
@@ -9,7 +9,7 @@
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 DO $$ BEGIN
-  CREATE TYPE skill_type AS ENUM ('listening', 'reading', 'writing', 'speaking');
+  CREATE TYPE skill_type AS ENUM ('listening', 'reading', 'writing', 'speaking', 'composite');
 EXCEPTION
   WHEN duplicate_object THEN NULL;
 END $$;
@@ -69,7 +69,9 @@ CREATE TABLE IF NOT EXISTS assignments (
   is_active BOOLEAN DEFAULT TRUE,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   last_auto_closed_at TIMESTAMPTZ,
-  mode TEXT NOT NULL DEFAULT 'exam'
+  mode TEXT NOT NULL DEFAULT 'exam',
+  time_limit_minutes INTEGER,
+  scoring_scale VARCHAR(10) NOT NULL DEFAULT '10'
 );
 
 CREATE TABLE IF NOT EXISTS submissions (
@@ -85,7 +87,11 @@ CREATE TABLE IF NOT EXISTS submissions (
   teacher_feedback JSONB,
   overall_score DOUBLE PRECISION,
   status TEXT DEFAULT 'submitted',
-  submitted_at TIMESTAMPTZ DEFAULT NOW()
+  submitted_at TIMESTAMPTZ DEFAULT NOW(),
+  is_overtime BOOLEAN NOT NULL DEFAULT FALSE,
+  attempt_number INTEGER NOT NULL DEFAULT 1,
+  rewrite_status TEXT DEFAULT NULL,
+  CONSTRAINT uniq_submission_attempt UNIQUE (assignment_id, student_id, attempt_number)
 );
 
 CREATE TABLE IF NOT EXISTS practice_attempts (
@@ -305,6 +311,79 @@ CREATE INDEX IF NOT EXISTS shared_attempts_pool_id_idx
 
 CREATE INDEX IF NOT EXISTS idx_question_pool_folder
   ON question_pool (folder_id);
+
+-- ── Exam sessions (migration 018) ────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS exam_sessions (
+  student_id  UUID        NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+  ref_type    TEXT        NOT NULL CHECK (ref_type IN ('assignment', 'shared_pool', 'composite_section')),
+  ref_id      UUID        NOT NULL,
+  started_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (student_id, ref_type, ref_id)
+);
+
+-- ── Composite question sections (migration 020) ───────────────────────────────
+CREATE TABLE IF NOT EXISTS composite_question_sections (
+  id                  UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  composite_id        UUID        NOT NULL REFERENCES question_pool(id) ON DELETE CASCADE,
+  label               TEXT        NOT NULL,
+  skill               TEXT        NOT NULL CHECK (skill IN ('reading','listening','writing','speaking')),
+  questions_data      JSONB,
+  prompt              TEXT,
+  content_text        TEXT,
+  content_blocks      JSONB,
+  content_url         TEXT,
+  content_urls        JSONB,
+  script              TEXT,
+  time_limit_minutes  INTEGER,
+  question_offset     INTEGER     NOT NULL DEFAULT 0,
+  display_order       INTEGER     NOT NULL DEFAULT 0,
+  vocabulary          JSONB       NOT NULL DEFAULT '[]'::jsonb
+);
+
+CREATE TABLE IF NOT EXISTS composite_section_submissions (
+  id            UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  assignment_id UUID        NOT NULL REFERENCES assignments(id) ON DELETE CASCADE,
+  section_id    UUID        NOT NULL REFERENCES composite_question_sections(id) ON DELETE CASCADE,
+  student_id    UUID        NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+  answers       JSONB,
+  content       TEXT,
+  audio_url     TEXT,
+  audio_key     TEXT,
+  submitted_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  is_overtime   BOOLEAN     NOT NULL DEFAULT FALSE,
+  score         NUMERIC(5,2),
+  feedback      TEXT,
+  teacher_feedback JSONB,
+  UNIQUE (assignment_id, section_id, student_id)
+);
+
+-- ── Composite section exam sessions (migration 021) ───────────────────────────
+CREATE TABLE IF NOT EXISTS composite_section_exam_sessions (
+  student_id    UUID        NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+  assignment_id UUID        NOT NULL REFERENCES assignments(id) ON DELETE CASCADE,
+  section_id    UUID        NOT NULL REFERENCES composite_question_sections(id) ON DELETE CASCADE,
+  started_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (student_id, assignment_id, section_id)
+);
+
+-- ── Shared attempts extra fields (migration 018) ──────────────────────────────
+ALTER TABLE shared_attempts ADD COLUMN IF NOT EXISTS is_overtime BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- ── Indexes for new tables ────────────────────────────────────────────────────
+CREATE INDEX IF NOT EXISTS idx_cqs_composite
+  ON composite_question_sections (composite_id, display_order);
+
+CREATE INDEX IF NOT EXISTS idx_css_assignment
+  ON composite_section_submissions (assignment_id, student_id);
+
+CREATE INDEX IF NOT EXISTS idx_css_section
+  ON composite_section_submissions (section_id, student_id);
+
+CREATE INDEX IF NOT EXISTS idx_composite_section_exam_sessions_assignment
+  ON composite_section_exam_sessions (assignment_id, section_id, student_id);
+
+CREATE INDEX IF NOT EXISTS idx_shared_attempts_student_pool_submitted
+  ON shared_attempts (student_id, shared_pool_id, submitted_at DESC);
 
 -- Default teacher row for the current single-teacher deployment model.
 INSERT INTO teachers (full_name, email)

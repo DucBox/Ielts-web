@@ -1858,12 +1858,14 @@ export default {
           FROM students
           WHERE username = ${username}
         `;
-        if (!student) return err('Không tìm thấy tài khoản học sinh với username này.', 404);
+
+        // Always return uniform response to prevent username enumeration
+        const uniformOk = json({ ok: true, message: 'Nếu tài khoản tồn tại và có Gmail, mật khẩu mới sẽ được gửi đến email đã đăng ký.' });
+
+        if (!student) return uniformOk;
 
         const email = normalizeStudentEmail(student.email);
-        if (!email) {
-          return err('Tài khoản này chưa có Gmail trong hồ sơ để nhận mật khẩu mới.', 400);
-        }
+        if (!email) return uniformOk;
 
         const nextPassword = generateStudentPassword();
         const nextPasswordHash = await hashPassword(nextPassword);
@@ -1878,10 +1880,8 @@ export default {
             idempotencyKey: `student-forgot-password:${student.id}:${Date.now()}`,
           });
         } catch (sendError) {
-          return err(
-            String(sendError?.message || 'Không thể gửi email mật khẩu mới lúc này. Vui lòng thử lại sau.'),
-            502,
-          );
+          console.error('[forgot-password] email send failed:', sendError?.message);
+          return uniformOk;
         }
 
         await sql`
@@ -1890,11 +1890,7 @@ export default {
           WHERE id = ${student.id}
         `;
 
-        return json({
-          ok: true,
-          email,
-          message: `Mật khẩu mới đã được gửi tới ${maskEmailForDisplay(email)}.`,
-        });
+        return uniformOk;
       }
 
       // ── Teacher Auth ───────────────────────────────────────────────────────
@@ -2731,13 +2727,15 @@ export default {
           const skill = url.searchParams.get('skill');
           const rows = skill
             ? await sql`
-                SELECT id, teacher_id, skill, title, content_url, content_text, content_blocks, questions_data, tags, script, folder_id, created_at
+                SELECT id, teacher_id, skill, title, content_url, content_urls, tags, script, folder_id, created_at,
+                       COALESCE(jsonb_array_length(questions_data), 0) AS question_count
                 FROM question_pool
                 WHERE skill = ${skill}::skill_type
                 ORDER BY created_at DESC
               `
             : await sql`
-                SELECT id, teacher_id, skill, title, content_url, content_text, content_blocks, questions_data, tags, script, folder_id, created_at
+                SELECT id, teacher_id, skill, title, content_url, content_urls, tags, script, folder_id, created_at,
+                       COALESCE(jsonb_array_length(questions_data), 0) AS question_count
                 FROM question_pool
                 ORDER BY created_at DESC
               `;
@@ -2807,62 +2805,78 @@ export default {
           }
 
           try {
-            const [row] = await sql`
-              INSERT INTO question_pool (teacher_id, skill, title, content_text, content_blocks, content_url, content_urls, questions_data, vocabulary, tags, script)
-              VALUES (
-                ${teacherId}, ${skill}::skill_type, ${title},
-                ${content_text}, ${JSON.stringify(content_blocks)}::jsonb, ${content_url},
-                ${JSON.stringify(contentUrls)}::jsonb,
-                ${JSON.stringify(questions_data)}, ${JSON.stringify(vocabulary)},
-                ${tags}, ${script}
-              )
-              RETURNING *
-            `;
+            // Pre-generate UUID so parent + sections can be inserted atomically
+            const newQuestionId = crypto.randomUUID();
+            // Build section insert queries upfront (requires pre-generated parent ID)
+            const sectionQueries = [];
+            if (skill === 'composite' && compositeSections.length > 0) {
+              let qOffset = 0;
+              for (let i = 0; i < compositeSections.length; i++) {
+                const sec = compositeSections[i];
+                if (!sec.label || !sec.skill) continue;
+                const secQuestionsData = sec.questions_data || [];
+                const secContentBlocks = normalizeContentBlocks(sec.content_blocks || []);
+                const secContentText   = secContentBlocks.length ? blocksToPlainText(secContentBlocks) : (sec.content_text ?? null);
+                const secVocabulary    = sec.vocabulary ?? [];
+                const isObjective      = sec.skill === 'reading' || sec.skill === 'listening';
+                sectionQueries.push({
+                  composite_id: newQuestionId, label: sec.label, skill: sec.skill,
+                  questions_data: JSON.stringify(secQuestionsData),
+                  prompt: sec.prompt ?? null, content_text: secContentText,
+                  content_blocks: JSON.stringify(secContentBlocks),
+                  content_url: sec.content_url ?? null,
+                  content_urls: JSON.stringify(sec.content_urls ?? []),
+                  script: sec.script ?? null,
+                  vocabulary: JSON.stringify(secVocabulary),
+                  time_limit_minutes: sec.time_limit_minutes ?? null,
+                  question_offset: qOffset, display_order: i,
+                });
+                if (isObjective) qOffset += secQuestionsData.length;
+              }
+            }
+
+            const txResults = await sql.transaction(txn => {
+              const queries = [
+                txn`
+                  INSERT INTO question_pool (id, teacher_id, skill, title, content_text, content_blocks, content_url, content_urls, questions_data, vocabulary, tags, script)
+                  VALUES (
+                    ${newQuestionId}, ${teacherId}, ${skill}::skill_type, ${title},
+                    ${content_text}, ${JSON.stringify(content_blocks)}::jsonb, ${content_url},
+                    ${JSON.stringify(contentUrls)}::jsonb,
+                    ${JSON.stringify(questions_data)}, ${JSON.stringify(vocabulary)},
+                    ${tags}, ${script}
+                  )
+                  RETURNING *
+                `,
+                ...sectionQueries.map(s => txn`
+                  INSERT INTO composite_question_sections
+                    (composite_id, label, skill, questions_data, prompt, content_text,
+                     content_blocks, content_url, content_urls, script, vocabulary,
+                     time_limit_minutes, question_offset, display_order)
+                  VALUES (
+                    ${s.composite_id}, ${s.label}, ${s.skill},
+                    ${s.questions_data}::jsonb, ${s.prompt}, ${s.content_text},
+                    ${s.content_blocks}::jsonb, ${s.content_url},
+                    ${s.content_urls}::jsonb, ${s.script}, ${s.vocabulary}::jsonb,
+                    ${s.time_limit_minutes}, ${s.question_offset}, ${s.display_order}
+                  )
+                `),
+              ];
+              return queries;
+            });
+            const [row] = txResults[0];
+
             for (const item of (row.content_urls || [])) {
               const k = item?.key || extractR2Key(item?.url, env.R2_PUBLIC_URL);
               if (k) await r2RefIncrement(sql, k).catch(e => console.error('R2 ref track failed:', e));
             }
-            if (!(row.content_urls?.length) ) {
+            if (!(row.content_urls?.length)) {
               const audioKey = extractR2Key(row.content_url, env.R2_PUBLIC_URL);
               if (audioKey) await r2RefIncrement(sql, audioKey).catch(e => console.error('R2 ref track failed:', e));
             }
             for (const imgUrl of extractContentBlockImageUrls(row.content_blocks || [])) {
               const imgKey = extractR2Key(imgUrl, env.R2_PUBLIC_URL);
               if (imgKey) await r2RefIncrement(sql, imgKey).catch(e => console.error('R2 ref track failed:', e));
-            }
-
-            // Insert composite sections if this is a composite question
-            if (skill === 'composite' && compositeSections.length > 0) {
-              let qOffset = 0;
-              for (let i = 0; i < compositeSections.length; i++) {
-                const sec = compositeSections[i];
-                if (!sec.label || !sec.skill) continue;
-                const secQuestionsData  = sec.questions_data  || [];
-                const secContentBlocks  = normalizeContentBlocks(sec.content_blocks || []);
-                const secContentText    = secContentBlocks.length ? blocksToPlainText(secContentBlocks) : (sec.content_text ?? null);
-                const secContentUrl     = sec.content_url  ?? null;
-                const secContentUrls    = sec.content_urls ?? [];
-                const secVocabulary     = sec.vocabulary ?? [];
-                const isObjective = sec.skill === 'reading' || sec.skill === 'listening';
-                await sql`
-                  INSERT INTO composite_question_sections
-                    (composite_id, label, skill, questions_data, prompt, content_text,
-                     content_blocks, content_url, content_urls, script, vocabulary,
-                     time_limit_minutes, question_offset, display_order)
-                  VALUES (
-                    ${row.id}, ${sec.label}, ${sec.skill},
-                    ${JSON.stringify(secQuestionsData)}::jsonb,
-                    ${sec.prompt ?? null}, ${secContentText},
-                    ${JSON.stringify(secContentBlocks)}::jsonb,
-                    ${secContentUrl},
-                    ${JSON.stringify(secContentUrls)}::jsonb,
-                    ${sec.script ?? null},
-                    ${JSON.stringify(secVocabulary)}::jsonb,
-                    ${sec.time_limit_minutes ?? null}, ${qOffset}, ${i}
-                  )
-                `;
-                if (isObjective) qOffset += secQuestionsData.length;
-              }
             }
 
             return json(row, 201);
@@ -2904,6 +2918,33 @@ export default {
         for (const imgUrl of extractContentBlockImageUrls(row.content_blocks || [])) {
           const imgKey = extractR2Key(imgUrl, env.R2_PUBLIC_URL);
           if (imgKey) await r2RefIncrement(sql, imgKey).catch(e => console.error('R2 ref track failed:', e));
+        }
+        // Copy composite sections for composite questions
+        if (src.skill === 'composite') {
+          const srcSections = await sql`
+            SELECT * FROM composite_question_sections
+            WHERE composite_id = ${p.id}
+            ORDER BY display_order
+          `;
+          for (const sec of srcSections) {
+            await sql`
+              INSERT INTO composite_question_sections
+                (composite_id, label, skill, questions_data, prompt, content_text,
+                 content_blocks, content_url, content_urls, script, vocabulary,
+                 time_limit_minutes, question_offset, display_order)
+              VALUES (
+                ${row.id}, ${sec.label}, ${sec.skill},
+                ${JSON.stringify(sec.questions_data || [])}::jsonb,
+                ${sec.prompt ?? null}, ${sec.content_text ?? null},
+                ${JSON.stringify(sec.content_blocks || [])}::jsonb,
+                ${sec.content_url ?? null},
+                ${JSON.stringify(sec.content_urls || [])}::jsonb,
+                ${sec.script ?? null},
+                ${JSON.stringify(sec.vocabulary || [])}::jsonb,
+                ${sec.time_limit_minutes ?? null}, ${sec.question_offset ?? 0}, ${sec.display_order ?? 0}
+              )
+            `;
+          }
         }
         return json(row, 201);
       }
@@ -2973,7 +3014,7 @@ export default {
               if (!newKeySet.has(key)) await r2SafeDelete(env, sql, key).catch(e => console.error('R2 image cleanup failed:', e));
             }
           }
-          // Handle composite section update: delete orphaned sections, upsert remaining
+          // Handle composite section update: delete orphaned sections, upsert remaining — atomically
           if (row.skill === 'composite' && Array.isArray(body.sections)) {
             const incomingSections = body.sections;
             const incomingIds = incomingSections.map(s => s._id).filter(Boolean);
@@ -2990,11 +3031,13 @@ export default {
                   WHERE cqs.composite_id = ${p.id}
                   LIMIT 1`;
             if (removedCheck.length > 0) return err('Không thể xoá section đã có bài nộp của học sinh', 409);
-            // Delete sections not in the incoming list
+
+            // Build all section mutation queries for atomic execution
+            const sectionTxQueries = [];
             if (incomingIds.length > 0) {
-              await sql`DELETE FROM composite_question_sections WHERE composite_id = ${p.id} AND id != ALL(${incomingIds}::uuid[])`;
+              sectionTxQueries.push(sql`DELETE FROM composite_question_sections WHERE composite_id = ${p.id} AND id != ALL(${incomingIds}::uuid[])`);
             } else {
-              await sql`DELETE FROM composite_question_sections WHERE composite_id = ${p.id}`;
+              sectionTxQueries.push(sql`DELETE FROM composite_question_sections WHERE composite_id = ${p.id}`);
             }
             let qOffset = 0;
             for (let i = 0; i < incomingSections.length; i++) {
@@ -3006,7 +3049,7 @@ export default {
               const secVocabulary = sec.vocabulary || [];
               const isObjective = sec.skill === 'reading' || sec.skill === 'listening';
               if (sec._id) {
-                await sql`
+                sectionTxQueries.push(sql`
                   UPDATE composite_question_sections SET
                     label = ${sec.label}, skill = ${sec.skill},
                     questions_data = ${JSON.stringify(secQuestionsData)}::jsonb,
@@ -3019,9 +3062,9 @@ export default {
                     time_limit_minutes = ${sec.time_limit_minutes ?? null},
                     question_offset = ${qOffset}, display_order = ${i}
                   WHERE id = ${sec._id} AND composite_id = ${p.id}
-                `;
+                `);
               } else {
-                await sql`
+                sectionTxQueries.push(sql`
                   INSERT INTO composite_question_sections
                     (composite_id, label, skill, questions_data, prompt, content_text,
                      content_blocks, content_url, content_urls, script, vocabulary,
@@ -3037,10 +3080,11 @@ export default {
                     ${JSON.stringify(secVocabulary)}::jsonb,
                     ${sec.time_limit_minutes ?? null}, ${qOffset}, ${i}
                   )
-                `;
+                `);
               }
               if (isObjective) qOffset += secQuestionsData.length;
             }
+            await sql.transaction(() => sectionTxQueries);
           }
           return json(row);
         }
@@ -5054,8 +5098,42 @@ export default {
           if (!ALLOWED_SCORE_FIELDS.has(f)) return err('Invalid field', 400);
         }
         const setClauses = updateFields.map((f, i) => `${f} = $${i + 1}`).join(', ');
+        const [prevRow] = await sql`SELECT score FROM composite_section_submissions WHERE id = ${p.id}`;
+        const wasUnscored = !prevRow || prevRow.score == null;
         const [row] = await sql(`UPDATE composite_section_submissions SET ${setClauses} WHERE id = $${updateFields.length + 1} RETURNING *`, [...updateVals, p.id]);
         if (!row) return err('Không tìm thấy bài nộp', 404);
+        // Notify student on first score set for a section
+        if (body?.score != null && wasUnscored) {
+          try {
+            const [info] = await sql`
+              SELECT a.id AS assignment_id, a.title, cqs.skill, s.email AS student_email
+              FROM composite_section_submissions css
+              JOIN composite_question_sections cqs ON cqs.id = css.section_id
+              JOIN assignments a ON a.id = css.assignment_id
+              JOIN students s ON s.id = css.student_id
+              WHERE css.id = ${p.id}
+            `;
+            if (info) {
+              const meta = JSON.stringify({ title: info.title, skill: info.skill, score: body.score });
+              await sql`
+                INSERT INTO notifications (student_id, type, ref_id, metadata)
+                VALUES (${row.student_id}, 'score_released', ${info.assignment_id}, ${meta}::jsonb)
+                ON CONFLICT DO NOTHING
+              `;
+              await queueStudentEmailEvent(sql, {
+                studentId: row.student_id,
+                assignmentId: info.assignment_id,
+                eventType: `${EMAIL_EVENT_TYPES.SCORE_RELEASED}:${p.id}`,
+                email: info.student_email,
+              });
+              if (normalizeStudentEmail(info.student_email)) {
+                ctx?.waitUntil?.(processQueuedStudentEmails(sql, env, { limit: 1, delayMs: 1000 }));
+              }
+            }
+          } catch (notifErr) {
+            console.error('[composite-score] notification failed:', notifErr?.message);
+          }
+        }
         return json(row);
       }
 

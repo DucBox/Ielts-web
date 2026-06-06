@@ -2224,7 +2224,7 @@ export default {
               CASE WHEN q.skill = 'composite' THEN
                 (SELECT COUNT(DISTINCT css.student_id) FROM composite_section_submissions css WHERE css.assignment_id = a.id)::int
               ELSE
-                (SELECT COUNT(*) FROM submissions sub WHERE sub.assignment_id = a.id)::int
+                (SELECT COUNT(DISTINCT student_id) FROM submissions sub WHERE sub.assignment_id = a.id AND sub.rewrite_status IS DISTINCT FROM 'rewritten')::int
               END AS submission_count,
               CASE WHEN q.skill = 'composite' THEN (
                 SELECT json_agg(json_build_object(

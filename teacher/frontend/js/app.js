@@ -3057,6 +3057,7 @@ function renderGradingPage(sub) {
         <div class="grading-panel-label">
           📝 ${sub.skill === 'speaking' ? 'Transcript AI' : 'Bài làm'}
           <span class="grading-select-hint">Bôi đen đoạn văn để thêm nhận xét</span>
+          ${sub.skill === 'writing' && sub.word_count != null ? `<span style="margin-left:auto;font-size:12px;color:var(--gray-500);font-weight:500">📊 ${sub.word_count} từ</span>` : ''}
         </div>
         <div id="writing-display" class="writing-display"></div>
       </div>

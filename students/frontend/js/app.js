@@ -4345,7 +4345,7 @@ async function submitWriting(assignmentId, btn, isAuto = false) {
   btnLoading(btn);
   try {
     await api.post(`/assignments/${assignmentId}/submit`, {
-      student_id: _student.id, writing_content: content,
+      student_id: _student.id, writing_content: content, word_count: wc,
     });
     await syncNotifUIAfterSubmit();
     clearAllDrafts(assignmentId);

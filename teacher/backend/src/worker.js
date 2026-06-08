@@ -3274,7 +3274,7 @@ export default {
         if (!claims) return err('Unauthorized', 401);
 
         const ct = request.headers.get('Content-Type') || '';
-        let studentAnswers = null, writingContent = null, speakingAudioUrl = null, speakingScript = null;
+        let studentAnswers = null, writingContent = null, wordCount = null, speakingAudioUrl = null, speakingScript = null;
         let speakingAudioUrls = [];
         let uploadedR2Key = null;
         let directUploadKey = null;
@@ -3290,6 +3290,7 @@ export default {
           const body = await request.json();
           studentAnswers  = body.student_answers  ?? null;
           writingContent  = body.writing_content  ?? null;
+          wordCount       = body.word_count       ?? null;
           directUploadKey = body.audio_upload_key ?? null;
           audioUploadKeys = Array.isArray(body.audio_upload_keys) && body.audio_upload_keys.length > 0
             ? body.audio_upload_keys : null;
@@ -3429,11 +3430,11 @@ export default {
             }
             queries.push(txn`
               INSERT INTO submissions
-                (assignment_id, student_id, student_answers, writing_content, speaking_script, speaking_audio_url, speaking_audio_urls, overall_score, is_overtime, attempt_number)
+                (assignment_id, student_id, student_answers, writing_content, word_count, speaking_script, speaking_audio_url, speaking_audio_urls, overall_score, is_overtime, attempt_number)
               VALUES (
                 ${p.id}, ${studentId},
                 ${studentAnswers ? JSON.stringify(studentAnswers) : null},
-                ${writingContent}, ${speakingScript}, ${speakingAudioUrl},
+                ${writingContent}, ${wordCount}, ${speakingScript}, ${speakingAudioUrl},
                 ${JSON.stringify(speakingAudioUrls)}::jsonb, ${overallScore}, ${isOvertime},
                 ${nextAttemptNumber}
               )

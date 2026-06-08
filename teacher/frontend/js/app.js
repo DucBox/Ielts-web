@@ -3083,7 +3083,7 @@ function renderGradingPage(sub) {
 
         <div class="grading-action-buttons">
           <button class="btn btn-primary" style="flex:1" onclick="saveGrading(this, 'complete')">✅ Hoàn thành</button>
-          ${sub.submission_kind !== 'composite_section' ? `<button class="btn btn-outline grading-rewrite-btn" onclick="saveGrading(this, 'request_rewrite')">✏️ Yêu cầu viết lại</button>` : ''}
+          ${sub.skill === 'writing' ? `<button class="btn btn-outline grading-rewrite-btn" onclick="saveGrading(this, 'request_rewrite')">✏️ Yêu cầu viết lại</button>` : ''}
         </div>
 
         ${prevAttempts.length > 0 ? `

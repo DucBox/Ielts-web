@@ -463,7 +463,8 @@ async function transcribeR2Audio(env, r2Key, { diarize = false } = {}) {
   // Parse MP3 bitrate from the first valid frame header so we can split by actual
   // duration rather than file size. A 64kbps file and a 128kbps file of the same
   // byte count represent very different amounts of audio.
-  const TARGET_CHUNK_SECONDS = 600; // 10 minutes per chunk
+  // Diarize model limit is 1400s → use 1000s chunks; plain STT uses 600s.
+  const TARGET_CHUNK_SECONDS = diarize ? 1000 : 600;
   const mp3Bitrate = parseMp3Bitrate(new Uint8Array(arrayBuffer));
   // bytes for TARGET_CHUNK_SECONDS at detected bitrate; fall back to 128kbps if undetected.
   const STT_CHUNK_BYTES = (mp3Bitrate || 128) * 1000 * TARGET_CHUNK_SECONDS / 8;
@@ -510,8 +511,13 @@ async function transcribeR2Audio(env, r2Key, { diarize = false } = {}) {
 
     if (diarize && Array.isArray(data.segments)) {
       const chunkText = formatDiarizedSegments(data.segments);
-      // When chunking a long file, separate each part so speaker labels don't bleed across
-      transcriptParts.push(chunks.length > 1 ? `[Part ${i + 1}]\n${chunkText}` : chunkText);
+      if (chunks.length > 1) {
+        const startMin = Math.round(i * TARGET_CHUNK_SECONDS / 60);
+        const endMin   = Math.round(Math.min((i + 1) * TARGET_CHUNK_SECONDS, /* approx total */ chunks.length * TARGET_CHUNK_SECONDS) / 60);
+        transcriptParts.push(`━━━ Phần ${i + 1} (~${startMin}:00 – ${endMin}:00 phút) ━━━\n${chunkText}`);
+      } else {
+        transcriptParts.push(chunkText);
+      }
     } else {
       transcriptParts.push(data.text || '');
     }

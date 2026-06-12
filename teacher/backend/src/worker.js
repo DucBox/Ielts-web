@@ -457,37 +457,103 @@ async function transcribeR2Audio(env, r2Key) {
   }
   console.log('[STT]', JSON.stringify({ key: r2Key, r2Mime: obj.httpMetadata?.contentType, usedMime: contentType, file: fileName, r2Bytes: obj.size, abBytes: arrayBuffer.byteLength }));
 
-  const sttForm = new FormData();
-  sttForm.append('file', new Blob([arrayBuffer], { type: contentType }), fileName);
-  sttForm.append('model', 'gpt-4o-mini-transcribe');
-  sttForm.append('response_format', 'json');
-
   const sttUrl = getOpenAIEndpoint(env, '/v1/audio/transcriptions', 'stt');
   const sttAuthToken = getOpenAIAuthToken(env, sttUrl, 'stt');
-  const sttRes = await fetch(sttUrl, {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${sttAuthToken}` },
-    body: sttForm,
-  });
 
-  if (!sttRes.ok) {
-    const txt = await sttRes.text();
-    console.error('STT error from R2 audio:', txt);
-    if (isUnsupportedRegionOpenAIError(txt)) {
-      throw Object.assign(
-        new Error('Dịch vụ nhận diện giọng nói đang bị chặn theo vùng từ hạ tầng hiện tại. Nếu app đang chạy qua Cloudflare Worker, hãy route STT qua một server/proxy khác rồi thử lại.'),
-        { statusCode: 502 },
-      );
+  // Parse MP3 bitrate from the first valid frame header so we can split by actual
+  // duration rather than file size. A 64kbps file and a 128kbps file of the same
+  // byte count represent very different amounts of audio.
+  const TARGET_CHUNK_SECONDS = 600; // 10 minutes per chunk
+  const mp3Bitrate = parseMp3Bitrate(new Uint8Array(arrayBuffer));
+  // bytes for TARGET_CHUNK_SECONDS at detected bitrate; fall back to 128kbps if undetected.
+  const STT_CHUNK_BYTES = (mp3Bitrate || 128) * 1000 * TARGET_CHUNK_SECONDS / 8;
+  const chunks = arrayBuffer.byteLength > STT_CHUNK_BYTES
+    ? splitAudioChunks(arrayBuffer, STT_CHUNK_BYTES)
+    : [arrayBuffer];
+
+  console.log('[STT chunks]', JSON.stringify({ total: arrayBuffer.byteLength, mp3Bitrate, chunkBytes: Math.round(STT_CHUNK_BYTES), chunkCount: chunks.length }));
+
+  const transcriptParts = [];
+  for (let i = 0; i < chunks.length; i++) {
+    const chunkFileName = chunks.length > 1 ? fileName.replace(/(\.\w{2,5})$/, `_chunk${i + 1}$1`) : fileName;
+    const sttForm = new FormData();
+    sttForm.append('file', new Blob([chunks[i]], { type: contentType }), chunkFileName);
+    sttForm.append('model', 'gpt-4o-mini-transcribe');
+    sttForm.append('response_format', 'json');
+
+    const sttRes = await fetch(sttUrl, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${sttAuthToken}` },
+      body: sttForm,
+    });
+
+    if (!sttRes.ok) {
+      const txt = await sttRes.text();
+      console.error('STT error from R2 audio:', txt);
+      if (isUnsupportedRegionOpenAIError(txt)) {
+        throw Object.assign(
+          new Error('Dịch vụ nhận diện giọng nói đang bị chặn theo vùng từ hạ tầng hiện tại. Nếu app đang chạy qua Cloudflare Worker, hãy route STT qua một server/proxy khác rồi thử lại.'),
+          { statusCode: 502 },
+        );
+      }
+      throw Object.assign(new Error('Không thể trích xuất script từ audio'), { statusCode: 502 });
     }
-    throw Object.assign(new Error('Không thể trích xuất script từ audio'), { statusCode: 502 });
+
+    const data = await sttRes.json();
+    transcriptParts.push(data.text || '');
   }
 
-  const data = await sttRes.json();
   return {
-    text: data.text || '',
+    text: transcriptParts.join(' '),
     contentType,
     size: obj.size,
   };
+}
+
+// Read the bitrate (kbps) from the first valid MP3 frame header.
+// Returns 0 if not parseable (e.g. non-MP3 format).
+function parseMp3Bitrate(bytes) {
+  const BITRATE_MAP = [0,32,40,48,56,64,80,96,112,128,160,192,224,256,320,0];
+  for (let i = 0; i < bytes.length - 3; i++) {
+    if (bytes[i] === 0xFF && (bytes[i + 1] & 0xE0) === 0xE0) {
+      const ver = (bytes[i + 1] >> 3) & 3;
+      const layer = (bytes[i + 1] >> 1) & 3;
+      if (ver === 3 && layer === 1) { // MPEG1 Layer III
+        const brIdx = (bytes[i + 2] >> 4) & 0xF;
+        return BITRATE_MAP[brIdx] || 0;
+      }
+    }
+  }
+  return 0;
+}
+
+// Split an ArrayBuffer into chunks of maxBytes, snapping each split point to the
+// nearest MP3 frame sync (0xFF 0xEx) so chunks don't start on a partial frame.
+function splitAudioChunks(buffer, maxBytes) {
+  const bytes = new Uint8Array(buffer);
+  const chunks = [];
+  let offset = 0;
+
+  while (offset < bytes.length) {
+    const tentativeEnd = offset + maxBytes;
+    if (tentativeEnd >= bytes.length) {
+      chunks.push(buffer.slice(offset));
+      break;
+    }
+    // Walk back up to 4KB to find a frame sync so we don't cut mid-frame.
+    let splitAt = tentativeEnd;
+    const searchFrom = Math.max(offset + 1, tentativeEnd - 4096);
+    for (let i = tentativeEnd; i >= searchFrom; i--) {
+      if (bytes[i] === 0xFF && (bytes[i + 1] & 0xE0) === 0xE0) {
+        splitAt = i;
+        break;
+      }
+    }
+    chunks.push(buffer.slice(offset, splitAt));
+    offset = splitAt;
+  }
+
+  return chunks;
 }
 
 // ─── Teacher lookup ───────────────────────────────────────────────────────────

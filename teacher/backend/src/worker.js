@@ -413,7 +413,7 @@ function isUnsupportedRegionOpenAIError(rawText) {
   return parseOpenAIError(rawText).code === 'unsupported_country_region_territory';
 }
 
-async function transcribeR2Audio(env, r2Key) {
+async function transcribeR2Audio(env, r2Key, { diarize = false } = {}) {
   if (!env.OPENAI_API_KEY) {
     throw Object.assign(new Error('STT not configured'), { statusCode: 500 });
   }
@@ -455,7 +455,7 @@ async function transcribeR2Audio(env, r2Key) {
     contentType = sniffed.mime;
     fileName = `${baseName}.${sniffed.ext}`;
   }
-  console.log('[STT]', JSON.stringify({ key: r2Key, r2Mime: obj.httpMetadata?.contentType, usedMime: contentType, file: fileName, r2Bytes: obj.size, abBytes: arrayBuffer.byteLength }));
+  console.log('[STT]', JSON.stringify({ key: r2Key, r2Mime: obj.httpMetadata?.contentType, usedMime: contentType, file: fileName, r2Bytes: obj.size, abBytes: arrayBuffer.byteLength, diarize }));
 
   const sttUrl = getOpenAIEndpoint(env, '/v1/audio/transcriptions', 'stt');
   const sttAuthToken = getOpenAIAuthToken(env, sttUrl, 'stt');
@@ -478,8 +478,15 @@ async function transcribeR2Audio(env, r2Key) {
     const chunkFileName = chunks.length > 1 ? fileName.replace(/(\.\w{2,5})$/, `_chunk${i + 1}$1`) : fileName;
     const sttForm = new FormData();
     sttForm.append('file', new Blob([chunks[i]], { type: contentType }), chunkFileName);
-    sttForm.append('model', 'gpt-4o-mini-transcribe');
-    sttForm.append('response_format', 'json');
+
+    if (diarize) {
+      sttForm.append('model', 'gpt-4o-transcribe-diarize');
+      sttForm.append('response_format', 'diarized_json');
+      sttForm.append('chunking_strategy', JSON.stringify({ type: 'server_vad' }));
+    } else {
+      sttForm.append('model', 'gpt-4o-mini-transcribe');
+      sttForm.append('response_format', 'json');
+    }
 
     const sttRes = await fetch(sttUrl, {
       method: 'POST',
@@ -500,14 +507,50 @@ async function transcribeR2Audio(env, r2Key) {
     }
 
     const data = await sttRes.json();
-    transcriptParts.push(data.text || '');
+
+    if (diarize && Array.isArray(data.segments)) {
+      const chunkText = formatDiarizedSegments(data.segments);
+      // When chunking a long file, separate each part so speaker labels don't bleed across
+      transcriptParts.push(chunks.length > 1 ? `[Part ${i + 1}]\n${chunkText}` : chunkText);
+    } else {
+      transcriptParts.push(data.text || '');
+    }
   }
 
   return {
-    text: transcriptParts.join(' '),
+    text: transcriptParts.join(diarize && chunks.length > 1 ? '\n\n' : ' '),
     contentType,
     size: obj.size,
   };
+}
+
+// Group consecutive same-speaker segments into turns: "A: text\nB: text\n..."
+function formatDiarizedSegments(segments) {
+  const turns = [];
+  let currentSpeaker = null;
+  let currentTexts = [];
+
+  for (const seg of segments) {
+    const speaker = seg.speaker || '?';
+    const text = (seg.text || '').trim();
+    if (!text) continue;
+
+    if (speaker !== currentSpeaker) {
+      if (currentSpeaker !== null) {
+        turns.push(`${currentSpeaker}: ${currentTexts.join(' ')}`);
+      }
+      currentSpeaker = speaker;
+      currentTexts = [text];
+    } else {
+      currentTexts.push(text);
+    }
+  }
+
+  if (currentSpeaker !== null && currentTexts.length > 0) {
+    turns.push(`${currentSpeaker}: ${currentTexts.join(' ')}`);
+  }
+
+  return turns.join('\n');
 }
 
 // Read the bitrate (kbps) from the first valid MP3 frame header.
@@ -2718,7 +2761,7 @@ export default {
             const label = String(item?.name || r2Key || '').trim();
             if (!r2Key) continue;
             try {
-              const data = await transcribeR2Audio(env, r2Key);
+              const data = await transcribeR2Audio(env, r2Key, { diarize: true });
               parts.push(`--- Transcript: ${label} ---\n${data.text || ''}`);
             } catch (sttErr) {
               return err(`Không thể transcribe "${label}": ${sttErr.message}`, sttErr.statusCode || 502);
@@ -2731,7 +2774,7 @@ export default {
         const r2Key = body?.key;
         if (!r2Key) return err('Missing R2 key', 400);
         try {
-          const data = await transcribeR2Audio(env, r2Key);
+          const data = await transcribeR2Audio(env, r2Key, { diarize: true });
           return json({ text: data.text || '' });
         } catch (sttErr) {
           return err(sttErr.message || 'Không thể trích xuất script từ audio', sttErr.statusCode || 502);

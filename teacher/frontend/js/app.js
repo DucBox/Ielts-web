@@ -7053,14 +7053,32 @@ async function transcribeListeningScript(keysOrKey) {
   scriptEl.disabled = true;
   try {
     const sttExtra = { model: _sttModel, audio_type: _sttAudioType };
-    let data;
+    let jobData;
     if (Array.isArray(keysOrKey)) {
-      data = await api.post('/questions/transcribe-audio', { keys: keysOrKey, ...sttExtra });
+      jobData = await api.post('/questions/transcribe-audio', { keys: keysOrKey, ...sttExtra });
     } else {
-      data = await api.post('/questions/transcribe-audio', { key: keysOrKey, ...sttExtra });
+      jobData = await api.post('/questions/transcribe-audio', { key: keysOrKey, ...sttExtra });
     }
-    if (data?.text) {
-      scriptEl.value = data.text;
+
+    // Poll for result
+    const jobId = jobData?.jobId;
+    if (!jobId) throw new Error('Không nhận được job ID từ server');
+
+    const result = await (async () => {
+      const INTERVAL = 5000;
+      const TIMEOUT = 20 * 60 * 1000; // 20 min
+      const deadline = Date.now() + TIMEOUT;
+      while (Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, INTERVAL));
+        const status = await api.get(`/questions/transcribe-status?job_id=${jobId}`);
+        if (status?.status === 'done') return status;
+        if (status?.status === 'error') throw new Error(status.message || 'Transcribe thất bại');
+      }
+      throw new Error('Transcribe quá thời gian chờ (20 phút)');
+    })();
+
+    if (result?.text) {
+      scriptEl.value = result.text;
       toast('Đã trích xuất script tự động ✓');
     }
   } catch (e) {

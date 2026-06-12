@@ -2840,32 +2840,45 @@ export default {
         const sttAudioType = body?.audio_type === 'normal' ? 'normal' : 'ielts';
         const sttOpts = { model: sttModel, audioType: sttAudioType };
 
-        // Multi-key mode: keys = [{key, name}, ...]
-        if (Array.isArray(body?.keys) && body.keys.length > 0) {
-          const parts = [];
-          for (const item of body.keys) {
-            const r2Key = item?.key;
-            const label = String(item?.name || r2Key || '').trim();
-            if (!r2Key) continue;
-            try {
-              const data = await transcribeR2Audio(env, r2Key, sttOpts);
-              parts.push(`--- Transcript: ${label} ---\n${data.text || ''}`);
-            } catch (sttErr) {
-              return err(`Không thể transcribe "${label}": ${sttErr.message}`, sttErr.statusCode || 502);
-            }
-          }
-          return json({ text: parts.join('\n\n\n') });
-        }
+        const jobId = crypto.randomUUID();
+        await env.KV.put(`transcribe_job:${jobId}`, JSON.stringify({ status: 'processing' }), { expirationTtl: 3600 });
 
-        // Single-key mode (backward compat)
-        const r2Key = body?.key;
-        if (!r2Key) return err('Missing R2 key', 400);
-        try {
-          const data = await transcribeR2Audio(env, r2Key, sttOpts);
-          return json({ text: data.text || '' });
-        } catch (sttErr) {
-          return err(sttErr.message || 'Không thể trích xuất script từ audio', sttErr.statusCode || 502);
-        }
+        ctx.waitUntil((async () => {
+          try {
+            let text = '';
+            if (Array.isArray(body?.keys) && body.keys.length > 0) {
+              const parts = [];
+              for (const item of body.keys) {
+                const r2Key = item?.key;
+                const label = String(item?.name || r2Key || '').trim();
+                if (!r2Key) continue;
+                const data = await transcribeR2Audio(env, r2Key, sttOpts);
+                parts.push(`--- Transcript: ${label} ---\n${data.text || ''}`);
+              }
+              text = parts.join('\n\n\n');
+            } else {
+              const r2Key = body?.key;
+              if (!r2Key) throw new Error('Missing R2 key');
+              const data = await transcribeR2Audio(env, r2Key, sttOpts);
+              text = data.text || '';
+            }
+            await env.KV.put(`transcribe_job:${jobId}`, JSON.stringify({ status: 'done', text }), { expirationTtl: 3600 });
+          } catch (e) {
+            console.error('[STT job error]', e.message);
+            await env.KV.put(`transcribe_job:${jobId}`, JSON.stringify({ status: 'error', message: e.message || 'Transcribe thất bại' }), { expirationTtl: 3600 });
+          }
+        })());
+
+        return json({ jobId, status: 'processing' }, 202);
+      }
+
+      if (path === '/questions/transcribe-status' && method === 'GET') {
+        if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
+        const jobId = url.searchParams.get('job_id');
+        if (!jobId) return err('Missing job_id', 400);
+        const raw = await env.KV.get(`transcribe_job:${jobId}`);
+        if (!raw) return err('Job not found', 404);
+        return json(JSON.parse(raw));
       }
 
       // ── Question Pool ──────────────────────────────────────────────────────

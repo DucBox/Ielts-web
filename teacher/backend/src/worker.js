@@ -413,7 +413,9 @@ function isUnsupportedRegionOpenAIError(rawText) {
   return parseOpenAIError(rawText).code === 'unsupported_country_region_territory';
 }
 
-async function transcribeR2Audio(env, r2Key, { diarize = false } = {}) {
+// model: 'mini' | 'diarize'   (default 'mini' for backward compat on speaking flows)
+// audioType: 'ielts' | 'normal'  (only used when model='diarize')
+async function transcribeR2Audio(env, r2Key, { model = 'mini', audioType = 'normal' } = {}) {
   if (!env.OPENAI_API_KEY) {
     throw Object.assign(new Error('STT not configured'), { statusCode: 500 });
   }
@@ -431,22 +433,15 @@ async function transcribeR2Audio(env, r2Key, { diarize = false } = {}) {
     );
   }
 
-  // Derive format from file extension first (browser sets this correctly at upload time),
-  // then fall back to R2 object metadata. This avoids MIME mismatch when R2 stores an
-  // incomplete or browser-variant type (e.g. audio/x-m4a, audio/wave).
   const rawFileName = r2Key.split('/').pop() || 'audio';
   const rawExt = (rawFileName.match(/\.(\w{2,5})$/) || [])[1]?.toLowerCase() || '';
   const mimeFromExt = AUDIO_EXT_TO_MIME[rawExt] || '';
   const mimeFromMeta = normalizeAudioMime(obj.httpMetadata?.contentType);
   let contentType = mimeFromExt || mimeFromMeta || 'audio/mpeg';
 
-  // Ensure filename always carries a recognized extension for OpenAI format detection.
   const ext = rawExt || AUDIO_MIME_TO_EXT[contentType] || 'mp3';
   let fileName = rawExt ? rawFileName : `${rawFileName}.${ext}`;
 
-  // Materialize content into memory as raw bytes, then sniff actual format from magic bytes.
-  // This corrects files whose extension/MIME lies about the true container
-  // (e.g. a WAV file renamed to .mp3 — OpenAI would reject it as "corrupted").
   const arrayBuffer = await obj.arrayBuffer();
   const sniffed = sniffAudioFormat(new Uint8Array(arrayBuffer, 0, Math.min(12, arrayBuffer.byteLength)));
   if (sniffed && sniffed.mime !== contentType) {
@@ -455,18 +450,22 @@ async function transcribeR2Audio(env, r2Key, { diarize = false } = {}) {
     contentType = sniffed.mime;
     fileName = `${baseName}.${sniffed.ext}`;
   }
-  console.log('[STT]', JSON.stringify({ key: r2Key, r2Mime: obj.httpMetadata?.contentType, usedMime: contentType, file: fileName, r2Bytes: obj.size, abBytes: arrayBuffer.byteLength, diarize }));
+  console.log('[STT]', JSON.stringify({ key: r2Key, usedMime: contentType, file: fileName, bytes: arrayBuffer.byteLength, model, audioType }));
 
   const sttUrl = getOpenAIEndpoint(env, '/v1/audio/transcriptions', 'stt');
   const sttAuthToken = getOpenAIAuthToken(env, sttUrl, 'stt');
-
-  // Parse MP3 bitrate from the first valid frame header so we can split by actual
-  // duration rather than file size. A 64kbps file and a 128kbps file of the same
-  // byte count represent very different amounts of audio.
-  // Diarize model limit is 1400s → use 1000s chunks; plain STT uses 600s.
-  const TARGET_CHUNK_SECONDS = diarize ? 1000 : 600;
   const mp3Bitrate = parseMp3Bitrate(new Uint8Array(arrayBuffer));
-  // bytes for TARGET_CHUNK_SECONDS at detected bitrate; fall back to 128kbps if undetected.
+
+  const diarize = model === 'diarize';
+
+  if (diarize && audioType === 'ielts') {
+    const text = await transcribeDiarizeIelts({ arrayBuffer, contentType, fileName, sttUrl, sttAuthToken, mp3Bitrate });
+    return { text, contentType, size: obj.size };
+  }
+
+  // ── Standard chunking (diarize-normal or mini) ──────────────────────────────
+  // Diarize model limit: 1400s → use 1000s chunks. Mini: 600s.
+  const TARGET_CHUNK_SECONDS = diarize ? 1000 : 600;
   const STT_CHUNK_BYTES = (mp3Bitrate || 128) * 1000 * TARGET_CHUNK_SECONDS / 8;
   const chunks = arrayBuffer.byteLength > STT_CHUNK_BYTES
     ? splitAudioChunks(arrayBuffer, STT_CHUNK_BYTES)
@@ -476,50 +475,20 @@ async function transcribeR2Audio(env, r2Key, { diarize = false } = {}) {
 
   const transcriptParts = [];
   for (let i = 0; i < chunks.length; i++) {
-    const chunkFileName = chunks.length > 1 ? fileName.replace(/(\.\w{2,5})$/, `_chunk${i + 1}$1`) : fileName;
-    const sttForm = new FormData();
-    sttForm.append('file', new Blob([chunks[i]], { type: contentType }), chunkFileName);
+    const chunkFileName = chunks.length > 1 ? fileName.replace(/(\.\w{2,5})$/, `_c${i + 1}$1`) : fileName;
+    const segments = await callSttApi({ chunk: chunks[i], contentType, fileName: chunkFileName, diarize, sttUrl, sttAuthToken });
 
     if (diarize) {
-      sttForm.append('model', 'gpt-4o-transcribe-diarize');
-      sttForm.append('response_format', 'diarized_json');
-      sttForm.append('chunking_strategy', JSON.stringify({ type: 'server_vad' }));
-    } else {
-      sttForm.append('model', 'gpt-4o-mini-transcribe');
-      sttForm.append('response_format', 'json');
-    }
-
-    const sttRes = await fetch(sttUrl, {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${sttAuthToken}` },
-      body: sttForm,
-    });
-
-    if (!sttRes.ok) {
-      const txt = await sttRes.text();
-      console.error('STT error from R2 audio:', txt);
-      if (isUnsupportedRegionOpenAIError(txt)) {
-        throw Object.assign(
-          new Error('Dịch vụ nhận diện giọng nói đang bị chặn theo vùng từ hạ tầng hiện tại. Nếu app đang chạy qua Cloudflare Worker, hãy route STT qua một server/proxy khác rồi thử lại.'),
-          { statusCode: 502 },
-        );
-      }
-      throw Object.assign(new Error('Không thể trích xuất script từ audio'), { statusCode: 502 });
-    }
-
-    const data = await sttRes.json();
-
-    if (diarize && Array.isArray(data.segments)) {
-      const chunkText = formatDiarizedSegments(data.segments);
+      const chunkText = formatDiarizedSegments(segments);
       if (chunks.length > 1) {
         const startMin = Math.round(i * TARGET_CHUNK_SECONDS / 60);
-        const endMin   = Math.round(Math.min((i + 1) * TARGET_CHUNK_SECONDS, /* approx total */ chunks.length * TARGET_CHUNK_SECONDS) / 60);
-        transcriptParts.push(`━━━ Phần ${i + 1} (~${startMin}:00 – ${endMin}:00 phút) ━━━\n${chunkText}`);
+        const endMin   = Math.round((i + 1) * TARGET_CHUNK_SECONDS / 60);
+        transcriptParts.push(`━━━ Phần ${i + 1} (~${startMin}:00 – ${endMin}:00) ━━━\n${chunkText}`);
       } else {
         transcriptParts.push(chunkText);
       }
     } else {
-      transcriptParts.push(data.text || '');
+      transcriptParts.push(typeof segments === 'string' ? segments : (segments[0]?.text || ''));
     }
   }
 
@@ -528,6 +497,114 @@ async function transcribeR2Audio(env, r2Key, { diarize = false } = {}) {
     contentType,
     size: obj.size,
   };
+}
+
+// Call the OpenAI STT API for one chunk. Returns segments[] for diarize or plain text string for mini.
+async function callSttApi({ chunk, contentType, fileName, diarize, sttUrl, sttAuthToken }) {
+  const form = new FormData();
+  form.append('file', new Blob([chunk], { type: contentType }), fileName);
+  if (diarize) {
+    form.append('model', 'gpt-4o-transcribe-diarize');
+    form.append('response_format', 'diarized_json');
+    form.append('chunking_strategy', JSON.stringify({ type: 'server_vad' }));
+  } else {
+    form.append('model', 'gpt-4o-mini-transcribe');
+    form.append('response_format', 'json');
+  }
+
+  const res = await fetch(sttUrl, { method: 'POST', headers: { 'Authorization': `Bearer ${sttAuthToken}` }, body: form });
+  if (!res.ok) {
+    const txt = await res.text();
+    console.error('STT API error:', txt);
+    if (isUnsupportedRegionOpenAIError(txt)) {
+      throw Object.assign(
+        new Error('Dịch vụ nhận diện giọng nói đang bị chặn theo vùng từ hạ tầng hiện tại.'),
+        { statusCode: 502 },
+      );
+    }
+    throw Object.assign(new Error('Không thể trích xuất script từ audio'), { statusCode: 502 });
+  }
+
+  const data = await res.json();
+  return diarize ? (data.segments || []) : (data.text || '');
+}
+
+// IELTS smart chunking: send 1000s at a time, detect the last "Part X / Section X" boundary
+// in the transcript, split the audio there so each new chunk starts fresh with correct speaker IDs.
+async function transcribeDiarizeIelts({ arrayBuffer, contentType, fileName, sttUrl, sttAuthToken, mp3Bitrate }) {
+  const CHUNK_SECONDS = 1000;
+  const chunkBytes = (mp3Bitrate || 128) * 1000 * CHUNK_SECONDS / 8;
+
+  const parts = [];
+  let byteOffset = 0;
+  let partNum = 0;
+
+  while (byteOffset < arrayBuffer.byteLength) {
+    partNum++;
+    const chunkEnd = Math.min(byteOffset + chunkBytes, arrayBuffer.byteLength);
+    const isLast = chunkEnd >= arrayBuffer.byteLength;
+    const chunk = arrayBuffer.slice(byteOffset, chunkEnd);
+    const chunkFileName = fileName.replace(/(\.\w{2,5})$/, `_p${partNum}$1`);
+
+    console.log('[STT IELTS]', JSON.stringify({ partNum, byteOffset, chunkEnd, isLast }));
+
+    const segments = await callSttApi({ chunk, contentType, fileName: chunkFileName, diarize: true, sttUrl, sttAuthToken });
+
+    if (isLast) {
+      parts.push({ text: formatDiarizedSegments(segments), partNum });
+      break;
+    }
+
+    // Find the last Part/Section boundary marker in this chunk's transcript.
+    // We'll re-transcribe from that boundary so the next chunk has fresh speaker IDs.
+    const boundary = findLastPartBoundary(segments);
+
+    if (boundary && boundary.start > 60) {
+      // Keep only transcript before the boundary — the boundary and beyond will be in next chunk.
+      const keptSegs = segments.filter(s => s.start < boundary.start);
+      parts.push({ text: formatDiarizedSegments(keptSegs), partNum });
+
+      // Convert boundary time → byte offset inside the chunk, snap to frame sync.
+      const boundaryByteInChunk = findFrameSyncNearByte(
+        new Uint8Array(chunk),
+        Math.floor(boundary.start * (mp3Bitrate || 128) * 1000 / 8),
+      );
+      byteOffset = byteOffset + boundaryByteInChunk;
+      console.log('[STT IELTS boundary]', JSON.stringify({ boundaryText: boundary.text?.trim(), boundaryTime: boundary.start, newByteOffset: byteOffset }));
+    } else {
+      // No usable boundary found — keep all and advance the full chunk.
+      parts.push({ text: formatDiarizedSegments(segments), partNum });
+      byteOffset = chunkEnd;
+    }
+  }
+
+  if (parts.length === 1) return parts[0].text;
+  return parts.map(p => `━━━ Phần ${p.partNum} ━━━\n${p.text}`).join('\n\n');
+}
+
+// Return the last segment whose text contains a Part/Section number announcement.
+function findLastPartBoundary(segments) {
+  const RE = /\b(part\s+(one|two|three|four|five|six|seven|eight|\d+)|section\s+(one|two|three|four|\d+))\b/i;
+  let last = null;
+  for (const seg of segments) {
+    if (RE.test(seg.text || '')) last = seg;
+  }
+  return last;
+}
+
+// Find the frame sync byte (0xFF 0xEx) closest to targetByte within ±4KB.
+function findFrameSyncNearByte(bytes, targetByte) {
+  const lo = Math.max(0, targetByte - 4096);
+  const hi = Math.min(bytes.length - 2, targetByte + 4096);
+  let best = targetByte;
+  let bestDist = Infinity;
+  for (let i = lo; i <= hi; i++) {
+    if (bytes[i] === 0xFF && (bytes[i + 1] & 0xE0) === 0xE0) {
+      const d = Math.abs(i - targetByte);
+      if (d < bestDist) { bestDist = d; best = i; }
+    }
+  }
+  return best;
 }
 
 // Group consecutive same-speaker segments into turns: "A: text\nB: text\n..."
@@ -2759,6 +2836,10 @@ export default {
         if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
         const body = await request.json().catch(() => null);
 
+        const sttModel     = body?.model === 'mini' ? 'mini' : 'diarize';
+        const sttAudioType = body?.audio_type === 'normal' ? 'normal' : 'ielts';
+        const sttOpts = { model: sttModel, audioType: sttAudioType };
+
         // Multi-key mode: keys = [{key, name}, ...]
         if (Array.isArray(body?.keys) && body.keys.length > 0) {
           const parts = [];
@@ -2767,7 +2848,7 @@ export default {
             const label = String(item?.name || r2Key || '').trim();
             if (!r2Key) continue;
             try {
-              const data = await transcribeR2Audio(env, r2Key, { diarize: true });
+              const data = await transcribeR2Audio(env, r2Key, sttOpts);
               parts.push(`--- Transcript: ${label} ---\n${data.text || ''}`);
             } catch (sttErr) {
               return err(`Không thể transcribe "${label}": ${sttErr.message}`, sttErr.statusCode || 502);
@@ -2780,7 +2861,7 @@ export default {
         const r2Key = body?.key;
         if (!r2Key) return err('Missing R2 key', 400);
         try {
-          const data = await transcribeR2Audio(env, r2Key, { diarize: true });
+          const data = await transcribeR2Audio(env, r2Key, sttOpts);
           return json({ text: data.text || '' });
         } catch (sttErr) {
           return err(sttErr.message || 'Không thể trích xuất script từ audio', sttErr.statusCode || 502);

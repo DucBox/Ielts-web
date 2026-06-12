@@ -6294,6 +6294,8 @@ let _audioSlots = [_newAudioSlot()];
 let _audioFiles = _audioSlots; // legacy alias
 let _audioUploading = false;
 let _scriptTranscribing = false;
+let _sttModel = 'diarize';      // 'mini' | 'diarize'
+let _sttAudioType = 'ielts';    // 'ielts' | 'normal'  (only used when model='diarize')
 let _audioFile = null, _audioUploadUrl = null, _audioUploadKey = null, _audioUploadName = '', _audioUploadSize = 0;
 let _vocabItems = [];
 let _editingVocabIndex = -1;
@@ -6515,6 +6517,7 @@ function onSkillChange(skill) {
         <label class="form-label">Script Listening
           <span style="font-size:12px;font-weight:400;color:var(--gray-400)"> — tự động trích xuất sau khi upload audio, có thể chỉnh sửa</span>
         </label>
+        ${sttSelectorHtml()}
         <div id="script-loading" class="script-loading hidden">
           <span class="btn-spinner btn-spinner--dark"></span> Đang trích xuất script (từ R2, không upload lại)...
         </div>
@@ -6786,6 +6789,40 @@ function attachPdfImport() {
   });
 }
 
+function sttSelectorHtml() {
+  return `<div id="stt-selector" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px;padding:8px 10px;background:var(--bg-secondary);border-radius:8px;font-size:13px">
+    <span style="font-weight:600;color:var(--gray-600)">Model:</span>
+    <label style="display:flex;align-items:center;gap:4px;cursor:pointer">
+      <input type="radio" name="stt-model" value="diarize" ${_sttModel==='diarize'?'checked':''} onchange="setSttModel('diarize')">
+      <span>Diarize <span style="color:var(--gray-400);font-size:11px">(có Speaker ID)</span></span>
+    </label>
+    <label style="display:flex;align-items:center;gap:4px;cursor:pointer">
+      <input type="radio" name="stt-model" value="mini" ${_sttModel==='mini'?'checked':''} onchange="setSttModel('mini')">
+      <span>Mini <span style="color:var(--gray-400);font-size:11px">(nhanh, rẻ hơn)</span></span>
+    </label>
+    <span id="stt-type-selector" style="display:${_sttModel==='diarize'?'flex':'none'};align-items:center;gap:12px;border-left:1px solid var(--border);padding-left:12px">
+      <span style="font-weight:600;color:var(--gray-600)">Loại bài:</span>
+      <label style="display:flex;align-items:center;gap:4px;cursor:pointer">
+        <input type="radio" name="stt-type" value="ielts" ${_sttAudioType==='ielts'?'checked':''} onchange="setSttAudioType('ielts')">
+        <span>IELTS <span style="color:var(--gray-400);font-size:11px">(tách Part tự động)</span></span>
+      </label>
+      <label style="display:flex;align-items:center;gap:4px;cursor:pointer">
+        <input type="radio" name="stt-type" value="normal" ${_sttAudioType==='normal'?'checked':''} onchange="setSttAudioType('normal')">
+        <span>Normal</span>
+      </label>
+    </span>
+  </div>`;
+}
+
+function setSttModel(val) {
+  _sttModel = val;
+  document.querySelectorAll('#stt-type-selector').forEach(el => {
+    el.style.display = val === 'diarize' ? 'flex' : 'none';
+  });
+}
+
+function setSttAudioType(val) { _sttAudioType = val; }
+
 function audioUploadHtml() {
   return `<div id="audio-upload-area"><div id="audio-slot-list"></div>
     <button class="btn btn-outline btn-sm" style="margin-top:8px" onclick="addAudioSlot()">+ Thêm file audio</button>
@@ -7015,11 +7052,12 @@ async function transcribeListeningScript(keysOrKey) {
   if (loadingEl) loadingEl.classList.remove('hidden');
   scriptEl.disabled = true;
   try {
+    const sttExtra = { model: _sttModel, audio_type: _sttAudioType };
     let data;
     if (Array.isArray(keysOrKey)) {
-      data = await api.post('/questions/transcribe-audio', { keys: keysOrKey });
+      data = await api.post('/questions/transcribe-audio', { keys: keysOrKey, ...sttExtra });
     } else {
-      data = await api.post('/questions/transcribe-audio', { key: keysOrKey });
+      data = await api.post('/questions/transcribe-audio', { key: keysOrKey, ...sttExtra });
     }
     if (data?.text) {
       scriptEl.value = data.text;
@@ -8647,6 +8685,7 @@ function renderCQSectionsUI() {
       skillContentHtml = `<div class="form-group"><label class="form-label">File Audio <span style="color:var(--danger)">*</span></label>${audioUploadHtml()}</div>
         <div class="form-group" id="script-section">
           <label class="form-label">Script Listening</label>
+          ${sttSelectorHtml()}
           <div id="script-loading" class="script-loading hidden"><span class="btn-spinner btn-spinner--dark"></span> Đang trích xuất...</div>
           <textarea id="listening-script" class="form-textarea listening-script-editor" rows="6"
             placeholder="Script tự động điền sau khi upload audio">${escapeHtml(sec.script||'')}</textarea>

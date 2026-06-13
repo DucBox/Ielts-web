@@ -3491,8 +3491,8 @@ export default {
           LIMIT 1
         `;
         if (existing && existing.rewrite_status !== 'requested') {
-          if (audioUploadKeys) for (const k of audioUploadKeys) await env.R2.delete(k.key).catch(() => {});
-          else if (directUploadKey) await env.R2.delete(directUploadKey).catch(() => {});
+          // Do NOT delete audio keys here — on a network-retry race, the keys are already owned
+          // by the existing submission and deleting them would destroy the submitted audio.
           return err('Bạn đã nộp bài này rồi', 409);
         }
         const nextAttemptNumber = existing ? existing.attempt_number + 1 : 1;
@@ -3630,12 +3630,14 @@ export default {
           `;
           return json(submission, 201);
         } catch (dbErr) {
-          if (audioUploadKeys) for (const k of audioUploadKeys) await env.R2.delete(k.key).catch(() => {});
-          else if (uploadedR2Key) await env.R2.delete(uploadedR2Key).catch(() => {});
-          // Surface unique constraint violations with a user-friendly message
-          if (dbErr?.code === '23505' || dbErr?.message?.includes('unique') || dbErr?.message?.includes('duplicate')) {
-            return err('Bài nộp đã tồn tại, vui lòng thử lại', 409);
+          const isDuplicate = dbErr?.code === '23505' || dbErr?.message?.includes('unique') || dbErr?.message?.includes('duplicate');
+          // On duplicate-submission race (same audio_upload_keys retried): do NOT delete R2 files —
+          // the successful first request already owns them. Only clean up on non-duplicate errors.
+          if (!isDuplicate) {
+            if (audioUploadKeys) for (const k of audioUploadKeys) await env.R2.delete(k.key).catch(() => {});
+            else if (uploadedR2Key) await env.R2.delete(uploadedR2Key).catch(() => {});
           }
+          if (isDuplicate) return err('Bài nộp đã tồn tại, vui lòng thử lại', 409);
           throw dbErr;
         }
       }
@@ -4209,25 +4211,24 @@ export default {
           isRewrite = !!rewriteSub;
         }
 
+        let sessionRow;
         if (isRewrite) {
-          await sql`
+          [sessionRow] = await sql`
             INSERT INTO exam_sessions (student_id, ref_type, ref_id, started_at)
             VALUES (${studentId}, ${body.ref_type}, ${body.ref_id}, NOW())
             ON CONFLICT (student_id, ref_type, ref_id) DO UPDATE SET started_at = NOW()
+            RETURNING started_at
           `;
         } else {
-          // ON CONFLICT DO NOTHING keeps the original started_at
-          await sql`
-            INSERT INTO exam_sessions (student_id, ref_type, ref_id)
-            VALUES (${studentId}, ${body.ref_type}, ${body.ref_id})
-            ON CONFLICT (student_id, ref_type, ref_id) DO NOTHING
+          // DO UPDATE SET started_at = existing value — no-op that lets RETURNING work
+          [sessionRow] = await sql`
+            INSERT INTO exam_sessions (student_id, ref_type, ref_id, started_at)
+            VALUES (${studentId}, ${body.ref_type}, ${body.ref_id}, NOW())
+            ON CONFLICT (student_id, ref_type, ref_id) DO UPDATE SET started_at = exam_sessions.started_at
+            RETURNING started_at
           `;
         }
-        const [session] = await sql`
-          SELECT started_at FROM exam_sessions
-          WHERE student_id = ${studentId} AND ref_type = ${body.ref_type} AND ref_id = ${body.ref_id}
-        `;
-        return json({ started_at: session.started_at });
+        return json({ started_at: sessionRow.started_at });
       }
 
       if (path === '/student/change-password' && method === 'POST') {
@@ -4759,6 +4760,7 @@ export default {
         writingContent = body.writing_content ?? null;
         audioUploadKeys = Array.isArray(body.audio_upload_keys) && body.audio_upload_keys.length > 0
           ? body.audio_upload_keys : null;
+        const idempotencyKey = String(body.idempotency_key || '').trim() || null;
 
         // Handle speaking audio transcription
         if (audioUploadKeys) {
@@ -4805,16 +4807,27 @@ export default {
 
         const [attempt] = await sql`
           INSERT INTO shared_attempts
-            (student_id, shared_pool_id, mode, student_answers, writing_content, speaking_script, speaking_audio_urls, overall_score, max_score, is_overtime)
+            (student_id, shared_pool_id, mode, student_answers, writing_content, speaking_script, speaking_audio_urls, overall_score, max_score, is_overtime, idempotency_key)
           VALUES (
             ${studentId}, ${p.id}, ${mode},
             ${JSON.stringify(studentAnswers || [])}::jsonb,
             ${writingContent || ''}, ${speakingScript || ''},
             ${JSON.stringify(speakingAudioUrls)}::jsonb,
-            ${overallScore}, ${maxScore}, ${isOvertime}
+            ${overallScore}, ${maxScore}, ${isOvertime}, ${idempotencyKey}
           )
+          ON CONFLICT (student_id, shared_pool_id, idempotency_key) WHERE idempotency_key IS NOT NULL
+          DO NOTHING
           RETURNING *
         `;
+
+        if (!attempt) {
+          // Duplicate request (same idempotency_key) — return the existing attempt idempotently
+          const [existing] = await sql`
+            SELECT * FROM shared_attempts
+            WHERE student_id = ${studentId} AND shared_pool_id = ${p.id} AND idempotency_key = ${idempotencyKey}
+          `;
+          return json(existing, 200);
+        }
 
         // Auto AI feedback for writing/speaking (fire-and-forget, update async)
         if ((poolQ.skill === 'writing' || poolQ.skill === 'speaking') && env.OPENAI_API_KEY) {
@@ -5256,12 +5269,16 @@ export default {
           `;
           return json(submission, 201);
         } catch (dbErr) {
-          if (audioKey && !directUploadKey && !audioUploadKeys) {
-            await env.R2.delete(audioKey).catch(() => {});
-          } else if (directUploadKey) {
-            await env.R2.delete(directUploadKey).catch(() => {});
-          } else if (audioUploadKeys) {
-            for (const item of audioUploadKeys) await env.R2.delete(item.key).catch(() => {});
+          const isDuplicate = dbErr?.code === '23505' || dbErr?.message?.includes('unique') || dbErr?.message?.includes('duplicate');
+          // On duplicate-submission race: keep R2 files — the successful first request already owns them.
+          if (!isDuplicate) {
+            if (audioKey && !directUploadKey && !audioUploadKeys) {
+              await env.R2.delete(audioKey).catch(() => {});
+            } else if (directUploadKey) {
+              await env.R2.delete(directUploadKey).catch(() => {});
+            } else if (audioUploadKeys) {
+              for (const item of audioUploadKeys) await env.R2.delete(item.key).catch(() => {});
+            }
           }
           throw dbErr;
         }

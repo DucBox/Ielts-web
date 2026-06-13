@@ -5218,19 +5218,7 @@ function renderWritingFeedback(sub, allVersions = null) {
     <div class="feedback-overall">${escapeHtml(overall)}</div>` : '';
 
   const _annColors = _annColorMap(annotations);
-  const annSidebar = annotations.length === 0
-    ? `<div style="color:var(--gray-400);font-size:13px;text-align:center;padding-top:48px">Không có nhận xét theo đoạn</div>`
-    : `<div class="section-label">Nhận xét theo đoạn</div>
-       <div class="feedback-annotations">
-         ${annotations.map((ann, i) => `
-           <div class="feedback-ann-card feedback-ann-c${_annColors.get(ann.id)} feedback-ann-clickable" onclick="scrollToFeedbackMark(${i})" title="Bấm để tới đoạn được nhận xét">
-             <div class="feedback-ann-header">
-               <span class="feedback-ann-number feedback-ann-num-c${_annColors.get(ann.id)}">${i + 1}</span>
-               <span class="feedback-ann-quote">"${escapeHtml(ann.text.slice(0, 80))}${ann.text.length > 80 ? '…' : ''}"</span>
-             </div>
-             <div class="feedback-ann-comment">${escapeHtml(ann.comment)}</div>
-           </div>`).join('')}
-       </div>`;
+  const annSidebar = _buildAnnSidebar(annotations, _annColors);
 
   const versionSelector = hasMultiVersions ? `
     <div class="version-selector">
@@ -5294,18 +5282,44 @@ async function switchWritingVersion(submissionId, assignmentId) {
 
 const ANN_COLORS = ['ann-c0', 'ann-c1', 'ann-c2', 'ann-c3', 'ann-c4', 'ann-c5'];
 
+function _buildAnnSidebar(annotations, colorMap) {
+  if (!annotations.length) {
+    return `<div style="color:var(--gray-400);font-size:13px;text-align:center;padding-top:48px">Không có nhận xét theo đoạn</div>`;
+  }
+  let hlNum = 0;
+  const cards = annotations.map((ann, i) => {
+    const isDel = (ann.type || 'highlight') === 'delete';
+    const badge = isDel
+      ? `<span class="feedback-ann-delete-badge">✕ Gạch xóa</span>`
+      : `<span class="feedback-ann-number feedback-ann-num-c${colorMap.get(ann.id)}">${++hlNum}</span>`;
+    const cardCls = isDel ? 'feedback-ann-delete' : `feedback-ann-c${colorMap.get(ann.id)}`;
+    const quoteStyle = isDel ? ' style="text-decoration:line-through;color:#991b1b"' : '';
+    return `
+      <div class="feedback-ann-card ${cardCls} feedback-ann-clickable" onclick="scrollToFeedbackMark(${i})" title="Bấm để tới đoạn được nhận xét">
+        <div class="feedback-ann-header">
+          ${badge}
+          <span class="feedback-ann-quote"${quoteStyle}>"${escapeHtml(ann.text.slice(0, 80))}${ann.text.length > 80 ? '…' : ''}"</span>
+        </div>
+        <div class="feedback-ann-comment">${escapeHtml(ann.comment)}</div>
+      </div>`;
+  }).join('');
+  return `<div class="section-label">Nhận xét theo đoạn</div><div class="feedback-annotations">${cards}</div>`;
+}
+
 function _annColorMap(annotations) {
   if (!annotations || !annotations.length) return new Map();
-  const depths = new Map(annotations.map(a => [a.id, 0]));
-  const bySize = [...annotations].sort((a, b) => (a.end - a.start) - (b.end - b.start));
+  const highlights = annotations.filter(a => (a.type || 'highlight') === 'highlight');
+  if (!highlights.length) return new Map();
+  const depths = new Map(highlights.map(a => [a.id, 0]));
+  const bySize = [...highlights].sort((a, b) => (a.end - a.start) - (b.end - b.start));
   for (const inner of bySize) {
-    for (const outer of annotations) {
+    for (const outer of highlights) {
       if (outer !== inner && outer.start <= inner.start && outer.end >= inner.end) {
         depths.set(outer.id, Math.max(depths.get(outer.id), depths.get(inner.id) + 1));
       }
     }
   }
-  return new Map(annotations.map(a => [a.id, Math.min(depths.get(a.id), ANN_COLORS.length - 1)]));
+  return new Map(highlights.map(a => [a.id, Math.min(depths.get(a.id), ANN_COLORS.length - 1)]));
 }
 
 function buildAnnotatedHtml(text, annotations) {
@@ -5314,7 +5328,13 @@ function buildAnnotatedHtml(text, annotations) {
 
   const colorIdx = _annColorMap(annotations);
   const byStart = [...annotations].sort((a, b) => a.start - b.start);
+  // Sequential index for all annotations (used for scroll-to IDs)
   const markerNum = new Map(byStart.map((ann, i) => [ann.id, i + 1]));
+  // Only highlight annotations show numbered markers in text
+  let hlIdx = 0;
+  const hlNum = new Map(byStart.map(ann =>
+    (ann.type || 'highlight') === 'highlight' ? [ann.id, ++hlIdx] : [ann.id, null]
+  ));
 
   function renderSpan(lo, hi, anns) {
     if (lo >= hi) return '';
@@ -5332,11 +5352,17 @@ function buildAnnotatedHtml(text, annotations) {
       children.forEach(c => done.add(c.id));
       done.add(ann.id);
       const idx = markerNum.get(ann.id) - 1;
-      const colorCls = ANN_COLORS[colorIdx.get(ann.id)];
-      html += `<mark class="ann-highlight ${colorCls}" id="ann-mark-${idx}" title="${escapeHtml(ann.comment)}">`;
-      html += renderSpan(effectiveStart, ann.end, children);
-      html += `<sup class="ann-marker ann-marker-c${colorIdx.get(ann.id)}">${markerNum.get(ann.id)}</sup>`;
-      html += `</mark>`;
+      if ((ann.type || 'highlight') === 'delete') {
+        html += `<span class="ann-delete" id="ann-mark-${idx}" title="${escapeHtml(ann.comment)}">`;
+        html += renderSpan(effectiveStart, ann.end, children);
+        html += `</span>`;
+      } else {
+        const colorCls = ANN_COLORS[colorIdx.get(ann.id)];
+        html += `<mark class="ann-highlight ${colorCls}" id="ann-mark-${idx}" title="${escapeHtml(ann.comment)}">`;
+        html += renderSpan(effectiveStart, ann.end, children);
+        html += `<sup class="ann-marker ann-marker-c${colorIdx.get(ann.id)}">${hlNum.get(ann.id)}</sup>`;
+        html += `</mark>`;
+      }
       pos = ann.end;
     }
     html += escapeHtml(text.slice(pos, hi));
@@ -5419,19 +5445,7 @@ function renderSpeakingFeedback(sub) {
     <div class="feedback-overall">${escapeHtml(overall)}</div>` : '';
 
   const _annColors = _annColorMap(annotations);
-  const annSidebar = annotations.length === 0
-    ? `<div style="color:var(--gray-400);font-size:13px;text-align:center;padding-top:48px">Không có nhận xét theo đoạn</div>`
-    : `<div class="section-label">Nhận xét theo đoạn</div>
-       <div class="feedback-annotations">
-         ${annotations.map((ann, i) => `
-           <div class="feedback-ann-card feedback-ann-c${_annColors.get(ann.id)} feedback-ann-clickable" onclick="scrollToFeedbackMark(${i})" title="Bấm để tới đoạn được nhận xét">
-             <div class="feedback-ann-header">
-               <span class="feedback-ann-number feedback-ann-num-c${_annColors.get(ann.id)}">${i + 1}</span>
-               <span class="feedback-ann-quote">"${escapeHtml(ann.text.slice(0, 80))}${ann.text.length > 80 ? '…' : ''}"</span>
-             </div>
-             <div class="feedback-ann-comment">${escapeHtml(ann.comment)}</div>
-           </div>`).join('')}
-       </div>`;
+  const annSidebar = _buildAnnSidebar(annotations, _annColors);
 
   $('#app').innerHTML = `
     <div class="assignment-page">
@@ -6622,7 +6636,7 @@ async function startSharedAttempt(poolId, mode) {
   setLoading('Đang tải đề...');
   try {
     const q = await api.get(`/student/shared-pool/${poolId}`);
-    _sharedCtx = { poolId, poolQ: q, mode };
+    _sharedCtx = { poolId, poolQ: q, mode, idempotencyKey: crypto.randomUUID() };
     _speakingIsShared = q.skill === 'speaking';
     stopSharedCountdownTimer();
     _removeExamBeforeUnload();
@@ -6961,7 +6975,7 @@ async function submitSharedReadingListening(btn, isAuto = false) {
   if (btn) btnLoading(btn);
   stopSharedCountdownTimer();
   try {
-    const attempt = await api.post(`/student/shared-pool/${poolId}/attempts`, { mode, student_answers: answers });
+    const attempt = await api.post(`/student/shared-pool/${poolId}/attempts`, { mode, student_answers: answers, idempotency_key: ctx.idempotencyKey });
     _sharedCtx = null;
     toast('Nộp bài thành công! 🎉');
     navigate(`/shared-attempt/${attempt.id}`);
@@ -6994,7 +7008,7 @@ async function submitSharedWriting(btn, isAuto = false) {
   if (btn) btnLoading(btn);
   stopSharedCountdownTimer();
   try {
-    const attempt = await api.post(`/student/shared-pool/${poolId}/attempts`, { mode, writing_content: content || '' });
+    const attempt = await api.post(`/student/shared-pool/${poolId}/attempts`, { mode, writing_content: content || '', idempotency_key: ctx.idempotencyKey });
     _sharedCtx = null;
     toast('Nộp bài thành công! 🎉');
     navigate(`/shared-attempt/${attempt.id}`);
@@ -7028,7 +7042,7 @@ async function submitSharedSpeaking(btn, isAuto = false) {
   try {
     const audioUploadKeys = doneSlots.map(s => ({ key: s.key, name: s.displayName || s.name }));
     setSpeakingSubmitStatus('processing');
-    const attempt = await api.post(`/student/shared-pool/${poolId}/attempts`, { mode, audio_upload_keys: audioUploadKeys });
+    const attempt = await api.post(`/student/shared-pool/${poolId}/attempts`, { mode, audio_upload_keys: audioUploadKeys, idempotency_key: ctx.idempotencyKey });
     setSpeakingSubmitStatus(null);
     _sharedCtx = null;
     _speakingIsShared = false;

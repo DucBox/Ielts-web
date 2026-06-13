@@ -2382,6 +2382,51 @@ body.resizing-image {
   white-space: pre-wrap;
 }
 
+/* Delete (strikethrough) annotation — in writing display */
+.ann-delete {
+  text-decoration: line-through;
+  text-decoration-color: #dc2626;
+  text-decoration-thickness: 2px;
+  background: #fee2e2;
+  color: #991b1b;
+  border-radius: 2px;
+  cursor: pointer;
+  padding: 1px 0;
+  transition: background .15s;
+}
+.ann-delete:hover { background: #fecaca; }
+
+/* Delete annotation card in sidebar */
+.annotation-card.ann-card-delete { border-left-color: #dc2626; background: #fff5f5; }
+
+.annotation-delete-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  font-weight: 700;
+  color: #fff;
+  background: #dc2626;
+  padding: 1px 7px;
+  border-radius: 99px;
+  gap: 3px;
+  letter-spacing: .2px;
+}
+
+.annotation-quote-delete {
+  text-decoration: line-through;
+  text-decoration-color: #dc2626;
+  color: #991b1b;
+}
+
+/* Popup button for delete action */
+.btn-ann-delete {
+  background: #fee2e2;
+  color: #dc2626;
+  border: 1px solid #fca5a5;
+  font-weight: 600;
+}
+.btn-ann-delete:hover { background: #fecaca; border-color: #dc2626; }
+
 /* AI Feedback */
 .ai-feedback-empty {
   font-size: 12px;

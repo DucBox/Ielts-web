@@ -1754,6 +1754,16 @@ body {
 .ann-highlight.ann-c4 { background: #e9d5ff; border-bottom: 2px solid #9333ea; }
 .ann-highlight.ann-c5 { background: #fed7aa; border-bottom: 2px solid #ea580c; }
 
+.ann-delete {
+  text-decoration: line-through;
+  text-decoration-color: #dc2626;
+  text-decoration-thickness: 2px;
+  background: #fee2e2;
+  color: #991b1b;
+  border-radius: 2px;
+  padding: 1px 0;
+}
+
 .ann-marker {
   font-size: 9px;
   font-weight: 800;
@@ -1952,6 +1962,20 @@ body {
 .feedback-ann-card.feedback-ann-c3 { border-left-color: #16a34a; }
 .feedback-ann-card.feedback-ann-c4 { border-left-color: #9333ea; }
 .feedback-ann-card.feedback-ann-c5 { border-left-color: #ea580c; }
+.feedback-ann-card.feedback-ann-delete { border-left-color: #dc2626; background: #fff5f5; }
+
+.feedback-ann-delete-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  font-weight: 700;
+  color: #fff;
+  background: #dc2626;
+  padding: 2px 7px;
+  border-radius: 99px;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
 
 .feedback-ann-header {
   display: flex;

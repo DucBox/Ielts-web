@@ -3155,18 +3155,26 @@ function refreshAnnotationsList() {
     return;
   }
   const colorIdx = _annColorMap(_gradingAnnotations);
-  el.innerHTML = sorted.map((ann, i) => `
-    <div class="annotation-card ann-card-c${colorIdx.get(ann.id)}" id="ann-card-${ann.id}">
+  let hlNum = 0;
+  el.innerHTML = sorted.map((ann) => {
+    const isDel = (ann.type || 'highlight') === 'delete';
+    const badge = isDel
+      ? `<span class="annotation-delete-badge">✕ Gạch xóa</span>`
+      : `<span class="annotation-number ann-num-c${colorIdx.get(ann.id)}">${++hlNum}</span>`;
+    const cardCls = isDel ? 'ann-card-delete' : `ann-card-c${colorIdx.get(ann.id)}`;
+    return `
+    <div class="annotation-card ${cardCls}" id="ann-card-${ann.id}">
       <div class="annotation-card-header">
-        <span class="annotation-number ann-num-c${colorIdx.get(ann.id)}">${i + 1}</span>
+        ${badge}
         <div class="annotation-actions">
           <button class="annotation-edit" onclick="editAnnotation('${ann.id}')" title="Sửa nhận xét" aria-label="Sửa nhận xét"><svg width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M9.5 2.5l2 2L4 12H2v-2L9.5 2.5z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M8 4l2 2" stroke="currentColor" stroke-width="1.4"/></svg></button>
           <button class="annotation-delete" onclick="removeAnnotation('${ann.id}')" title="Xoá nhận xét" aria-label="Xoá nhận xét">×</button>
         </div>
       </div>
-      <div class="annotation-quote">"${escapeHtml(ann.text.slice(0, 70))}${ann.text.length > 70 ? '…' : ''}"</div>
+      <div class="annotation-quote${isDel ? ' annotation-quote-delete' : ''}">"${escapeHtml(ann.text.slice(0, 70))}${ann.text.length > 70 ? '…' : ''}"</div>
       <div class="annotation-comment" id="ann-comment-${ann.id}">${escapeHtml(ann.comment)}</div>
-    </div>`).join('');
+    </div>`;
+  }).join('');
 }
 
 const ANN_COLORS = ['ann-c0', 'ann-c1', 'ann-c2', 'ann-c3', 'ann-c4', 'ann-c5'];
@@ -3175,17 +3183,19 @@ const ANN_COLORS = ['ann-c0', 'ann-c1', 'ann-c2', 'ann-c3', 'ann-c4', 'ann-c5'];
 // annotation wrapping a yellow = 1 (blue), wrapping blue = 2 (red), etc.
 function _annColorMap(annotations) {
   if (!annotations || !annotations.length) return new Map();
-  const depths = new Map(annotations.map(a => [a.id, 0]));
-  // Process small annotations first so inner depths propagate outward
-  const bySize = [...annotations].sort((a, b) => (a.end - a.start) - (b.end - b.start));
+  // Color assignment only applies to highlight annotations
+  const highlights = annotations.filter(a => (a.type || 'highlight') === 'highlight');
+  if (!highlights.length) return new Map();
+  const depths = new Map(highlights.map(a => [a.id, 0]));
+  const bySize = [...highlights].sort((a, b) => (a.end - a.start) - (b.end - b.start));
   for (const inner of bySize) {
-    for (const outer of annotations) {
+    for (const outer of highlights) {
       if (outer !== inner && outer.start <= inner.start && outer.end >= inner.end) {
         depths.set(outer.id, Math.max(depths.get(outer.id), depths.get(inner.id) + 1));
       }
     }
   }
-  return new Map(annotations.map(a => [a.id, Math.min(depths.get(a.id), ANN_COLORS.length - 1)]));
+  return new Map(highlights.map(a => [a.id, Math.min(depths.get(a.id), ANN_COLORS.length - 1)]));
 }
 
 function buildAnnotatedHtml(text, annotations) {
@@ -3194,7 +3204,11 @@ function buildAnnotatedHtml(text, annotations) {
 
   const colorIdx = _annColorMap(annotations);
   const byStart = [...annotations].sort((a, b) => a.start - b.start);
-  const markerNum = new Map(byStart.map((ann, i) => [ann.id, i + 1]));
+  // Only highlight annotations get numbered markers in the text
+  let hlIdx = 0;
+  const markerNum = new Map(byStart.map(ann =>
+    (ann.type || 'highlight') === 'highlight' ? [ann.id, ++hlIdx] : [ann.id, null]
+  ));
 
   // Recursive render: outer annotations wrap inner ones so mix-blend-mode shows both colors
   function renderSpan(lo, hi, anns) {
@@ -3223,11 +3237,17 @@ function buildAnnotatedHtml(text, annotations) {
       children.forEach(c => done.add(c.id));
       done.add(ann.id);
 
-      const colorCls = ANN_COLORS[colorIdx.get(ann.id)];
-      html += `<mark class="ann-highlight ${colorCls}" data-id="${ann.id}" onclick="scrollToAnnotation('${ann.id}')" title="${escapeHtml(ann.comment)}">`;
-      html += renderSpan(effectiveStart, ann.end, children);
-      html += `<sup class="ann-marker ann-marker-c${colorIdx.get(ann.id)}">${markerNum.get(ann.id)}</sup>`;
-      html += `</mark>`;
+      if ((ann.type || 'highlight') === 'delete') {
+        html += `<span class="ann-delete" data-id="${ann.id}" onclick="scrollToAnnotation('${ann.id}')" title="${escapeHtml(ann.comment)}">`;
+        html += renderSpan(effectiveStart, ann.end, children);
+        html += `</span>`;
+      } else {
+        const colorCls = ANN_COLORS[colorIdx.get(ann.id)];
+        html += `<mark class="ann-highlight ${colorCls}" data-id="${ann.id}" onclick="scrollToAnnotation('${ann.id}')" title="${escapeHtml(ann.comment)}">`;
+        html += renderSpan(effectiveStart, ann.end, children);
+        html += `<sup class="ann-marker ann-marker-c${colorIdx.get(ann.id)}">${markerNum.get(ann.id)}</sup>`;
+        html += `</mark>`;
+      }
 
       pos = ann.end;
     }
@@ -3286,7 +3306,8 @@ function showAnnotationPopup(start, end, selectedText, rect) {
       placeholder="Nhận xét cho đoạn này... (Cmd/Ctrl+Enter để lưu, Esc để hủy)"></textarea>
     <div class="annotation-popup-actions">
       <button class="btn btn-sm btn-outline" onclick="closeAnnotationPopup()">Hủy (Esc)</button>
-      <button class="btn btn-sm btn-primary" onclick="confirmAnnotation(${start},${end})">Thêm nhận xét (⌘↵)</button>
+      <button class="btn btn-sm btn-ann-delete" onclick="confirmAnnotation(${start},${end},'delete')">Gạch xóa</button>
+      <button class="btn btn-sm btn-primary" onclick="confirmAnnotation(${start},${end},'highlight')">Highlight (⌘↵)</button>
     </div>`;
   document.body.appendChild(popup);
 
@@ -3306,7 +3327,7 @@ function showAnnotationPopup(start, end, selectedText, rect) {
     // B4.7 — keyboard shortcuts
     ta?.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') { e.preventDefault(); closeAnnotationPopup(); }
-      else if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); confirmAnnotation(start, end); }
+      else if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); confirmAnnotation(start, end, 'highlight'); }
     });
     document.addEventListener('mousedown', _popupOutsideClick);
   }, 60);
@@ -3326,14 +3347,21 @@ function closeAnnotationPopup() {
   document.removeEventListener('mousedown', _popupOutsideClick);
 }
 
-function confirmAnnotation(start, end) {
+function confirmAnnotation(start, end, type = 'highlight') {
   const comment = document.getElementById('ann-comment-input')?.value.trim();
   if (!comment) { toast('Vui lòng nhập nhận xét', 'error'); return; }
+  if (type === 'delete') {
+    const overlap = _gradingAnnotations.some(a =>
+      (a.type || 'highlight') === 'delete' && a.start < end && start < a.end
+    );
+    if (overlap) { toast('Vùng gạch xóa không được chồng lên nhau', 'error'); return; }
+  }
   _gradingAnnotations.push({
     id:      crypto.randomUUID(),
     start, end,
     text:    _gradingText.slice(start, end),
     comment,
+    type,
   });
   closeAnnotationPopup();
   refreshWritingDisplay();

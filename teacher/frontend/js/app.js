@@ -3411,7 +3411,12 @@ async function saveGrading(btn, action = 'complete') {
   const scoreRaw = document.getElementById('grading-score')?.value;
   const score = scoreRaw !== '' && scoreRaw != null ? parseFloat(scoreRaw) : null;
 
-  if (score !== null && (isNaN(score) || score < 0 || score > 9)) {
+  if (score === null || scoreRaw === '') {
+    toast('Vui lòng nhập Band Score trước khi hoàn thành', 'error');
+    document.getElementById('grading-score')?.focus();
+    return;
+  }
+  if (isNaN(score) || score < 0 || score > 9) {
     toast('Điểm Band phải từ 0 đến 9', 'error');
     return;
   }

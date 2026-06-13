@@ -413,7 +413,8 @@ function isUnsupportedRegionOpenAIError(rawText) {
   return parseOpenAIError(rawText).code === 'unsupported_country_region_territory';
 }
 
-async function transcribeR2Audio(env, r2Key) {
+// model: 'mini' | 'diarize'   (default 'mini' for backward compat on speaking flows)
+async function transcribeR2Audio(env, r2Key, { model = 'mini' } = {}) {
   if (!env.OPENAI_API_KEY) {
     throw Object.assign(new Error('STT not configured'), { statusCode: 500 });
   }
@@ -431,22 +432,15 @@ async function transcribeR2Audio(env, r2Key) {
     );
   }
 
-  // Derive format from file extension first (browser sets this correctly at upload time),
-  // then fall back to R2 object metadata. This avoids MIME mismatch when R2 stores an
-  // incomplete or browser-variant type (e.g. audio/x-m4a, audio/wave).
   const rawFileName = r2Key.split('/').pop() || 'audio';
   const rawExt = (rawFileName.match(/\.(\w{2,5})$/) || [])[1]?.toLowerCase() || '';
   const mimeFromExt = AUDIO_EXT_TO_MIME[rawExt] || '';
   const mimeFromMeta = normalizeAudioMime(obj.httpMetadata?.contentType);
   let contentType = mimeFromExt || mimeFromMeta || 'audio/mpeg';
 
-  // Ensure filename always carries a recognized extension for OpenAI format detection.
   const ext = rawExt || AUDIO_MIME_TO_EXT[contentType] || 'mp3';
   let fileName = rawExt ? rawFileName : `${rawFileName}.${ext}`;
 
-  // Materialize content into memory as raw bytes, then sniff actual format from magic bytes.
-  // This corrects files whose extension/MIME lies about the true container
-  // (e.g. a WAV file renamed to .mp3 — OpenAI would reject it as "corrupted").
   const arrayBuffer = await obj.arrayBuffer();
   const sniffed = sniffAudioFormat(new Uint8Array(arrayBuffer, 0, Math.min(12, arrayBuffer.byteLength)));
   if (sniffed && sniffed.mime !== contentType) {
@@ -455,39 +449,240 @@ async function transcribeR2Audio(env, r2Key) {
     contentType = sniffed.mime;
     fileName = `${baseName}.${sniffed.ext}`;
   }
-  console.log('[STT]', JSON.stringify({ key: r2Key, r2Mime: obj.httpMetadata?.contentType, usedMime: contentType, file: fileName, r2Bytes: obj.size, abBytes: arrayBuffer.byteLength }));
-
-  const sttForm = new FormData();
-  sttForm.append('file', new Blob([arrayBuffer], { type: contentType }), fileName);
-  sttForm.append('model', 'gpt-4o-mini-transcribe');
-  sttForm.append('response_format', 'json');
 
   const sttUrl = getOpenAIEndpoint(env, '/v1/audio/transcriptions', 'stt');
   const sttAuthToken = getOpenAIAuthToken(env, sttUrl, 'stt');
-  const sttRes = await fetch(sttUrl, {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${sttAuthToken}` },
-    body: sttForm,
-  });
+  const mp3Bitrate = parseMp3Bitrate(new Uint8Array(arrayBuffer));
+  const durationSeconds = parseMp3Duration(new Uint8Array(arrayBuffer));
 
-  if (!sttRes.ok) {
-    const txt = await sttRes.text();
-    console.error('STT error from R2 audio:', txt);
+  let diarize = model === 'diarize';
+  let fallback = false;
+  if (diarize && durationSeconds > 300) {
+    diarize = false;
+    fallback = true;
+  }
+
+  const modelUsed = diarize ? 'diarize' : 'mini';
+  console.log('[STT]', JSON.stringify({ key: r2Key, bytes: arrayBuffer.byteLength, mp3Bitrate, durationSeconds, modelRequested: model, modelUsed, fallback }));
+
+  if (diarize) {
+    const segments = await callSttApi({ chunk: arrayBuffer, contentType, fileName, diarize: true, sttUrl, sttAuthToken });
+    return { text: formatDiarizedSegments(segments), contentType, size: obj.size, modelUsed, fallback, durationSeconds };
+  }
+
+  // Mini: chunk at 600s and join
+  const STT_CHUNK_BYTES = (mp3Bitrate || 64) * 1000 * 600 / 8;
+  const chunks = arrayBuffer.byteLength > STT_CHUNK_BYTES
+    ? splitAudioChunks(arrayBuffer, STT_CHUNK_BYTES)
+    : [arrayBuffer];
+
+  console.log('[STT chunks]', JSON.stringify({ total: arrayBuffer.byteLength, mp3Bitrate, chunkBytes: Math.round(STT_CHUNK_BYTES), chunkCount: chunks.length }));
+
+  const transcriptParts = [];
+  for (let i = 0; i < chunks.length; i++) {
+    const chunkFileName = chunks.length > 1 ? fileName.replace(/(\.\w{2,5})$/, `_c${i + 1}$1`) : fileName;
+    const text = await callSttApi({ chunk: chunks[i], contentType, fileName: chunkFileName, diarize: false, sttUrl, sttAuthToken });
+    transcriptParts.push(typeof text === 'string' ? text : '');
+  }
+
+  return { text: transcriptParts.join(' '), contentType, size: obj.size, modelUsed, fallback, durationSeconds };
+}
+
+// Call the OpenAI STT API for one chunk. Returns segments[] for diarize or plain text string for mini.
+async function callSttApi({ chunk, contentType, fileName, diarize, sttUrl, sttAuthToken }) {
+  const form = new FormData();
+  form.append('file', new Blob([chunk], { type: contentType }), fileName);
+  if (diarize) {
+    form.append('model', 'gpt-4o-transcribe-diarize');
+    form.append('response_format', 'diarized_json');
+    form.append('chunking_strategy', JSON.stringify({ type: 'server_vad' }));
+  } else {
+    form.append('model', 'gpt-4o-mini-transcribe');
+    form.append('response_format', 'json');
+  }
+
+  const TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes per API call
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), TIMEOUT_MS);
+
+  let res;
+  try {
+    res = await fetch(sttUrl, { method: 'POST', headers: { 'Authorization': `Bearer ${sttAuthToken}` }, body: form, signal: abort.signal });
+  } catch (fetchErr) {
+    clearTimeout(timer);
+    const isTimeout = fetchErr?.name === 'AbortError';
+    console.error('STT fetch error:', fetchErr?.message, isTimeout ? '(timeout)' : '');
+    throw Object.assign(
+      new Error(isTimeout ? 'STT API timeout sau 5 phút' : 'Không thể kết nối tới STT API'),
+      { statusCode: 502 },
+    );
+  }
+  clearTimeout(timer);
+
+  if (!res.ok) {
+    const txt = await res.text();
+    console.error('STT API error:', txt);
     if (isUnsupportedRegionOpenAIError(txt)) {
       throw Object.assign(
-        new Error('Dịch vụ nhận diện giọng nói đang bị chặn theo vùng từ hạ tầng hiện tại. Nếu app đang chạy qua Cloudflare Worker, hãy route STT qua một server/proxy khác rồi thử lại.'),
+        new Error('Dịch vụ nhận diện giọng nói đang bị chặn theo vùng từ hạ tầng hiện tại.'),
         { statusCode: 502 },
       );
     }
     throw Object.assign(new Error('Không thể trích xuất script từ audio'), { statusCode: 502 });
   }
 
-  const data = await sttRes.json();
-  return {
-    text: data.text || '',
-    contentType,
-    size: obj.size,
+  const data = await res.json();
+  return diarize ? (data.segments || []) : (data.text || '');
+}
+
+
+// Group consecutive same-speaker segments into turns: "A: text\nB: text\n..."
+function formatDiarizedSegments(segments) {
+  const turns = [];
+  let currentSpeaker = null;
+  let currentTexts = [];
+
+  for (const seg of segments) {
+    const speaker = seg.speaker || '?';
+    const text = (seg.text || '').trim();
+    if (!text) continue;
+
+    if (speaker !== currentSpeaker) {
+      if (currentSpeaker !== null) {
+        turns.push(`${currentSpeaker}: ${currentTexts.join(' ')}`);
+      }
+      currentSpeaker = speaker;
+      currentTexts = [text];
+    } else {
+      currentTexts.push(text);
+    }
+  }
+
+  if (currentSpeaker !== null && currentTexts.length > 0) {
+    turns.push(`${currentSpeaker}: ${currentTexts.join(' ')}`);
+  }
+
+  return turns.join('\n');
+}
+
+// Read the bitrate (kbps) from the first valid MP3 frame header.
+// Returns 0 if not parseable (e.g. non-MP3 format).
+function parseMp3Bitrate(bytes) {
+  const BITRATE_MAP = [0,32,40,48,56,64,80,96,112,128,160,192,224,256,320,0];
+  for (let i = 0; i < bytes.length - 3; i++) {
+    if (bytes[i] === 0xFF && (bytes[i + 1] & 0xE0) === 0xE0) {
+      const ver = (bytes[i + 1] >> 3) & 3;
+      const layer = (bytes[i + 1] >> 1) & 3;
+      if (ver === 3 && layer === 1) { // MPEG1 Layer III
+        const brIdx = (bytes[i + 2] >> 4) & 0xF;
+        return BITRATE_MAP[brIdx] || 0;
+      }
+    }
+  }
+  return 0;
+}
+
+// Parse exact MP3 duration. Reads ID3v2 tag size first to skip it (avoids false syncs
+// inside embedded cover art), then looks for Xing/Info/VBRI VBR header.
+// Falls back to CBR estimate using audio-only bytes (excluding ID3v2 tag).
+function parseMp3Duration(bytes) {
+  const len = bytes.length;
+  const SR = { 3: [44100,48000,32000], 2: [22050,24000,16000], 0: [11025,12000,8000] };
+  const BR = {
+    3: [0,32,40,48,56,64,80,96,112,128,160,192,224,256,320,0],
+    2: [0,8,16,24,32,40,48,56,64,80,96,112,128,144,160,0],
+    0: [0,8,16,24,32,40,48,56,64,80,96,112,128,144,160,0],
   };
+
+  // Skip ID3v2 tag at start — size is stored as 4 syncsafe bytes at offset 6
+  let scanStart = 0;
+  if (len > 10 && bytes[0] === 0x49 && bytes[1] === 0x44 && bytes[2] === 0x33) {
+    const id3Size = ((bytes[6] & 0x7F) << 21) | ((bytes[7] & 0x7F) << 14) | ((bytes[8] & 0x7F) << 7) | (bytes[9] & 0x7F);
+    scanStart = 10 + id3Size;
+  }
+
+  // ID3v1 tag is always 128 bytes at the very end — exclude from CBR audio size
+  const id3v1Size = (len > 128 && bytes[len - 128] === 0x54 && bytes[len - 127] === 0x41 && bytes[len - 126] === 0x47) ? 128 : 0;
+
+  for (let i = scanStart; i < Math.min(len - 3, scanStart + 128 * 1024); i++) {
+    if (bytes[i] !== 0xFF || (bytes[i + 1] & 0xE0) !== 0xE0) continue;
+
+    const b1 = bytes[i + 1], b2 = bytes[i + 2], b3 = bytes[i + 3];
+    const ver    = (b1 >> 3) & 0x3;
+    const layer  = (b1 >> 1) & 0x3;
+    const brIdx  = (b2 >> 4) & 0xF;
+    const srIdx  = (b2 >> 2) & 0x3;
+    const isMono = ((b3 >> 6) & 0x3) === 3;
+
+    if (layer !== 1 || srIdx === 3 || brIdx === 0 || brIdx === 15) continue;
+    const sr = SR[ver]?.[srIdx];
+    if (!sr) continue;
+
+    // Verify this is a real frame: check that the next frame sync is at the expected offset
+    const br0 = BR[ver]?.[brIdx];
+    if (br0) {
+      const padding = (b2 >> 1) & 0x1;
+      const frameSize = Math.floor(144 * br0 * 1000 / sr) + padding;
+      const next = i + frameSize;
+      if (next + 1 < len && !(bytes[next] === 0xFF && (bytes[next + 1] & 0xE0) === 0xE0)) continue;
+    }
+
+    // Check for Xing/Info VBR header
+    const xingOff = i + (ver === 3 ? (isMono ? 21 : 36) : (isMono ? 13 : 21));
+    if (xingOff + 12 <= len) {
+      const tag = String.fromCharCode(bytes[xingOff], bytes[xingOff+1], bytes[xingOff+2], bytes[xingOff+3]);
+      if (tag === 'Xing' || tag === 'Info') {
+        const flags = ((bytes[xingOff+4] << 24) | (bytes[xingOff+5] << 16) | (bytes[xingOff+6] << 8) | bytes[xingOff+7]) >>> 0;
+        if (flags & 0x1) {
+          const totalFrames = ((bytes[xingOff+8] << 24) | (bytes[xingOff+9] << 16) | (bytes[xingOff+10] << 8) | bytes[xingOff+11]) >>> 0;
+          return Math.round(totalFrames * 1152 / sr);
+        }
+      }
+      const vbriOff = i + 32;
+      if (vbriOff + 18 <= len) {
+        const vtag = String.fromCharCode(bytes[vbriOff], bytes[vbriOff+1], bytes[vbriOff+2], bytes[vbriOff+3]);
+        if (vtag === 'VBRI') {
+          const totalFrames = ((bytes[vbriOff+14] << 24) | (bytes[vbriOff+15] << 16) | (bytes[vbriOff+16] << 8) | bytes[vbriOff+17]) >>> 0;
+          return Math.round(totalFrames * 1152 / sr);
+        }
+      }
+    }
+
+    // CBR: audio bytes = from first frame to end, minus trailing ID3v1
+    const br = BR[ver]?.[brIdx];
+    if (!br) break;
+    return Math.round((len - i - id3v1Size) * 8 / (br * 1000));
+  }
+  return 0;
+}
+
+// Split an ArrayBuffer into chunks of maxBytes, snapping each split point to the
+// nearest MP3 frame sync (0xFF 0xEx) so chunks don't start on a partial frame.
+function splitAudioChunks(buffer, maxBytes) {
+  const bytes = new Uint8Array(buffer);
+  const chunks = [];
+  let offset = 0;
+
+  while (offset < bytes.length) {
+    const tentativeEnd = offset + maxBytes;
+    if (tentativeEnd >= bytes.length) {
+      chunks.push(buffer.slice(offset));
+      break;
+    }
+    // Walk back up to 4KB to find a frame sync so we don't cut mid-frame.
+    let splitAt = tentativeEnd;
+    const searchFrom = Math.max(offset + 1, tentativeEnd - 4096);
+    for (let i = tentativeEnd; i >= searchFrom; i--) {
+      if (bytes[i] === 0xFF && (bytes[i + 1] & 0xE0) === 0xE0) {
+        splitAt = i;
+        break;
+      }
+    }
+    chunks.push(buffer.slice(offset, splitAt));
+    offset = splitAt;
+  }
+
+  return chunks;
 }
 
 // ─── Teacher lookup ───────────────────────────────────────────────────────────
@@ -2643,32 +2838,14 @@ export default {
       if (path === '/questions/transcribe-audio' && method === 'POST') {
         if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
         const body = await request.json().catch(() => null);
-
-        // Multi-key mode: keys = [{key, name}, ...]
-        if (Array.isArray(body?.keys) && body.keys.length > 0) {
-          const parts = [];
-          for (const item of body.keys) {
-            const r2Key = item?.key;
-            const label = String(item?.name || r2Key || '').trim();
-            if (!r2Key) continue;
-            try {
-              const data = await transcribeR2Audio(env, r2Key);
-              parts.push(`--- Transcript: ${label} ---\n${data.text || ''}`);
-            } catch (sttErr) {
-              return err(`Không thể transcribe "${label}": ${sttErr.message}`, sttErr.statusCode || 502);
-            }
-          }
-          return json({ text: parts.join('\n\n\n') });
-        }
-
-        // Single-key mode (backward compat)
         const r2Key = body?.key;
         if (!r2Key) return err('Missing R2 key', 400);
+        const sttModel = body?.model === 'mini' ? 'mini' : 'diarize';
         try {
-          const data = await transcribeR2Audio(env, r2Key);
-          return json({ text: data.text || '' });
-        } catch (sttErr) {
-          return err(sttErr.message || 'Không thể trích xuất script từ audio', sttErr.statusCode || 502);
+          const data = await transcribeR2Audio(env, r2Key, { model: sttModel });
+          return json({ text: data.text || '', fallback: data.fallback || false, modelUsed: data.modelUsed, durationSeconds: data.durationSeconds });
+        } catch (e) {
+          return err(e.message || 'Transcribe thất bại', e.statusCode || 502);
         }
       }
 

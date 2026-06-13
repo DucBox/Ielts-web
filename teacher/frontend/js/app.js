@@ -262,7 +262,10 @@ function restoreQuestionDraftIntoForm(mode, questionId = '', fallbackSkill = '')
     if (nextSkill === 'reading' || nextSkill === 'listening') renderVocabList();
 
     const scriptInput = $('#listening-script');
-    if (scriptInput) scriptInput.value = draft.script || '';
+    if (scriptInput) {
+      scriptInput.value = draft.script || '';
+      if (nextSkill === 'listening') { _speakerNames = []; _refreshSpeakerNames(); _renderSpeakerRenameUI(); }
+    }
 
     attachChipListeners();
     return true;
@@ -6090,6 +6093,7 @@ function renderQuestionDetail(q) {
         </label>
         <textarea id="listening-script" class="form-textarea listening-script-editor" rows="8"
           placeholder="Script listening...">${escapeHtml(q.script || '')}</textarea>
+        ${speakerRenameSectionHtml()}
         <div class="form-hint">Học sinh xem script sau khi nộp bài. Bôi chọn text ở đây để set Location cho đáp án.</div>
       </div>
       ${contentComposerHtml('Câu hỏi (text)', 'Bạn có thể chèn ảnh minh hoạ hoặc bảng câu hỏi vào giữa các đoạn text.')}
@@ -6171,6 +6175,12 @@ function renderQuestionDetail(q) {
   if (q.skill === 'reading' || q.skill === 'listening') {
     renderVocabList();
     syncVocabEditorState();
+  }
+
+  if (q.skill === 'listening') {
+    _speakerNames = [];
+    _refreshSpeakerNames();
+    _renderSpeakerRenameUI();
   }
 
   attachChipListeners();
@@ -6288,12 +6298,15 @@ async function submitQuestionEdit(id, btn) {
 // PAGE: QUESTION FORM (Tạo đề mới)
 // ═══════════════════════════════════════════════════════════════════════════
 
-// Multi-audio slot state: each item = {displayName, file, url, key, name, size, status:'idle'|'uploading'|'done'|'error', pct, eta}
-function _newAudioSlot() { return { displayName: '', file: null, name: '', size: 0, status: 'idle', url: null, key: null, pct: 0, eta: null }; }
+// Multi-audio slot state: each item = {displayName, file, url, key, name, size, status:'idle'|'uploading'|'done'|'error', pct, eta, transcript: undefined|null|string}
+// transcript: undefined = chưa transcribe, null = đang transcribe, string = xong (kể cả rỗng nếu lỗi)
+function _newAudioSlot() { return { displayName: '', file: null, name: '', size: 0, status: 'idle', url: null, key: null, pct: 0, eta: null, transcript: undefined }; }
 let _audioSlots = [_newAudioSlot()];
 let _audioFiles = _audioSlots; // legacy alias
 let _audioUploading = false;
 let _scriptTranscribing = false;
+let _sttModel = 'diarize';      // 'mini' | 'diarize'
+let _speakerNames = [];         // [{original:'A', replace:''}, ...]
 let _audioFile = null, _audioUploadUrl = null, _audioUploadKey = null, _audioUploadName = '', _audioUploadSize = 0;
 let _vocabItems = [];
 let _editingVocabIndex = -1;
@@ -6515,11 +6528,13 @@ function onSkillChange(skill) {
         <label class="form-label">Script Listening
           <span style="font-size:12px;font-weight:400;color:var(--gray-400)"> — tự động trích xuất sau khi upload audio, có thể chỉnh sửa</span>
         </label>
+        ${sttSelectorHtml()}
         <div id="script-loading" class="script-loading hidden">
-          <span class="btn-spinner btn-spinner--dark"></span> Đang trích xuất script (từ R2, không upload lại)...
+          <span class="btn-spinner btn-spinner--dark"></span> <span id="script-loading-msg">Đang trích xuất script...</span>
         </div>
         <textarea id="listening-script" class="form-textarea listening-script-editor" rows="8"
           placeholder="Script sẽ tự động điền sau khi upload audio v2. Bạn cũng có thể nhập thủ công."></textarea>
+        ${speakerRenameSectionHtml()}
         <div class="form-hint">Học sinh xem script sau khi nộp bài. Bôi chọn text ở đây để set Location cho đáp án.</div>
       </div>
       ${contentComposerHtml('Câu hỏi (text)', 'Bạn có thể xen kẽ text và ảnh minh hoạ / bảng câu hỏi trong cùng một nội dung.')}
@@ -6786,6 +6801,22 @@ function attachPdfImport() {
   });
 }
 
+function sttSelectorHtml() {
+  return `<div id="stt-selector" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px;padding:8px 10px;background:var(--bg-secondary);border-radius:8px;font-size:13px">
+    <span style="font-weight:600;color:var(--gray-600)">Model:</span>
+    <label style="display:flex;align-items:center;gap:4px;cursor:pointer">
+      <input type="radio" name="stt-model" value="diarize" ${_sttModel==='diarize'?'checked':''} onchange="setSttModel('diarize')">
+      <span>Diarize <span style="color:var(--gray-400);font-size:11px">(có Speaker ID, tối đa 5 phút)</span></span>
+    </label>
+    <label style="display:flex;align-items:center;gap:4px;cursor:pointer">
+      <input type="radio" name="stt-model" value="mini" ${_sttModel==='mini'?'checked':''} onchange="setSttModel('mini')">
+      <span>Mini <span style="color:var(--gray-400);font-size:11px">(nhanh, không giới hạn)</span></span>
+    </label>
+  </div>`;
+}
+
+function setSttModel(val) { _sttModel = val; }
+
 function audioUploadHtml() {
   return `<div id="audio-upload-area"><div id="audio-slot-list"></div>
     <button class="btn btn-outline btn-sm" style="margin-top:8px" onclick="addAudioSlot()">+ Thêm file audio</button>
@@ -6982,12 +7013,144 @@ async function _uploadAudioSlot(idx) {
 }
 
 function _maybeTranscribeAll() {
-  const active = _audioSlots.filter(s => s.status !== 'idle');
-  if (active.length === 0) return;
-  if (active.some(s => s.status === 'uploading')) return;
-  if (active.every(s => s.status === 'done')) {
-    transcribeListeningScript(active.map(s => ({ key: s.key, name: s.displayName || s.name })));
+  if (_audioSlots.some(s => s.status === 'uploading')) return;
+  // Only transcribe slots that just finished uploading (transcript === undefined)
+  const newSlots = _audioSlots.filter(s => s.status === 'done' && s.transcript === undefined);
+  for (const slot of newSlots) {
+    slot.transcript = null; // mark as in-progress so we don't queue it twice
+    _transcribeSlot(slot);
   }
+}
+
+async function _transcribeSlot(slot) {
+  const scriptEl = $('#listening-script');
+  const loadingEl = $('#script-loading');
+  if (loadingEl) loadingEl.classList.remove('hidden');
+  try {
+    const result = await transcribeListeningScript({ key: slot.key, model: _sttModel });
+    slot.transcript = result?.text || '';
+    slot.transcriptFallback = result?.fallback || false;
+    slot.transcriptModel = result?.modelUsed || _sttModel;
+    slot.transcriptDuration = result?.durationSeconds || 0;
+    _renderCombinedTranscript();
+    const dur = slot.transcriptDuration;
+    const durStr = dur > 0 ? ` (${Math.floor(dur/60)}:${String(dur%60).padStart(2,'0')})` : '';
+    if (result?.fallback) {
+      openModal('Đã tự động dùng Mini model', `<p style="margin:0 0 8px;line-height:1.6">"${escapeHtml(slot.displayName || slot.name)}"${durStr} dài hơn 5 phút — Diarize không hỗ trợ.</p><p style="margin:0;line-height:1.6">Đã dùng <strong>Mini model</strong> thay thế (không có Speaker ID).</p>`);
+    }
+  } catch (e) {
+    slot.transcript = '';
+    toast(`Không thể transcribe "${slot.displayName || slot.name}": ${e.error || e.message}`, 'error');
+  } finally {
+    if (!_audioSlots.some(s => s.transcript === null)) {
+      if (loadingEl) loadingEl.classList.add('hidden');
+    }
+  }
+}
+
+function _renderCombinedTranscript() {
+  const scriptEl = $('#listening-script');
+  if (!scriptEl) return;
+  const done = _audioSlots.filter(s => typeof s.transcript === 'string' && s.transcript !== '');
+  if (done.length === 0) return;
+  if (done.length === 1) {
+    scriptEl.value = done[0].transcript;
+  } else {
+    scriptEl.value = done.map(s => `--- Transcript: ${s.displayName || s.name} ---\n${s.transcript}`).join('\n\n\n');
+  }
+  _refreshSpeakerNames();
+  _renderSpeakerRenameUI();
+}
+
+function speakerRenameSectionHtml() {
+  return `<div id="speaker-rename-section" style="display:none;margin-top:8px;padding:10px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+      <span style="font-size:12px;font-weight:600;color:var(--gray-500);letter-spacing:.3px">SPEAKER RENAME</span>
+      <div style="display:flex;gap:6px;">
+        <button type="button" onclick="addSpeakerRow()" style="font-size:12px;padding:3px 10px;border:1px solid var(--border);border-radius:5px;background:transparent;color:var(--text);cursor:pointer;line-height:1.5">+ Thêm</button>
+        <button type="button" onclick="applySpeakerRenames()" style="font-size:12px;padding:3px 12px;border:none;border-radius:5px;background:var(--primary);color:#fff;cursor:pointer;font-weight:600;line-height:1.5">Replace →</button>
+      </div>
+    </div>
+    <div id="speaker-rename-list" style="display:flex;flex-direction:column;gap:4px;"></div>
+  </div>`;
+}
+
+function _parseSpeakersFromTranscript(text) {
+  const seen = new Set();
+  const speakers = [];
+  for (const line of text.split('\n')) {
+    const m = line.match(/^([^:\n]+?):\s/);
+    if (m && !seen.has(m[1])) { seen.add(m[1]); speakers.push(m[1]); }
+  }
+  return speakers;
+}
+
+function _nextSpeakerLabel() {
+  const used = new Set(_speakerNames.map(s => s.original));
+  for (const l of 'ABCDEFGHIJKLMNOPQRSTUVWXYZ') { if (!used.has(l)) return l; }
+  return '?';
+}
+
+function _hasSpeakerPattern(text) {
+  return /^[A-Za-z][^:\n]*:\s/m.test(text);
+}
+
+function _refreshSpeakerNames() {
+  const scriptEl = $('#listening-script');
+  if (!scriptEl || !_hasSpeakerPattern(scriptEl.value)) return;
+  const found = _parseSpeakersFromTranscript(scriptEl.value);
+  const existingMap = new Map(_speakerNames.map(s => [s.original, s]));
+  _speakerNames = found.map(sp => existingMap.get(sp) || { original: sp, replace: '' });
+  if (_speakerNames.length === 0) {
+    _speakerNames = [{ original: 'A', replace: '' }, { original: 'B', replace: '' }];
+  }
+}
+
+function _renderSpeakerRenameUI() {
+  const section = $('#speaker-rename-section');
+  if (!section) return;
+  const scriptEl = $('#listening-script');
+  const hasPattern = scriptEl && _hasSpeakerPattern(scriptEl.value);
+  if (!hasPattern) { section.style.display = 'none'; return; }
+  section.style.display = '';
+  const list = $('#speaker-rename-list');
+  if (!list) return;
+  const inp = 'padding:4px 8px;border:1px solid var(--border);border-radius:5px;font-size:13px;background:var(--surface,var(--bg-subtle));color:var(--text);outline:none;width:100%';
+  list.innerHTML = _speakerNames.map((s, i) => `
+    <div style="display:flex;align-items:center;gap:6px;">
+      <input type="text" value="${escapeHtml(s.original)}" oninput="_speakerNames[${i}].original=this.value" style="${inp};max-width:120px;flex:0 0 120px">
+      <span style="color:var(--gray-400);font-size:13px;flex-shrink:0">→</span>
+      <input type="text" value="${escapeHtml(s.replace)}" oninput="_speakerNames[${i}].replace=this.value" placeholder="Tên mới..." style="${inp};flex:1">
+      <button type="button" onclick="_removeSpeakerRow(${i})" style="flex-shrink:0;border:none;background:none;color:var(--gray-400);cursor:pointer;font-size:15px;padding:2px 4px;line-height:1" title="Xóa">×</button>
+    </div>`).join('');
+}
+
+function addSpeakerRow() {
+  _speakerNames.push({ original: _nextSpeakerLabel(), replace: '' });
+  _renderSpeakerRenameUI();
+}
+
+function _removeSpeakerRow(idx) {
+  _speakerNames.splice(idx, 1);
+  _renderSpeakerRenameUI();
+}
+
+function applySpeakerRenames() {
+  const scriptEl = $('#listening-script');
+  if (!scriptEl) return;
+  const toRename = _speakerNames.filter(s => s.replace.trim());
+  if (toRename.length === 0) { toast('Chưa điền tên mới', 'warning'); return; }
+  let text = scriptEl.value;
+  for (const s of toRename) {
+    const escaped = s.original.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    text = text.replace(new RegExp(`^${escaped}:`, 'gm'), `${s.replace}:`);
+  }
+  scriptEl.value = text;
+  for (const s of _speakerNames) {
+    if (s.replace.trim()) { s.original = s.replace; s.replace = ''; }
+  }
+  _renderSpeakerRenameUI();
+  toast('Đã đổi tên speaker', 'success');
 }
 
 function removeAudioSlot(idx) {
@@ -7007,31 +7170,9 @@ function removeAudioSlot(idx) {
 function removeAudioFile(idx) { removeAudioSlot(idx); }
 function removeAudio(e) { if (e) e.stopPropagation(); removeAudioSlot(0); }
 
-async function transcribeListeningScript(keysOrKey) {
-  const scriptEl = $('#listening-script');
-  const loadingEl = $('#script-loading');
-  if (!scriptEl || _scriptTranscribing) return;
-  _scriptTranscribing = true;
-  if (loadingEl) loadingEl.classList.remove('hidden');
-  scriptEl.disabled = true;
-  try {
-    let data;
-    if (Array.isArray(keysOrKey)) {
-      data = await api.post('/questions/transcribe-audio', { keys: keysOrKey });
-    } else {
-      data = await api.post('/questions/transcribe-audio', { key: keysOrKey });
-    }
-    if (data?.text) {
-      scriptEl.value = data.text;
-      toast('Đã trích xuất script tự động ✓');
-    }
-  } catch (e) {
-    toast('Không thể tự động trích xuất script: ' + (e.error || e.message), 'error');
-  } finally {
-    _scriptTranscribing = false;
-    scriptEl.disabled = false;
-    if (loadingEl) loadingEl.classList.add('hidden');
-  }
+// Direct synchronous call — returns result object. Throws on error.
+async function transcribeListeningScript({ key, model }) {
+  return await api.post('/questions/transcribe-audio', { key, model });
 }
 
 function toggleExplanation(btn) {
@@ -8647,9 +8788,11 @@ function renderCQSectionsUI() {
       skillContentHtml = `<div class="form-group"><label class="form-label">File Audio <span style="color:var(--danger)">*</span></label>${audioUploadHtml()}</div>
         <div class="form-group" id="script-section">
           <label class="form-label">Script Listening</label>
-          <div id="script-loading" class="script-loading hidden"><span class="btn-spinner btn-spinner--dark"></span> Đang trích xuất...</div>
+          ${sttSelectorHtml()}
+          <div id="script-loading" class="script-loading hidden"><span class="btn-spinner btn-spinner--dark"></span> <span id="script-loading-msg">Đang trích xuất script...</span></div>
           <textarea id="listening-script" class="form-textarea listening-script-editor" rows="6"
             placeholder="Script tự động điền sau khi upload audio">${escapeHtml(sec.script||'')}</textarea>
+          ${speakerRenameSectionHtml()}
         </div>
         ${contentComposerHtml('Câu hỏi (text)')}
         <div id="location-pick-hint" class="location-pick-hint hidden"></div>

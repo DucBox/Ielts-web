@@ -1,5 +1,5 @@
 /*
-  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src https://ielts-teacher-api.quangducngo0811.workers.dev https://6782176d9bb2f0676cfa4b3f7f207dfb.r2.cloudflarestorage.com; media-src https://pub-75b0370b5b5a4c15b26531707c369a0f.r2.dev blob:; img-src 'self' data: blob: https://pub-75b0370b5b5a4c15b26531707c369a0f.r2.dev; font-src 'self';
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://ielts-teacher-api.quangducngo0811.workers.dev https://6782176d9bb2f0676cfa4b3f7f207dfb.r2.cloudflarestorage.com; media-src https://pub-75b0370b5b5a4c15b26531707c369a0f.r2.dev blob:; img-src 'self' data: blob: https://pub-75b0370b5b5a4c15b26531707c369a0f.r2.dev; font-src 'self';
   X-Frame-Options: DENY
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin

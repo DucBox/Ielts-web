@@ -5392,11 +5392,19 @@ function renderSpeakingPending(sub) {
           <p>File audio của bạn đã được ghi nhận. Giáo viên sẽ nghe và chấm điểm sớm.</p>
         </div>
       </div>
-      ${sub.speaking_audio_url ? `
-        <div class="section-label">Bài thu âm của bạn</div>
-        <div class="submitted-content" style="padding:16px">
-          <audio controls src="${sub.speaking_audio_url}" style="width:100%"></audio>
-        </div>` : ''}
+      ${(() => {
+        const urls = Array.isArray(sub.speaking_audio_urls) && sub.speaking_audio_urls.length > 0
+          ? sub.speaking_audio_urls
+          : (sub.speaking_audio_url ? [{ url: sub.speaking_audio_url }] : []);
+        if (!urls.length) return '';
+        return `<div class="section-label">Bài thu âm của bạn</div>
+          <div class="submitted-content" style="padding:16px">
+            ${urls.map((a, i) => `
+              ${urls.length > 1 ? `<div style="font-size:12px;color:var(--gray-400);margin-bottom:4px">${escapeHtml(a.name || ('Phần ' + (i+1)))}</div>` : ''}
+              <audio controls src="${escapeHtml(a.url || '')}" style="width:100%;margin-bottom:${i < urls.length-1 ? '12px' : '0'}"></audio>
+            `).join('')}
+          </div>`;
+      })()}
     </div>`;
 }
 
@@ -5438,11 +5446,19 @@ function renderSpeakingFeedback(sub) {
       <div class="assignment-content">
         <div class="content-pane" id="feedback-content-pane">
           ${overallBlock}
-          ${sub.speaking_audio_url ? `
-            <div class="section-label"${overall ? ' style="margin-top:20px"' : ''}>Audio ghi âm của bạn</div>
-            <div style="margin-bottom:16px">
-              <audio controls src="${escapeHtml(sub.speaking_audio_url)}" style="width:100%;height:36px;outline:none"></audio>
-            </div>` : ''}
+          ${(() => {
+            const urls = Array.isArray(sub.speaking_audio_urls) && sub.speaking_audio_urls.length > 0
+              ? sub.speaking_audio_urls
+              : (sub.speaking_audio_url ? [{ url: sub.speaking_audio_url }] : []);
+            if (!urls.length) return '';
+            return `<div class="section-label"${overall ? ' style="margin-top:20px"' : ''}>Audio ghi âm của bạn</div>
+              <div style="margin-bottom:16px">
+                ${urls.map((a, i) => `
+                  ${urls.length > 1 ? `<div style="font-size:12px;color:var(--gray-400);margin-bottom:4px">${escapeHtml(a.name || ('Phần ' + (i+1)))}</div>` : ''}
+                  <audio controls src="${escapeHtml(a.url || '')}" style="width:100%;height:36px;outline:none;margin-bottom:${i < urls.length-1 ? '10px' : '0'}"></audio>
+                `).join('')}
+              </div>`;
+          })()}
           <div class="section-label">Transcript (AI Generated)
             ${annotations.length > 0 ? '<span class="feedback-hint">Màu highlight = nhận xét · Bấm số để xem</span>' : ''}
           </div>

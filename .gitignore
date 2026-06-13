@@ -26,3 +26,9 @@ test-results/
 # OS
 .DS_Store
 **/.DS_Store
+
+# Audio/video test files
+*.mp3
+*.mp4
+*.wav
+*.m4a

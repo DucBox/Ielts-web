@@ -101,12 +101,17 @@ body {
   display: flex;
   align-items: center;
   gap: 12px;
+  flex-shrink: 0;
 }
 
 .header-student-name {
   font-weight: 600;
   font-size: 13px;
   color: var(--text-strong);
+  white-space: nowrap;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .header-class-name {
@@ -3620,7 +3625,6 @@ mark.student-note::after {
 
 @media (max-width: 768px) {
   .home-stats-row { grid-template-columns: repeat(2, 1fr); }
-  .header-nav { display: none; }
 }
 
 /* ═══ C4.1 — PROFILE PAGE ══════════════════════════════════════════════════ */
@@ -4208,19 +4212,22 @@ mark.student-note::after {
 [data-theme="dark"] .mobile-nav-link.active { background: rgba(94,234,212,.12); color: #5eead4; }
 [data-theme="dark"] .mobile-nav-footer { border-color: rgba(255,255,255,.08); }
 
-/* ═══ RESPONSIVE — 768px (tablet + phone) ════════════════════════════════════ */
-@media (max-width: 768px) {
-  /* Show hamburger, hide desktop nav */
+/* ═══ NAV → HAMBURGER ════════════════════════════════════════════════════════
+   The full horizontal nav (logo + 7 links + user controls) only fits ~1024px+,
+   so switch to the hamburger drawer at and below 1024px (covers tablets). */
+@media (max-width: 1024px) {
   .hamburger-btn { display: flex; }
   .header-nav { display: none; }
   .btn-logout-desktop { display: none; }
-
-  /* Show mobile nav backdrop when active */
   .mobile-nav-backdrop { display: block; }
+  .header-student-name { display: none; }
+  .header-class-name { display: none; }
+}
 
+/* ═══ RESPONSIVE — 768px (tablet + phone) ════════════════════════════════════ */
+@media (max-width: 768px) {
   /* Header adjustments */
   .app-header { padding: 0 14px; }
-  .header-student-name { display: none; }
 
   /* Table overflow scroll */
   .table-responsive { overflow-x: auto; -webkit-overflow-scrolling: touch; }

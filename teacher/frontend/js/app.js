@@ -7628,7 +7628,7 @@ function renderProfileFieldsPage(fields) {
   const PF_KEY_LABELS = { notification_email: 'Email thông báo' };
   const listHtml = fields.length === 0
     ? `<div class="pf-empty"><div class="pf-empty-icon">📋</div><div>Chưa có câu hỏi nào. Thêm câu hỏi đầu tiên bên trên!</div></div>`
-    : `<table class="pf-table">
+    : `<div class="table-wrap"><table class="pf-table">
         <thead><tr><th>#</th><th>Câu hỏi</th><th>Kiểu</th><th>Vai trò</th><th></th></tr></thead>
         <tbody>${fields.map((f, i) => {
           const opts = Array.isArray(f.options) && f.options.length
@@ -7643,7 +7643,7 @@ function renderProfileFieldsPage(fields) {
             <td><button class="btn-icon danger" onclick="deleteProfileField('${f.id}')" aria-label="Xoá trường hồ sơ">🗑</button></td>
           </tr>`;
         }).join('')}</tbody>
-      </table>`;
+      </table></div>`;
 
   $('#app').innerHTML = `
     <div class="container">

@@ -5,6 +5,28 @@
 // $, escapeHtml, renderMarkdownInline, renderSafeMarkdown, btnReset, toast,
 // setLoading, formatDateTime, isOverdue, makeSortIcon — defined in utils.js
 
+// E1: DOM-based sanitizer for block.html content before innerHTML insertion.
+function sanitizeBlockHtml(html) {
+  if (!html || typeof html !== 'string') return '';
+  const tmp = document.createElement('div');
+  tmp.innerHTML = html;
+  const dangerousProto = /^(javascript:|vbscript:|data:text\/html)/i;
+  tmp.querySelectorAll('script,style,iframe,object,embed,form,base,meta,link').forEach(el => el.remove());
+  tmp.querySelectorAll('*').forEach(el => {
+    for (const attr of [...el.attributes]) {
+      const name = attr.name.toLowerCase();
+      if (/^on\w+$/.test(name) || name.includes(':') || name === 'action' || name === 'formaction') {
+        el.removeAttribute(attr.name);
+        continue;
+      }
+      if ((name === 'href' || name === 'src' || name === 'srcset') && dangerousProto.test(attr.value.trim())) {
+        el.removeAttribute(attr.name);
+      }
+    }
+  });
+  return tmp.innerHTML;
+}
+
 function toggleSidebar() {
   const sidebar = document.getElementById('sidebar');
   if ((window.visualViewport?.width ?? window.innerWidth) <= 768) {
@@ -437,20 +459,49 @@ function skillBadge(skill) {
 // MODAL SYSTEM
 // ═══════════════════════════════════════════════════════════════════════════
 
+let _modalPreviousFocus = null;
+const FOCUSABLE = 'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
+
 function openModal(title, bodyHtml) {
+  const overlay = $('#modal-overlay');
+  const shell = overlay?.querySelector('.modal');
+  _modalPreviousFocus = document.activeElement;
   $('#modal-title').textContent = title;
   $('#modal-body').innerHTML = bodyHtml;
-  $('#modal-overlay').classList.remove('hidden');
+  overlay.setAttribute('role', 'dialog');
+  overlay.setAttribute('aria-modal', 'true');
+  overlay.setAttribute('aria-labelledby', 'modal-title');
+  overlay.classList.remove('hidden');
+  const first = (shell || overlay).querySelector(FOCUSABLE);
+  if (first) first.focus();
 }
 
 let _oneTimeStudentCredentials = null;
 
 function closeModal(event) {
-  if (event && event.target !== $('#modal-overlay')) return;
+  const overlay = $('#modal-overlay');
+  if (event && event.target !== overlay) return;
   _oneTimeStudentCredentials = null;
-  $('#modal-overlay').classList.add('hidden');
+  overlay.classList.add('hidden');
   $('#modal-body').innerHTML = '';
+  if (_modalPreviousFocus) { _modalPreviousFocus.focus(); _modalPreviousFocus = null; }
 }
+
+document.addEventListener('keydown', e => {
+  const overlay = $('#modal-overlay');
+  if (!overlay || overlay.classList.contains('hidden')) return;
+  const shell = overlay.querySelector('.modal') || overlay;
+  if (e.key === 'Escape') { closeModal(); return; }
+  if (e.key === 'Tab') {
+    const focusable = [...shell.querySelectorAll(FOCUSABLE)];
+    if (!focusable.length) return;
+    const first = focusable[0], last = focusable[focusable.length - 1];
+    if (e.shiftKey ? document.activeElement === first : document.activeElement === last) {
+      e.preventDefault();
+      (e.shiftKey ? last : first).focus();
+    }
+  }
+});
 
 function csvEscape(value) {
   return `"${String(value ?? '').replace(/"/g, '""')}"`;
@@ -1049,7 +1100,7 @@ function _applyClassFilter() {
       </button>
     </div>
     <div class="list-toolbar">
-      <input id="class-search-input" class="form-input search-input"
+      <input id="class-search-input" class="form-input search-input" aria-label="Tìm kiếm lớp"
         placeholder="🔍 Tìm kiếm lớp..."
         value="${escapeHtml(_classSearch)}" />
       <select id="class-sort-select" class="form-input sort-select">
@@ -1573,7 +1624,7 @@ function renderStatsTab(container, data) {
     <div class="stats-section-card">
       <div class="stats-section-title">Đúng hạn / muộn / chưa nộp (bài đã đóng)</div>
       <div class="stats-closed-controls">
-        <input class="stats-closed-search" type="text" placeholder="🔍 Tìm bài tập..."
+        <input class="stats-closed-search" type="text" aria-label="Tìm bài tập" placeholder="🔍 Tìm bài tập..."
           value="${escapeHtml(_closedAssignsSearch)}"
           oninput="setClosedAssignsSearch(this.value)" />
       </div>
@@ -2183,7 +2234,7 @@ function renderClassDetail(cls, students = []) {
     <div id="tab-assignments" class="tab-content">
       ${cls.assignments.length > 0 ? `
       <div class="assign-filter-bar">
-        <input class="form-input assign-filter-search" placeholder="🔍 Tìm theo tên bài..."
+        <input class="form-input assign-filter-search" aria-label="Tìm theo tên bài" placeholder="🔍 Tìm theo tên bài..."
           oninput="filterAssignments(this.value, null)" />
         <div class="assign-skill-pills">
           <button class="assign-skill-pill active" data-skill="" onclick="filterAssignments(null, '')">Tất cả</button>
@@ -2911,11 +2962,55 @@ async function initWaveform(container, audioEl) {
     });
 
     draw(audioEl.duration ? audioEl.currentTime / audioEl.duration : 0);
+    // WebM files from MediaRecorder don't store duration in header → browser shows 0:00.
+    // We know the real duration from AudioContext — patch it into the UI label and audio element.
+    const realDur = decoded.duration;
+    if (realDur > 0) {
+      const durLabel = document.getElementById('audio-dur-0');
+      if (durLabel) durLabel.textContent = `· ${formatAudioDur(realDur)}`;
+      // Patch audio element so timeupdate % calculation uses real duration
+      if (!isFinite(audioEl.duration) || audioEl.duration < 1) {
+        try { audioEl.currentTime = realDur; audioEl.currentTime = 0; } catch {}
+      }
+    }
   } catch (err) {
     // If fetch/decode fails, draw flat placeholder bars
     peaks = Array.from({ length: BARS }, () => 0.2 + Math.random() * 0.3);
     draw(0);
   }
+}
+
+function formatAudioDur(secs) {
+  const s = Math.round(secs);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+
+async function fixTrackAudioDuration(trackIndex) {
+  const audio = document.getElementById(`track-audio-${trackIndex}`);
+  const label = document.getElementById(`audio-dur-${trackIndex}`);
+  if (!audio || !audio.src) return;
+  // First try: metadata already loaded
+  const tryShow = () => {
+    if (isFinite(audio.duration) && audio.duration > 0) {
+      if (label) label.textContent = `· ${formatAudioDur(audio.duration)}`;
+      return true;
+    }
+    return false;
+  };
+  if (tryShow()) return;
+  audio.addEventListener('loadedmetadata', () => { if (!tryShow()) fetchDecodeForDuration(); }, { once: true });
+  async function fetchDecodeForDuration() {
+    try {
+      const res = await fetch(audio.src);
+      const buf = await res.arrayBuffer();
+      const actx = new (window.AudioContext || window.webkitAudioContext)();
+      const decoded = await actx.decodeAudioData(buf);
+      actx.close();
+      if (decoded.duration > 0 && label) label.textContent = `· ${formatAudioDur(decoded.duration)}`;
+    } catch {}
+  }
+  // If loadedmetadata never fires (preload=none), trigger decode directly
+  setTimeout(() => { if (label && !label.textContent) fetchDecodeForDuration(); }, 1500);
 }
 
 // PAGE: WRITING GRADING (Google Docs-style annotations)
@@ -3011,9 +3106,9 @@ function renderGradingPage(sub) {
           <div style="font-size:12px;font-weight:700;color:var(--gray-500);margin-bottom:8px;text-transform:uppercase">Audio ghi âm</div>
           ${tracks.map((t, i) => `
             <div style="${multi ? 'margin-bottom:10px' : ''}">
-              ${multi ? `<div style="font-size:12px;color:var(--gray-500);margin-bottom:4px">${escapeHtml(t.name || ('Phần ' + (i + 1)))}</div>` : ''}
+              ${multi ? `<div style="font-size:12px;color:var(--gray-500);margin-bottom:4px">${escapeHtml(t.name || ('Phần ' + (i + 1)))} <span id="audio-dur-${i}" style="color:var(--gray-400)"></span></div>` : ''}
               ${i === 0 ? `<div id="waveform-container" class="waveform-container"><div class="waveform-loading">Đang tải waveform...</div></div>` : ''}
-              <audio ${i === 0 ? 'id="waveform-audio"' : ''} controls src="${escapeHtml(t.url || '')}" style="width:100%;height:36px;outline:none;${i === 0 ? 'margin-top:6px' : ''}"></audio>
+              <audio ${i === 0 ? 'id="waveform-audio"' : `id="track-audio-${i}"`} controls src="${escapeHtml(t.url || '')}" preload="metadata" style="width:100%;height:36px;outline:none;${i === 0 ? 'margin-top:6px' : ''}"></audio>
             </div>`).join('')}
         </div>`;
     }
@@ -3135,6 +3230,12 @@ function renderGradingPage(sub) {
   const waveformAudio = document.getElementById('waveform-audio');
   if (waveformContainer && waveformAudio) {
     initWaveform(waveformContainer, waveformAudio);
+  }
+  // Fix duration display for non-waveform tracks (webm files don't store duration in header)
+  let trackIdx = 1;
+  while (document.getElementById(`track-audio-${trackIdx}`)) {
+    fixTrackAudioDuration(trackIdx);
+    trackIdx++;
   }
 }
 
@@ -3842,7 +3943,7 @@ function _syncAssignTimeLimitVisibility() {
   if (group) group.style.display = isExam ? '' : 'none';
 }
 
-async function submitAssign(btn) {
+async function submitAssign(btn, confirmed = false) {
   const title = $('#assign-title')?.value.trim();
   const deadlineRaw = $('#assign-deadline')?.value;
   const deadline = deadlineRaw ? new Date(deadlineRaw).toISOString() : null;
@@ -3851,12 +3952,39 @@ async function submitAssign(btn) {
   const timeLimitRaw = $('#assign-time-limit')?.value.trim();
   const timeLimitMinutes = (mode === 'exam' && timeLimitRaw) ? Number(timeLimitRaw) : null;
   const scaleEl = document.querySelector('input[name="assign-scale"]:checked');
-  const scoringScale = scaleEl?.value || null; // null = backend auto-detect
+  const scoringScale = scaleEl?.value || null;
 
   if (!title) { toast('Vui lòng nhập tên bài tập', 'error'); return; }
   if (!_selectedQuestionId) { toast('Vui lòng chọn một đề từ kho', 'error'); return; }
 
-  btnLoading(btn);
+  // Check IELTS scale warning BEFORE submitting — show inline, not a new modal
+  if (!confirmed && scoringScale === 'ielts') {
+    const selectedQ = _questions.find(q => q.id === _selectedQuestionId);
+    const qCount = selectedQ?.question_count ?? 0;
+    const skill = selectedQ?.skill ?? '';
+    const isObjective = skill === 'reading' || skill === 'listening';
+    if (isObjective && qCount !== 40) {
+      let warn = document.getElementById('assign-scale-warn');
+      if (!warn) {
+        warn = document.createElement('div');
+        warn.id = 'assign-scale-warn';
+        document.getElementById('modal-body')?.appendChild(warn);
+      }
+      warn.innerHTML = `
+        <div style="background:#fef9c3;border:1px solid #fbbf24;border-radius:8px;padding:12px 16px;margin-top:12px">
+          <p style="margin:0 0 6px;font-weight:600;color:#92400e">⚠️ Đề chỉ có ${qCount} câu — thang IELTS chuẩn dùng 40 câu</p>
+          <p style="margin:0 0 12px;font-size:.875em;color:#78350f">Điểm tự chấm sẽ không chính xác. Nên chọn lại <strong>Practice Test (thang 10)</strong>, trừ khi đây là đề gộp nhiều section đủ 40 câu.</p>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn btn-outline btn-sm" onclick="document.getElementById('assign-scale-warn')?.remove()">Đổi thang điểm</button>
+            <button class="btn btn-primary btn-sm" onclick="document.getElementById('assign-scale-warn')?.remove(); submitAssign(null, true)">Vẫn giao (thang IELTS)</button>
+          </div>
+        </div>`;
+      warn.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      return;
+    }
+  }
+
+  if (btn) btnLoading(btn);
   try {
     await api.post('/assignments', {
       class_id:    _assignClassId,
@@ -3868,9 +3996,9 @@ async function submitAssign(btn) {
       scoring_scale: scoringScale,
     });
     closeModal();
-    toast('Giao bài thành công! 🎉');
+    toast('Giao bài thành công!');
   } catch (e) {
-    btnReset(btn);
+    if (btn) btnReset(btn);
     toast('Lỗi giao bài: ' + (e.error || e.message), 'error');
   }
 }
@@ -4740,7 +4868,7 @@ function renderRichQuestionContentHTML(blocks, fallbackText = '', extraClass = '
     <div class="mixed-content ${extraClass}">
       ${normalized.map(block => block.type === 'image'
         ? `<figure class="mixed-content-image-wrap" data-block-id="${escapeHtml(block.id)}" style="width:${Math.max(1, Number(block.width) || 100)}%"><img class="mixed-content-image" src="${escapeHtml(block.url)}" alt="${escapeHtml(block.alt || 'Question image')}" /></figure>`
-        : `<div class="mixed-content-text" data-block-id="${escapeHtml(block.id)}">${block.html ?? escapeHtml(block.text || '')}</div>`
+        : `<div class="mixed-content-text" data-block-id="${escapeHtml(block.id)}">${sanitizeBlockHtml(block.html ?? '') || escapeHtml(block.text || '')}</div>`
       ).join('')}
     </div>`;
 }
@@ -6350,11 +6478,11 @@ function vocabSectionHtml() {
     <div class="form-group" style="margin-top:20px">
       <label class="form-label">Từ vựng <span style="font-size:12px;font-weight:400;color:var(--gray-400)">(tùy chọn — học sinh xem sau khi nộp bài)</span></label>
       <div class="vocab-add-row">
-        <input id="vocab-word"    class="form-input" placeholder="Từ vựng"         style="flex:1;min-width:0" />
-        <input id="vocab-def"     class="form-input" placeholder="Định nghĩa"       style="flex:2;min-width:0" />
-        <input id="vocab-pronunciation" class="form-input" placeholder="Phiên âm (tùy chọn)" style="flex:1.5;min-width:0" />
-        <input id="vocab-collocation" class="form-input" placeholder="Collocation (tùy chọn)" style="flex:2;min-width:0" />
-        <input id="vocab-example" class="form-input" placeholder="Ví dụ (tùy chọn)" style="flex:2;min-width:0" />
+        <input id="vocab-word"    class="form-input" aria-label="Từ vựng" placeholder="Từ vựng"         style="flex:1;min-width:0" />
+        <input id="vocab-def"     class="form-input" aria-label="Định nghĩa" placeholder="Định nghĩa"       style="flex:2;min-width:0" />
+        <input id="vocab-pronunciation" class="form-input" aria-label="Phiên âm" placeholder="Phiên âm (tùy chọn)" style="flex:1.5;min-width:0" />
+        <input id="vocab-collocation" class="form-input" aria-label="Collocation" placeholder="Collocation (tùy chọn)" style="flex:2;min-width:0" />
+        <input id="vocab-example" class="form-input" aria-label="Ví dụ" placeholder="Ví dụ (tùy chọn)" style="flex:2;min-width:0" />
         <button id="vocab-submit-btn" class="btn btn-primary btn-sm" onclick="addVocabItem()">+ Thêm</button>
         <button id="vocab-cancel-btn" class="btn btn-outline btn-sm hidden" onclick="cancelVocabEdit()">Hủy sửa</button>
       </div>
@@ -8088,7 +8216,7 @@ function renderLoginGate(errorMsg = '') {
         ${errorMsg ? `<div style="color:#ef4444;background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:8px 12px;margin-bottom:16px;font-size:.875rem">${errorMsg}</div>` : ''}
         <form id="login-gate-form" onsubmit="submitLoginGate(event)">
           <div style="position:relative;margin-bottom:12px">
-            <input id="gate-password" type="password" placeholder="Mật khẩu" autocomplete="current-password"
+            <input id="gate-password" type="password" aria-label="Mật khẩu" placeholder="Mật khẩu" autocomplete="current-password"
               style="width:100%;padding:10px 40px 10px 12px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:1rem;box-sizing:border-box" />
             <button type="button" onclick="toggleGatePassword()"
               style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--text-muted);font-size:1rem;padding:0;line-height:1"

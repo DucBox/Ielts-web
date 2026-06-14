@@ -23,6 +23,10 @@ package-lock.json
 playwright-report/
 test-results/
 
+# Responsive audit artifacts (temporary)
+audit-shots/
+tests/_*.js
+
 # OS
 .DS_Store
 **/.DS_Store

@@ -2,8 +2,9 @@ import { neon } from '@neondatabase/serverless';
 
 
 // ─── Rate limiting (KV sliding window) ───────────────────────────────────────
-async function checkRateLimit(kv, key, limit, windowSecs) {
-  if (!kv) return false;
+// failClosed=true → block request when KV is unavailable (use for auth endpoints)
+async function checkRateLimit(kv, key, limit, windowSecs, failClosed = false) {
+  if (!kv) return failClosed;
   try {
     const now = Math.floor(Date.now() / 1000);
     const raw = await kv.get(key, 'json').catch(() => null);
@@ -18,8 +19,29 @@ async function checkRateLimit(kv, key, limit, windowSecs) {
     await kv.put(key, JSON.stringify(data), { expirationTtl: ttl });
     return data.count > limit;
   } catch {
-    return false; // never block request if KV fails
+    return failClosed;
   }
+}
+
+// ─── Auth helpers ─────────────────────────────────────────────────────────────
+
+// Next 03:00 Vietnam time (UTC+7) = next 20:00 UTC
+function nextVietnam3AM() {
+  const now = Date.now();
+  const target = new Date(now);
+  target.setUTCHours(20, 0, 0, 0);
+  if (target.getTime() <= now) target.setUTCDate(target.getUTCDate() + 1);
+  return target.getTime();
+}
+
+function generateSecureToken() {
+  return Array.from(crypto.getRandomValues(new Uint8Array(32)))
+    .map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function sha256hex(data) {
+  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(data));
+  return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
 // ─── Simple HTML sanitizer (strip dangerous tags/attrs for block.html) ───────
@@ -33,13 +55,17 @@ function decodeHtmlEntitiesForUrlCheck(s) {
 
 function sanitizeHtml(html) {
   if (!html || typeof html !== 'string') return '';
-  // Remove script, style, iframe, object, embed, form tags entirely
+  // Remove dangerous tags entirely (with content for script/style, self-close for rest)
   let s = html.replace(/<(script|style|iframe|object|embed|form|base|meta|link)\b[\s\S]*?<\/\1>/gi, '');
   s = s.replace(/<(script|style|iframe|object|embed|form|base|meta|link)\b[^>]*>/gi, '');
-  // Remove dangerous event handlers
+  // Remove all event handlers (on*)
   s = s.replace(/\s+on\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]*)/gi, '');
-  // Remove href/src with dangerous schemes (including entity-encoded variants like java&#x73;cript:)
-  s = s.replace(/\s+(href|src)\s*=\s*("[^"]*"|'[^']*'|[^\s>]*)/gi, (match, attr, val) => {
+  // E1: Remove ALL XML namespace attributes (xlink:href, xml:base, xmlns:*, etc.)
+  s = s.replace(/\s+[\w-]+:[\w-]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]*)/gi, '');
+  // E1: Remove action / formaction
+  s = s.replace(/\s+(action|formaction)\s*=\s*("[^"]*"|'[^']*'|[^\s>]*)/gi, '');
+  // Remove href/src/srcset with dangerous schemes (entity-encoded too)
+  s = s.replace(/\s+(href|src|srcset)\s*=\s*("[^"]*"|'[^']*'|[^\s>]*)/gi, (match, attr, val) => {
     const raw = val.replace(/^["']|["']$/g, '');
     const decoded = decodeHtmlEntitiesForUrlCheck(raw).toLowerCase();
     if (decoded.startsWith('javascript:') || decoded.startsWith('data:text/html') || decoded.startsWith('vbscript:')) return '';
@@ -319,8 +345,34 @@ async function r2SafeDelete(env, sql, key) {
     RETURNING ref_count
   `;
   const refCount = refRow?.ref_count ?? null;
-  if (refCount === null || refCount <= 0) {
+  // F5: If no ref tracking row exists, skip deletion — safer to leak an orphan than
+  // delete an object that may still be referenced (protects against ref_count drift).
+  if (refCount === null) {
+    console.error('r2SafeDelete: no ref tracking row for', key.split('/').slice(0, 2).join('/'), '— skipping deletion');
+    return;
+  }
+  if (refCount <= 0) {
     await env.R2.delete(key).catch(e => console.error('R2 delete failed:', key, e));
+  }
+}
+
+// D2: collect + delete R2 audio from shared_attempts for given WHERE clause rows
+async function deleteSharedAttemptAudio(env, rows) {
+  for (const row of rows) {
+    const entries = Array.isArray(row.speaking_audio_urls) && row.speaking_audio_urls.length > 0
+      ? row.speaking_audio_urls
+      : [];
+    for (const e of entries) {
+      const key = e.key || e.url?.split('/').slice(-1)[0] || null;
+      if (key) await env.R2.delete(key).catch(() => {});
+    }
+  }
+}
+
+// D2: collect + delete R2 audio from composite_section_submissions for given rows
+async function deleteCompositeSectionAudio(env, rows) {
+  for (const row of rows) {
+    if (row.audio_key) await env.R2.delete(row.audio_key).catch(() => {});
   }
 }
 
@@ -463,7 +515,7 @@ async function transcribeR2Audio(env, r2Key, { model = 'mini' } = {}) {
   }
 
   const modelUsed = diarize ? 'diarize' : 'mini';
-  console.log('[STT]', JSON.stringify({ key: r2Key, bytes: arrayBuffer.byteLength, mp3Bitrate, durationSeconds, modelRequested: model, modelUsed, fallback }));
+  console.log('[STT]', JSON.stringify({ keyPrefix: r2Key?.split('/').slice(0,2).join('/'), bytes: arrayBuffer.byteLength, mp3Bitrate, durationSeconds, modelRequested: model, modelUsed, fallback }));
 
   if (diarize) {
     const segments = await callSttApi({ chunk: arrayBuffer, contentType, fileName, diarize: true, sttUrl, sttAuthToken });
@@ -854,21 +906,18 @@ async function verifyJWT(token, secret) {
   if (parts.length !== 3) return null;
   const [header, body, sig] = parts;
   try {
+    const b64d = s => atob(s.replace(/-/g, '+').replace(/_/g, '/').padEnd(s.length + (4 - s.length % 4) % 4, '='));
+    // C4: reject tokens with unexpected algorithm
+    const hdr = JSON.parse(b64d(header));
+    if (hdr.alg !== 'HS256') return null;
     const enc = new TextEncoder();
     const key = await crypto.subtle.importKey(
       'raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['verify'],
     );
-    const sigBytes = Uint8Array.from(
-      atob(sig.replace(/-/g, '+').replace(/_/g, '/').padEnd(sig.length + (4 - sig.length % 4) % 4, '=')),
-      c => c.charCodeAt(0),
-    );
-    const valid = await crypto.subtle.verify(
-      'HMAC', key, sigBytes, enc.encode(`${header}.${body}`),
-    );
+    const sigBytes = Uint8Array.from(b64d(sig), c => c.charCodeAt(0));
+    const valid = await crypto.subtle.verify('HMAC', key, sigBytes, enc.encode(`${header}.${body}`));
     if (!valid) return null;
-    const payload = JSON.parse(
-      atob(body.replace(/-/g, '+').replace(/_/g, '/').padEnd(body.length + (4 - body.length % 4) % 4, '=')),
-    );
+    const payload = JSON.parse(b64d(body));
     if (payload.exp && payload.exp < Date.now()) return null;
     return payload;
   } catch {
@@ -876,10 +925,17 @@ async function verifyJWT(token, secret) {
   }
 }
 
-async function requireStudentAuth(request, env) {
+async function requireStudentAuth(request, env, sql = null) {
   if (!env.JWT_SECRET) throw new Error('JWT_SECRET not configured');
   const auth = request.headers.get('Authorization') || '';
-  return verifyJWT(auth, env.JWT_SECRET);
+  const claims = await verifyJWT(auth, env.JWT_SECRET);
+  if (!claims) return null;
+  // C3: reject tokens from before the last password change
+  if (sql && claims.student_id) {
+    const [row] = await sql`SELECT token_version FROM students WHERE id = ${claims.student_id}`;
+    if (!row || (claims.ver ?? 0) !== row.token_version) return null;
+  }
+  return claims;
 }
 
 function parseCookies(request) {
@@ -895,12 +951,18 @@ function parseCookies(request) {
 
 async function requireTeacherAuth(request, env) {
   if (!env.TEACHER_ACCESS_SECRET) return null;
+  // C1: Bearer-only (cookie fallback removed)
   const authHeader = request.headers.get('Authorization') || '';
   const bearerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
-  const { teacher_gate: cookieToken } = parseCookies(request);
-  const token = bearerToken || cookieToken;
-  if (!token) return null;
-  return verifyJWT(token, env.TEACHER_ACCESS_SECRET);
+  if (!bearerToken) return null;
+  const claims = await verifyJWT(bearerToken, env.TEACHER_ACCESS_SECRET);
+  if (!claims) return null;
+  // C3: KV token version — logout increments this, invalidating all prior tokens
+  if (env.KV) {
+    const kvVer = parseInt((await env.KV.get('teacher_token_ver').catch(() => '0')) || '0', 10);
+    if ((claims.ver ?? 0) !== kvVer) return null;
+  }
+  return claims;
 }
 
 async function loadStudentAssignmentAccess(sql, assignmentId, studentId) {
@@ -1044,20 +1106,30 @@ function buildEmailText({ headline, intro, rows = [], outro = '' }) {
   return [headline, '', intro, '', ...lines, ...(outro ? ['', outro] : [])].join('\n');
 }
 
-function buildStudentPasswordResetEmailPayload(student, nextPassword) {
-  const studentName = String(student?.full_name || student?.username || 'bạn').trim();
-  const username = String(student?.username || '').trim();
-  const headline = 'Mật khẩu mới cho tài khoản học sinh';
-  const intro = `Xin chào ${studentName}, hệ thống vừa tạo mật khẩu mới theo yêu cầu quên mật khẩu của bạn.`;
-  const rows = [
-    { label: 'Username', value: username || 'Không có dữ liệu' },
-    { label: 'Mật khẩu mới', value: nextPassword },
-  ];
-  const outro = 'Bạn hãy đăng nhập lại và đổi sang mật khẩu riêng của mình ngay sau khi vào hệ thống.';
+function buildPasswordResetLinkEmailPayload(student, resetUrl) {
+  const studentName = escapeHtml(String(student?.full_name || student?.username || 'bạn').trim());
+  const username = escapeHtml(String(student?.username || '').trim());
+  const safeUrl = escapeHtml(resetUrl);
+  const outro = 'Link có hiệu lực trong 20 phút và chỉ dùng được một lần. Nếu bạn không yêu cầu, hãy bỏ qua email này — mật khẩu sẽ không thay đổi.';
+  const htmlBody = `
+    <div style="font-family:Arial,sans-serif;line-height:1.6;color:#111827">
+      <div style="max-width:600px;margin:0 auto;padding:24px;border:1px solid #e5e7eb;border-radius:16px;background:#ffffff">
+        <div style="font-size:22px;font-weight:800;color:#0f766e;margin-bottom:12px">Đặt lại mật khẩu tài khoản học sinh</div>
+        <p style="margin:0 0 12px">Xin chào <strong>${studentName}</strong>, bạn (hoặc ai đó) vừa yêu cầu đặt lại mật khẩu cho tài khoản <strong>${username}</strong>.</p>
+        <p style="margin:16px 0">
+          <a href="${safeUrl}" style="display:inline-block;padding:12px 24px;background:#0f766e;color:#fff;text-decoration:none;border-radius:8px;font-weight:600">Đặt lại mật khẩu</a>
+        </p>
+        <p style="font-size:13px;color:#6b7280">Hoặc dán link sau vào trình duyệt:<br>
+          <a href="${safeUrl}" style="color:#0f766e;word-break:break-all">${safeUrl}</a>
+        </p>
+        <p style="margin:20px 0 0;color:#4b5563">${escapeHtml(outro)}</p>
+      </div>
+    </div>`;
+  const textBody = `Đặt lại mật khẩu tài khoản học sinh\n\nXin chào ${student?.full_name || student?.username}, bạn vừa yêu cầu đặt lại mật khẩu cho tài khoản ${student?.username}.\n\nLink đặt lại mật khẩu (hiệu lực 20 phút):\n${resetUrl}\n\n${outro}`;
   return {
-    subject: 'Mật khẩu mới cho tài khoản English Student',
-    html: buildEmailHtml({ headline, intro, rows, outro }),
-    text: buildEmailText({ headline, intro, rows, outro }),
+    subject: 'Đặt lại mật khẩu — English Student',
+    html: htmlBody,
+    text: textBody,
   };
 }
 
@@ -1192,8 +1264,18 @@ async function claimNextStudentEmailEvent(sql, { ownerId, delayMs = 2000, leaseM
     candidate AS (
       SELECT e.student_id, e.assignment_id, e.event_type, e.status
       FROM student_email_events e
-      WHERE e.status IN ('pending', 'failed')
-         OR (e.status = 'sending' AND e.updated_at < NOW() - INTERVAL '15 minutes')
+      WHERE (
+        e.status IN ('pending', 'failed')
+        OR (e.status = 'sending' AND e.updated_at < NOW() - INTERVAL '15 minutes')
+      )
+        AND e.attempt_count < 2
+        AND (
+          e.event_type != ${EMAIL_EVENT_TYPES.DEADLINE_1DAY}
+          OR EXISTS (
+            SELECT 1 FROM assignments a
+            WHERE a.id = e.assignment_id AND a.deadline > NOW()
+          )
+        )
       ORDER BY
         CASE
           WHEN e.event_type = ${EMAIL_EVENT_TYPES.DEADLINE_1DAY} THEN 1
@@ -1296,6 +1378,7 @@ async function updateStudentEmailEvent(sql, { studentId, assignmentId, eventType
   await sql`
     UPDATE student_email_events
     SET status = ${status},
+        attempt_count = CASE WHEN ${status} = 'failed' THEN attempt_count + 1 ELSE attempt_count END,
         provider_message_id = ${providerMessageId},
         last_error = ${lastError},
         sent_at = CASE WHEN ${status} = 'sent' THEN NOW() ELSE sent_at END,
@@ -1469,7 +1552,7 @@ async function deliverClaimedStudentEmail(sql, env, { studentId, assignmentId, e
       studentId,
       assignmentId,
       eventType,
-      to: email,
+      to: maskEmailForDisplay(email),
       assignmentTitle: ctx.assignment_title || '',
       className: ctx.class_name || '',
     });
@@ -1703,20 +1786,22 @@ Critical rules:
 - If the response is completely off-topic, assign 0.0 to all criteria and briefly explain in band_justification.
 - Output ONLY valid JSON. No text before or after the JSON object.`;
 
+const IELTS_SCORE_SCHEMA = { type: 'number', minimum: 0, maximum: 9, multipleOf: 0.5 };
+
 const WRITING_AI_SCHEMA = {
   type: 'object',
   additionalProperties: false,
   required: ['tr_score', 'tr', 'cc_score', 'cc', 'lr_score', 'lr', 'gra_score', 'gra', 'overall_score', 'overall_comment'],
   properties: {
-    tr_score:       { type: 'number' },
+    tr_score:       IELTS_SCORE_SCHEMA,
     tr:             CRITERION_SCHEMA,
-    cc_score:       { type: 'number' },
+    cc_score:       IELTS_SCORE_SCHEMA,
     cc:             CRITERION_SCHEMA,
-    lr_score:       { type: 'number' },
+    lr_score:       IELTS_SCORE_SCHEMA,
     lr:             CRITERION_SCHEMA,
-    gra_score:      { type: 'number' },
+    gra_score:      IELTS_SCORE_SCHEMA,
     gra:            CRITERION_SCHEMA,
-    overall_score:  { type: 'number' },
+    overall_score:  IELTS_SCORE_SCHEMA,
     overall_comment:{ type: 'string' },
   },
 };
@@ -1748,13 +1833,13 @@ const SPEAKING_AI_SCHEMA = {
   additionalProperties: false,
   required: ['lr_score', 'lr', 'gra_score', 'gra', 'fc_advice', 'pron_advice', 'overall_score', 'overall_comment'],
   properties: {
-    lr_score:       { type: 'number' },
+    lr_score:       IELTS_SCORE_SCHEMA,
     lr:             CRITERION_SCHEMA,
-    gra_score:      { type: 'number' },
+    gra_score:      IELTS_SCORE_SCHEMA,
     gra:            CRITERION_SCHEMA,
     fc_advice:      { type: 'string' },
     pron_advice:    { type: 'string' },
-    overall_score:  { type: 'number' },
+    overall_score:  IELTS_SCORE_SCHEMA,
     overall_comment:{ type: 'string' },
   },
 };
@@ -1875,8 +1960,12 @@ async function callAiFeedback(skill, contentText, studentContent, env) {
 
   const responsesUrl = getOpenAIEndpoint(env, '/v1/responses', 'responses');
   console.log('[AI] calling', skill, responsesUrl, 'schema:', schemaName);
+  // G5: 120s timeout — AI grading can be slow but should never hang indefinitely
+  const aiAbort = new AbortController();
+  const aiAbortTimer = setTimeout(() => aiAbort.abort(), 120_000);
   const aiRes = await fetch(responsesUrl, {
     method: 'POST',
+    signal: aiAbort.signal,
     headers: {
       'Authorization': `Bearer ${getOpenAIAuthToken(env, responsesUrl, 'responses')}`,
       'Content-Type': 'application/json',
@@ -1909,6 +1998,7 @@ async function callAiFeedback(skill, contentText, studentContent, env) {
     console.error('[AI] inner JSON parse fail:', rawText.slice(0, 300));
     throw new Error('AI trả về JSON không hợp lệ');
   }
+  clearTimeout(aiAbortTimer);
   console.log('[AI] parsed keys:', Object.keys(parsed).join(', '));
   return { ...parsed, skill, schema_version: 'v3', generated_at: new Date().toISOString() };
 }
@@ -1918,6 +2008,44 @@ function buildSharedSpeakingKey(poolId, studentId, fileName) {
 }
 function isExpectedSharedSpeakingKey(key, poolId, studentId) {
   return String(key || '').startsWith(`shared-speaking/${poolId}/${studentId}-`);
+}
+
+// ─── G3: Deadline reminder batch creation (cron-driven, not per-read) ────────
+// Creates deadline_reminder notifications for all students with approaching deadlines
+// (within 3 days). ON CONFLICT DO NOTHING + day_bucket ensures idempotency per day.
+async function createDeadlineReminders(sql) {
+  const today = new Date().toISOString().slice(0, 10);
+  const approaching = await sql`
+    SELECT sc.student_id, a.id AS assignment_id, a.title, a.deadline, q.skill,
+      CEIL(EXTRACT(EPOCH FROM (a.deadline - NOW())) / 86400) AS days_left
+    FROM assignments a
+    JOIN question_pool q ON q.id = a.question_id
+    JOIN student_classes sc ON sc.class_id = a.class_id
+    LEFT JOIN submissions sub ON sub.assignment_id = a.id AND sub.student_id = sc.student_id
+    WHERE a.is_active = true
+      AND a.deadline IS NOT NULL
+      AND sub.id IS NULL
+      AND a.deadline > NOW()
+      AND a.deadline <= NOW() + INTERVAL '3 days'
+  `;
+  if (approaching.length === 0) return;
+  const studentIds = approaching.map(r => r.student_id);
+  const assignmentIds = approaching.map(r => r.assignment_id);
+  const metas = approaching.map(r => JSON.stringify({
+    title: r.title, skill: r.skill, deadline: r.deadline,
+    days_left: Math.max(1, Math.ceil(Number(r.days_left))),
+  }));
+  const dayBuckets = approaching.map(() => today);
+  await sql`
+    INSERT INTO notifications (student_id, type, ref_id, metadata, day_bucket)
+    SELECT
+      UNNEST(${studentIds}::uuid[]),
+      'deadline_reminder',
+      UNNEST(${assignmentIds}::uuid[]),
+      UNNEST(${metas}::jsonb[]),
+      UNNEST(${dayBuckets}::text[])
+    ON CONFLICT DO NOTHING
+  `.catch(e => console.error('[cron] createDeadlineReminders failed:', e.message));
 }
 
 // ─── Assignment auto-close ────────────────────────────────────────────────────
@@ -2000,14 +2128,14 @@ export default {
 
       if (path === '/auth/login' && method === 'POST') {
         const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
-        if (await checkRateLimit(env.KV, `login:${ip}`, 10, 60))
+        if (await checkRateLimit(env.KV, `login:${ip}`, 10, 60, true))
           return err('Quá nhiều yêu cầu đăng nhập — thử lại sau', 429);
         const body = await request.json();
         if (!body.username || !body.password)
           return err('username và password là bắt buộc');
 
         const [student] = await sql`
-          SELECT id, full_name, username, password_hash, email
+          SELECT id, full_name, username, password_hash, email, token_version
           FROM students
           WHERE username = ${body.username}
         `;
@@ -2030,7 +2158,7 @@ export default {
 
         const token = env.JWT_SECRET
           ? await signJWT(
-              { student_id: student.id, exp: Date.now() + 24 * 60 * 60 * 1000 },
+              { student_id: student.id, ver: student.token_version ?? 0, exp: Date.now() + 24 * 60 * 60 * 1000 },
               env.JWT_SECRET,
             )
           : null;
@@ -2041,7 +2169,7 @@ export default {
 
       if (path === '/auth/forgot-password' && method === 'POST') {
         const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
-        if (await checkRateLimit(env.KV, `student-forgot-password:${ip}`, 5, 300))
+        if (await checkRateLimit(env.KV, `student-forgot-password:${ip}`, 5, 300, true))
           return err('Bạn đã yêu cầu quá nhiều lần. Vui lòng thử lại sau ít phút.', 429);
 
         const body = await request.json().catch(() => null);
@@ -2049,22 +2177,32 @@ export default {
         if (!username) return err('username là bắt buộc', 400);
 
         const [student] = await sql`
-          SELECT id, full_name, username, password_hash, email
+          SELECT id, full_name, username, email
           FROM students
           WHERE username = ${username}
         `;
 
-        // Always return uniform response to prevent username enumeration
-        const uniformOk = json({ ok: true, message: 'Nếu tài khoản tồn tại và có Gmail, mật khẩu mới sẽ được gửi đến email đã đăng ký.' });
+        // Uniform response prevents username enumeration
+        const uniformOk = json({ ok: true, message: 'Nếu tài khoản tồn tại và có Gmail, link đặt lại mật khẩu sẽ được gửi đến email đã đăng ký.' });
 
         if (!student) return uniformOk;
-
         const email = normalizeStudentEmail(student.email);
         if (!email) return uniformOk;
 
-        const nextPassword = generateStudentPassword();
-        const nextPasswordHash = await hashPassword(nextPassword);
-        const payload = buildStudentPasswordResetEmailPayload(student, nextPassword);
+        // C2: generate one-time token, store hash in DB
+        const plainToken = generateSecureToken();
+        const tokenHash = await sha256hex(plainToken);
+        const expiresAt = new Date(Date.now() + 20 * 60 * 1000); // 20 minutes
+
+        await sql`
+          INSERT INTO student_password_reset_tokens (token_hash, student_id, expires_at)
+          VALUES (${tokenHash}, ${student.id}, ${expiresAt.toISOString()})
+          ON CONFLICT (token_hash) DO NOTHING
+        `;
+
+        const studentAppUrl = String(env.STUDENT_APP_URL || 'https://ielts-student.pages.dev').replace(/\/+$/, '');
+        const resetUrl = `${studentAppUrl}/?reset_token=${plainToken}`;
+        const payload = buildPasswordResetLinkEmailPayload(student, resetUrl);
 
         try {
           await sendResendEmail(env, {
@@ -2072,20 +2210,50 @@ export default {
             subject: payload.subject,
             html: payload.html,
             text: payload.text,
-            idempotencyKey: `student-forgot-password:${student.id}:${Date.now()}`,
+            idempotencyKey: `student-reset-token:${tokenHash.slice(0, 16)}`,
           });
         } catch (sendError) {
           console.error('[forgot-password] email send failed:', sendError?.message);
-          return uniformOk;
         }
 
-        await sql`
-          UPDATE students
-          SET password_hash = ${nextPasswordHash}
-          WHERE id = ${student.id}
-        `;
-
         return uniformOk;
+      }
+
+      if (path === '/auth/reset-password' && method === 'POST') {
+        const body = await request.json().catch(() => null);
+        const plainToken = String(body?.token || '').trim();
+        const newPassword = String(body?.new_password || '');
+        const confirmPassword = String(body?.confirm_password || '');
+
+        if (!plainToken || !newPassword || !confirmPassword)
+          return err('token, new_password và confirm_password là bắt buộc', 400);
+        if (newPassword !== confirmPassword)
+          return err('Mật khẩu nhập lại không khớp', 400);
+        const passwordError = getStudentPasswordValidationError(newPassword);
+        if (passwordError) return err(passwordError, 400);
+
+        const tokenHash = await sha256hex(plainToken);
+        const [tokenRow] = await sql`
+          SELECT id, student_id
+          FROM student_password_reset_tokens
+          WHERE token_hash = ${tokenHash}
+            AND used_at IS NULL
+            AND expires_at > NOW()
+        `;
+        if (!tokenRow) return err('Link đặt lại mật khẩu không hợp lệ hoặc đã hết hạn', 400);
+
+        const newHash = await hashPassword(newPassword);
+        await sql.transaction(() => [
+          sql`UPDATE students
+                SET password_hash = ${newHash},
+                    token_version  = token_version + 1
+                WHERE id = ${tokenRow.student_id}`,
+          sql`UPDATE student_password_reset_tokens
+                SET used_at = NOW()
+                WHERE id = ${tokenRow.id}`,
+        ]);
+
+        return json({ ok: true, message: 'Mật khẩu đã được đặt lại thành công. Vui lòng đăng nhập lại.' });
       }
 
       // ── Teacher Auth ───────────────────────────────────────────────────────
@@ -2104,29 +2272,23 @@ export default {
         const _len = Math.min(_a.length, _b.length);
         for (let _i = 0; _i < _len; _i++) _diff |= _a[_i] ^ _b[_i];
         if (_diff !== 0) return err('Sai mật khẩu', 401);
+        // C3: embed current KV version so logout can invalidate this token
+        const kvVer = parseInt((await env.KV?.get('teacher_token_ver').catch(() => '0')) || '0', 10);
         const token = await signJWT(
-          { teacher: true, exp: Date.now() + 24 * 60 * 60 * 1000 },
+          { teacher: true, ver: kvVer, exp: nextVietnam3AM() },
           env.TEACHER_ACCESS_SECRET,
         );
-        return new Response(JSON.stringify({ ok: true, token }), {
-          status: 200,
-          headers: {
-            ...CORS,
-            'Content-Type': 'application/json',
-            'Set-Cookie': `teacher_gate=${token}; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=${24 * 60 * 60}`,
-          },
-        });
+        // C1: Bearer-only, no cookie
+        return json({ ok: true, token });
       }
 
       if (path === '/teacher-auth/logout' && method === 'POST') {
-        return new Response(JSON.stringify({ ok: true }), {
-          status: 200,
-          headers: {
-            ...CORS,
-            'Content-Type': 'application/json',
-            'Set-Cookie': 'teacher_gate=; Path=/; HttpOnly; Secure; SameSite=None; Max-Age=0',
-          },
-        });
+        // C3: increment KV version → all existing teacher tokens become invalid
+        if (env.KV) {
+          const cur = parseInt((await env.KV.get('teacher_token_ver').catch(() => '0')) || '0', 10);
+          await env.KV.put('teacher_token_ver', String(cur + 1));
+        }
+        return json({ ok: true });
       }
 
       if (path === '/teacher-auth/status' && method === 'GET') {
@@ -2492,12 +2654,18 @@ export default {
           return json(row);
         }
         if (method === 'DELETE') {
-          const subAudios = await sql`
-            SELECT sub.speaking_audio_url, sub.speaking_audio_urls
-            FROM submissions sub
-            JOIN assignments a ON a.id = sub.assignment_id
-            WHERE a.class_id = ${p.id}
-          `;
+          const [subAudios, compositeAudios, sharedAudios] = await Promise.all([
+            sql`SELECT sub.speaking_audio_url, sub.speaking_audio_urls
+                FROM submissions sub JOIN assignments a ON a.id = sub.assignment_id
+                WHERE a.class_id = ${p.id}`,
+            sql`SELECT css.audio_key
+                FROM composite_section_submissions css JOIN assignments a ON a.id = css.assignment_id
+                WHERE a.class_id = ${p.id} AND css.audio_key IS NOT NULL`,
+            sql`SELECT sa.speaking_audio_urls
+                FROM shared_attempts sa
+                JOIN student_classes sc ON sc.student_id = sa.student_id
+                WHERE sc.class_id = ${p.id}`,
+          ]);
           await sql`DELETE FROM classes WHERE id = ${p.id}`;
           for (const sub of subAudios) {
             const entries = Array.isArray(sub.speaking_audio_urls) && sub.speaking_audio_urls.length > 0
@@ -2505,9 +2673,11 @@ export default {
               : (sub.speaking_audio_url ? [{ url: sub.speaking_audio_url }] : []);
             for (const e of entries) {
               const key = e.key || extractR2Key(e.url, env.R2_PUBLIC_URL);
-              if (key) await env.R2.delete(key).catch(err => console.error('R2 speaking cleanup failed:', err));
+              if (key) await env.R2.delete(key).catch(() => {});
             }
           }
+          await deleteCompositeSectionAudio(env, compositeAudios);
+          await deleteSharedAttemptAudio(env, sharedAudios);
           return json({ ok: true });
         }
       }
@@ -2616,10 +2786,11 @@ export default {
       if ((p = matchPath('/students/:id', path))) {
         if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
         if (method === 'DELETE') {
-          const subAudios = await sql`
-            SELECT speaking_audio_url, speaking_audio_urls FROM submissions
-            WHERE student_id = ${p.id}
-          `;
+          const [subAudios, compositeAudios, sharedAudios] = await Promise.all([
+            sql`SELECT speaking_audio_url, speaking_audio_urls FROM submissions WHERE student_id = ${p.id}`,
+            sql`SELECT audio_key FROM composite_section_submissions WHERE student_id = ${p.id} AND audio_key IS NOT NULL`,
+            sql`SELECT speaking_audio_urls FROM shared_attempts WHERE student_id = ${p.id}`,
+          ]);
           await sql`DELETE FROM students WHERE id = ${p.id}`;
           for (const sub of subAudios) {
             const entries = Array.isArray(sub.speaking_audio_urls) && sub.speaking_audio_urls.length > 0
@@ -2627,9 +2798,11 @@ export default {
               : (sub.speaking_audio_url ? [{ url: sub.speaking_audio_url }] : []);
             for (const e of entries) {
               const key = e.key || extractR2Key(e.url, env.R2_PUBLIC_URL);
-              if (key) await env.R2.delete(key).catch(err => console.error('R2 speaking cleanup failed:', err));
+              if (key) await env.R2.delete(key).catch(() => {});
             }
           }
+          await deleteCompositeSectionAudio(env, compositeAudios);
+          await deleteSharedAttemptAudio(env, sharedAudios);
           return json({ ok: true });
         }
         if (method === 'PATCH') {
@@ -2702,7 +2875,7 @@ export default {
         if (!Number.isFinite(size) || size <= 0) return err('Kích thước file không hợp lệ', 400);
         if (size > MAX_IMAGE_MB * 1024 * 1024) return err(`File ảnh quá lớn — tối đa ${MAX_IMAGE_MB}MB`, 413);
 
-        const ALLOWED_EXT = ['jpg','jpeg','png','gif','webp','svg'];
+        const ALLOWED_EXT = ['jpg','jpeg','png','gif','webp'];
         const rawExt = fileName.split('.').pop()?.toLowerCase() || '';
         const ext = ALLOWED_EXT.includes(rawExt) ? rawExt : 'png';
         const key = `images/${crypto.randomUUID()}.${ext}`;
@@ -2731,7 +2904,7 @@ export default {
         if (file.size > MAX_IMAGE_MB * 1024 * 1024)
           return err(`File ảnh quá lớn — tối đa ${MAX_IMAGE_MB}MB`, 413);
 
-        const ALLOWED_EXT = ['jpg','jpeg','png','gif','webp','svg'];
+        const ALLOWED_EXT = ['jpg','jpeg','png','gif','webp'];
         const rawExt = (file.name || 'image').split('.').pop()?.toLowerCase() || '';
         const ext = ALLOWED_EXT.includes(rawExt) ? rawExt : 'png';
         const key = `images/${crypto.randomUUID()}.${ext}`;
@@ -2765,7 +2938,7 @@ export default {
           maxBytes = 200 * 1024 * 1024;
           key = buildTeacherAudioKey(fileName);
         } else if (scope === 'student-speaking') {
-          const claims = await requireStudentAuth(request, env);
+          const claims = await requireStudentAuth(request, env, sql);
           if (!claims) return err('Unauthorized', 401);
           const assignmentId = String(body?.assignment_id || '').trim();
           const studentId = String(claims.student_id);
@@ -2776,7 +2949,7 @@ export default {
           maxBytes = 25 * 1024 * 1024;
           key = buildStudentSpeakingKey(assignmentId, studentId, fileName);
         } else if (scope === 'student-shared-speaking') {
-          const claims = await requireStudentAuth(request, env);
+          const claims = await requireStudentAuth(request, env, sql);
           if (!claims) return err('Unauthorized', 401);
           const poolId   = String(body?.pool_id   || '').trim();
           const studentId = String(claims.student_id);
@@ -3143,7 +3316,7 @@ export default {
         }
         if (method === 'PATCH') {
           const body = await request.json();
-          const [existing] = await sql`SELECT content_blocks FROM question_pool WHERE id = ${p.id}`;
+          const [existing] = await sql`SELECT content_blocks, skill FROM question_pool WHERE id = ${p.id}`;
           if (!existing) return err('Không tìm thấy đề', 404);
           const normalizedBlocks = body.content_blocks !== undefined
             ? normalizeContentBlocks(body.content_blocks)
@@ -3168,7 +3341,9 @@ export default {
           // folder_id: undefined = don't touch, null/uuid = set value
           const shouldUpdateFolder = body.folder_id !== undefined;
           const folderIdVal = shouldUpdateFolder ? (body.folder_id || null) : null;
-          const [row] = await sql`
+          // Build parent UPDATE as a lazy query so it can be included in a transaction
+          // if sections are also being updated (composite atomicity).
+          const parentUpdate = sql`
             UPDATE question_pool
             SET title          = COALESCE(${body.title          ?? null}, title),
                 content_text   = CASE WHEN ${shouldUpdateContentText} THEN ${nextContentText} ELSE content_text END,
@@ -3181,21 +3356,15 @@ export default {
             WHERE id = ${p.id}
             RETURNING *
           `;
-          if (normalizedBlocks !== null) {
-            const oldKeys = extractContentBlockImageUrls(existing.content_blocks).map(url => extractR2Key(url, env.R2_PUBLIC_URL)).filter(Boolean);
-            const newKeySet = new Set(extractContentBlockImageUrls(normalizedBlocks).map(url => extractR2Key(url, env.R2_PUBLIC_URL)).filter(Boolean));
-            for (const key of newKeySet) {
-              if (!oldKeys.includes(key)) await r2RefIncrement(sql, key).catch(e => console.error('R2 ref increment failed:', key, e));
-            }
-            for (const key of oldKeys) {
-              if (!newKeySet.has(key)) await r2SafeDelete(env, sql, key).catch(e => console.error('R2 image cleanup failed:', e));
-            }
-          }
-          // Handle composite section update: delete orphaned sections, upsert remaining — atomically
-          if (row.skill === 'composite' && Array.isArray(body.sections)) {
+
+          let row;
+          // Handle composite section update: delete orphaned sections, upsert remaining.
+          // Parent UPDATE and section mutations run in ONE transaction so a section failure
+          // cannot leave the parent partially updated.
+          if (existing.skill === 'composite' && Array.isArray(body.sections)) {
             const incomingSections = body.sections;
             const incomingIds = incomingSections.map(s => s._id).filter(Boolean);
-            // Guard: reject if any section being removed already has student submissions
+            // Guard (read-only): reject before any writes if a section being removed has submissions
             const removedCheck = incomingIds.length > 0
               ? await sql`
                   SELECT 1 FROM composite_section_submissions css
@@ -3209,7 +3378,7 @@ export default {
                   LIMIT 1`;
             if (removedCheck.length > 0) return err('Không thể xoá section đã có bài nộp của học sinh', 409);
 
-            // Build all section mutation queries for atomic execution
+            // Build section mutation queries
             const sectionTxQueries = [];
             if (incomingIds.length > 0) {
               sectionTxQueries.push(sql`DELETE FROM composite_question_sections WHERE composite_id = ${p.id} AND id != ALL(${incomingIds}::uuid[])`);
@@ -3261,7 +3430,23 @@ export default {
               }
               if (isObjective) qOffset += secQuestionsData.length;
             }
-            await sql.transaction(() => sectionTxQueries);
+            // Run parent UPDATE + all section mutations atomically
+            const txResults = await sql.transaction(() => [parentUpdate, ...sectionTxQueries]);
+            row = txResults[0][0];
+          } else {
+            [row] = await parentUpdate;
+          }
+
+          // R2 image ref cleanup — runs after transaction (safe: these are idempotent)
+          if (normalizedBlocks !== null) {
+            const oldKeys = extractContentBlockImageUrls(existing.content_blocks).map(url => extractR2Key(url, env.R2_PUBLIC_URL)).filter(Boolean);
+            const newKeySet = new Set(extractContentBlockImageUrls(normalizedBlocks).map(url => extractR2Key(url, env.R2_PUBLIC_URL)).filter(Boolean));
+            for (const key of newKeySet) {
+              if (!oldKeys.includes(key)) await r2RefIncrement(sql, key).catch(e => console.error('R2 ref increment failed:', key, e));
+            }
+            for (const key of oldKeys) {
+              if (!newKeySet.has(key)) await r2SafeDelete(env, sql, key).catch(e => console.error('R2 image cleanup failed:', e));
+            }
           }
           return json(row);
         }
@@ -3332,11 +3517,12 @@ export default {
               scoringScale = qCount === 40 ? 'ielts' : '10';
             }
           }
-          const [row] = await sql`
-            INSERT INTO assignments (class_id, question_id, title, deadline, is_active, mode, time_limit_minutes, scoring_scale)
-            VALUES (${body.class_id}, ${body.question_id}, ${body.title}, ${body.deadline ?? null}, true, ${assignMode}, ${timeLimitMinutes}, ${scoringScale})
-            RETURNING *
-          `;
+          // Warn if teacher explicitly chose IELTS scale for a R/L question that isn't 40 questions
+          const qCount = Array.isArray(question?.questions_data) ? question.questions_data.length : 0;
+          const isObjectiveSkill = question?.skill === 'reading' || question?.skill === 'listening';
+          const scaleWarning = (scoringScale === 'ielts' && isObjectiveSkill && qCount !== 40)
+            ? `Đề chỉ có ${qCount} câu — bảng quy đổi IELTS chuẩn dùng 40 câu, điểm tự chấm sẽ không chính xác. Nên đổi sang "Practice Test (thang 10)" trừ khi đây là đề đủ 40 câu.`
+            : null;
           // Notify all students in the class about the new assignment
           const classStudents = await sql`
             SELECT sc.student_id, s.email
@@ -3345,18 +3531,29 @@ export default {
             WHERE sc.class_id = ${body.class_id}
           `;
           const notifMeta = JSON.stringify({ title: body.title, skill: question?.skill ?? null, deadline: body.deadline ?? null });
-          const studentIds = classStudents.map(row => row.student_id);
-          if (studentIds.length > 0) {
-            await sql`
-              WITH input_rows AS (
-                SELECT UNNEST(${studentIds}::uuid[]) AS student_id
-              )
-              INSERT INTO notifications (student_id, type, ref_id, metadata)
-              SELECT student_id, 'new_assignment', ${row.id}, ${notifMeta}::jsonb
-              FROM input_rows
-              ON CONFLICT DO NOTHING
+          const studentIds = classStudents.map(s => s.student_id);
+          // F4: Wrap assignment INSERT + notifications in one transaction — prevents partial state
+          // where assignment exists but no student is notified (on retry, assignment would duplicate).
+          // Generate ID upfront so both queries can reference it within the same transaction.
+          const newAssignmentId = crypto.randomUUID();
+          const txResults = await sql.transaction(txn => {
+            const assignInsert = txn`
+              INSERT INTO assignments (id, class_id, question_id, title, deadline, is_active, mode, time_limit_minutes, scoring_scale)
+              VALUES (${newAssignmentId}::uuid, ${body.class_id}, ${body.question_id}, ${body.title}, ${body.deadline ?? null}, true, ${assignMode}, ${timeLimitMinutes}, ${scoringScale})
+              RETURNING *
             `;
-          }
+            const notifInsert = studentIds.length > 0
+              ? txn`
+                  WITH input_rows AS (SELECT UNNEST(${studentIds}::uuid[]) AS student_id)
+                  INSERT INTO notifications (student_id, type, ref_id, metadata)
+                  SELECT ir.student_id, 'new_assignment', ${newAssignmentId}::uuid, ${notifMeta}::jsonb
+                  FROM input_rows ir
+                  ON CONFLICT DO NOTHING
+                `
+              : txn`SELECT 1`;
+            return [assignInsert, notifInsert];
+          });
+          const [row] = txResults[0];
           const deliverableStudentIds = [];
           const skippedStudentIds = [];
           for (const student of classStudents) {
@@ -3376,14 +3573,13 @@ export default {
             status: 'skipped',
             lastError: 'missing_or_invalid_student_email',
           });
-          const immediateEmailDispatchLimit = Math.min(Math.max(deliverableStudentIds.length, 1), 5);
           if (deliverableStudentIds.length > 0) {
             ctx?.waitUntil?.(processQueuedStudentEmails(sql, env, {
-              limit: immediateEmailDispatchLimit,
+              limit: deliverableStudentIds.length,
               delayMs: 1000,
             }));
           }
-          return json(row, 201);
+          return json({ ...row, ...(scaleWarning ? { warning: scaleWarning } : {}) }, 201);
         }
       }
 
@@ -3426,7 +3622,7 @@ export default {
 
       if ((p = matchPath('/assignments/:id/question', path)) && method === 'GET') {
         // Student endpoint — require JWT
-        const claims = await requireStudentAuth(request, env);
+        const claims = await requireStudentAuth(request, env, sql);
         if (!claims) return err('Unauthorized', 401);
 
         await autoCloseExpired(sql, { assignmentId: p.id });
@@ -3437,7 +3633,7 @@ export default {
       }
 
       if ((p = matchPath('/assignments/:id/vocabulary', path)) && method === 'GET') {
-        const claims = await requireStudentAuth(request, env);
+        const claims = await requireStudentAuth(request, env, sql);
         if (!claims) return err('Unauthorized', 401);
 
         const row = await loadStudentAssignmentAccess(sql, p.id, String(claims.student_id));
@@ -3447,7 +3643,7 @@ export default {
 
       if ((p = matchPath('/assignments/:id/submit', path)) && method === 'POST') {
         // Student endpoint — require JWT
-        const claims = await requireStudentAuth(request, env);
+        const claims = await requireStudentAuth(request, env, sql);
         if (!claims) return err('Unauthorized', 401);
 
         const ct = request.headers.get('Content-Type') || '';
@@ -3467,7 +3663,9 @@ export default {
           const body = await request.json();
           studentAnswers  = body.student_answers  ?? null;
           writingContent  = body.writing_content  ?? null;
-          wordCount       = body.word_count       ?? null;
+          wordCount       = writingContent
+            ? writingContent.trim().split(/\s+/).filter(Boolean).length
+            : null;
           directUploadKey = body.audio_upload_key ?? null;
           audioUploadKeys = Array.isArray(body.audio_upload_keys) && body.audio_upload_keys.length > 0
             ? body.audio_upload_keys : null;
@@ -3475,11 +3673,22 @@ export default {
 
         if (!studentId) return err('student_id là bắt buộc');
 
+        // D1: helper — only delete keys that provably belong to this student/assignment
+        const safeDeleteOwnedKeys = async () => {
+          if (audioUploadKeys) {
+            for (const k of audioUploadKeys) {
+              if (k.key && isExpectedStudentSpeakingKey(k.key, p.id, studentId))
+                await env.R2.delete(k.key).catch(() => {});
+            }
+          } else if (directUploadKey && isExpectedStudentSpeakingKey(directUploadKey, p.id, studentId)) {
+            await env.R2.delete(directUploadKey).catch(() => {});
+          }
+        };
+
         await autoCloseExpired(sql, { assignmentId: p.id });
         const assignment = await loadStudentAssignmentAccess(sql, p.id, studentId);
         if (!assignment) {
-          if (audioUploadKeys) for (const k of audioUploadKeys) await env.R2.delete(k.key).catch(() => {});
-          else if (directUploadKey) await env.R2.delete(directUploadKey).catch(() => {});
+          await safeDeleteOwnedKeys();
           return err('Học sinh không thuộc bài tập này', 403);
         }
 
@@ -3497,8 +3706,7 @@ export default {
         }
         const nextAttemptNumber = existing ? existing.attempt_number + 1 : 1;
         if (!assignment.is_active) {
-          if (audioUploadKeys) for (const k of audioUploadKeys) await env.R2.delete(k.key).catch(() => {});
-          else if (directUploadKey) await env.R2.delete(directUploadKey).catch(() => {});
+          await safeDeleteOwnedKeys();
           return err('Bài tập đã đóng', 403);
         }
 
@@ -3516,11 +3724,15 @@ export default {
 
           const sttUrl = getOpenAIEndpoint(env, '/v1/audio/transcriptions', 'stt');
           const sttAuthToken = getOpenAIAuthToken(env, sttUrl, 'stt');
+          // G5: 120s timeout for legacy multipart STT
+          const sttAbort = new AbortController();
+          const sttAbortTimer = setTimeout(() => sttAbort.abort(), 120_000);
           const aiRes = await fetch(sttUrl, {
             method: 'POST',
+            signal: sttAbort.signal,
             headers: { 'Authorization': `Bearer ${sttAuthToken}` },
             body: openaiForm,
-          });
+          }).finally(() => clearTimeout(sttAbortTimer));
 
           if (!aiRes.ok) {
             const aiText = await aiRes.text();
@@ -3540,6 +3752,20 @@ export default {
           const validKeys = audioUploadKeys.filter(item => item.key && isExpectedStudentSpeakingKey(item.key, p.id, studentId));
           if (validKeys.length === 0) {
             return err('audio_upload_keys không hợp lệ', 400);
+          }
+          // D3: verify actual uploaded size/type before transcribing
+          const MAX_AUDIO_MB = 50;
+          for (const item of validKeys) {
+            const obj = await env.R2.head(item.key);
+            if (!obj) return err('File chưa được upload lên server', 400);
+            if (obj.size > MAX_AUDIO_MB * 1024 * 1024) {
+              await env.R2.delete(item.key).catch(() => {});
+              return err(`File quá lớn — tối đa ${MAX_AUDIO_MB}MB`, 413);
+            }
+            if (!isAudioContentType(obj.httpMetadata?.contentType)) {
+              await env.R2.delete(item.key).catch(() => {});
+              return err('Chỉ chấp nhận file âm thanh', 415);
+            }
           }
           const parts = [];
           const processedKeys = [];
@@ -3563,6 +3789,18 @@ export default {
           // Legacy single presigned key
           if (!isExpectedStudentSpeakingKey(directUploadKey, p.id, studentId)) {
             return err('audio_upload_key không hợp lệ', 400);
+          }
+          // D3: verify actual uploaded object
+          const MAX_AUDIO_MB = 50;
+          const obj = await env.R2.head(directUploadKey);
+          if (!obj) return err('File chưa được upload lên server', 400);
+          if (obj.size > MAX_AUDIO_MB * 1024 * 1024) {
+            await env.R2.delete(directUploadKey).catch(() => {});
+            return err(`File quá lớn — tối đa ${MAX_AUDIO_MB}MB`, 413);
+          }
+          if (!isAudioContentType(obj.httpMetadata?.contentType)) {
+            await env.R2.delete(directUploadKey).catch(() => {});
+            return err('Chỉ chấp nhận file âm thanh', 415);
           }
           uploadedR2Key = directUploadKey;
           try {
@@ -3683,7 +3921,7 @@ export default {
 
       // Student: fetch a specific submission version by ID (ownership-verified)
       if ((p = matchPath('/submissions/:id/by-student', path)) && method === 'GET') {
-        const claims = await requireStudentAuth(request, env);
+        const claims = await requireStudentAuth(request, env, sql);
         if (!claims) return err('Unauthorized', 401);
         const studentId = String(claims.student_id);
         const [sub] = await sql`
@@ -3700,7 +3938,7 @@ export default {
       if (path === '/submissions') {
         if (method === 'GET') {
           // Student endpoint — require JWT; use student_id from token
-          const claims = await requireStudentAuth(request, env);
+          const claims = await requireStudentAuth(request, env, sql);
           if (!claims) return err('Unauthorized', 401);
 
           const assignmentId = url.searchParams.get('assignment_id');
@@ -3710,7 +3948,8 @@ export default {
           if (!studentId) return err('student_id là bắt buộc', 400);
 
           const [sub] = await sql`
-            SELECT sub.*, a.title AS assignment_title, q.skill, q.questions_data, q.content_text, q.content_blocks, q.content_url, q.content_urls, q.vocabulary, q.script
+            SELECT sub.*, a.title AS assignment_title, a.scoring_scale,
+                   q.skill, q.questions_data, q.content_text, q.content_blocks, q.content_url, q.content_urls, q.vocabulary, q.script
             FROM submissions sub
             JOIN assignments a ON a.id = sub.assignment_id
             JOIN question_pool q ON q.id = a.question_id
@@ -3910,12 +4149,19 @@ export default {
         }
         if (method === 'PATCH') {
           const body = await request.json();
+          // Capture previous score + scoring_scale to detect first-time grading and validate bound
+          const [prev] = await sql`
+            SELECT sub.overall_score, a.scoring_scale
+            FROM submissions sub
+            JOIN assignments a ON a.id = sub.assignment_id
+            WHERE sub.id = ${p.id}
+          `;
           if (body.overall_score != null) {
             const s = Number(body.overall_score);
-            if (!isFinite(s) || s < 0 || s > 10) return err('Score không hợp lệ (0–10)', 400);
+            if (!isFinite(s) || s < 0 || s > 9) return err('Score không hợp lệ (0–9)', 400);
+            if ((prev?.scoring_scale ?? 'ielts') === 'ielts' && (s * 2) % 1 !== 0)
+              return err('Thang IELTS chỉ chấp nhận bước 0.5 (0, 0.5, 1.0, … 9.0)', 400);
           }
-          // Capture previous score to detect first-time grading
-          const [prev] = await sql`SELECT overall_score FROM submissions WHERE id = ${p.id}`;
           const wasUnscored = prev && prev.overall_score == null;
           if (!prev) {
             const [prevComposite] = await sql`
@@ -3980,6 +4226,15 @@ export default {
             RETURNING *
           `;
           if (!sub) return err('Không tìm thấy bài nộp', 404);
+          // F1a: Reset exam_session timer when teacher grants rewrite — student gets fresh timer
+          // without resetting again on every page refresh (POST /student/exam-session uses no-op UPSERT)
+          if (body.action === 'request_rewrite') {
+            await sql`
+              INSERT INTO exam_sessions (student_id, ref_type, ref_id, started_at)
+              VALUES (${sub.student_id}, 'assignment', ${sub.assignment_id}, NOW())
+              ON CONFLICT (student_id, ref_type, ref_id) DO UPDATE SET started_at = NOW()
+            `.catch(e => console.error('F1: reset exam_session for rewrite failed:', e));
+          }
           // Create score_released notification on first grade of Writing/Speaking
           if (body.overall_score != null && wasUnscored) {
             const [asgn] = await sql`
@@ -4043,6 +4298,7 @@ export default {
               AND q.skill IN ('writing', 'speaking')
               AND sub.overall_score IS NULL
               AND sub.rewrite_status IS DISTINCT FROM 'rewritten'
+            ORDER BY sub.submitted_at ASC
             LIMIT 100
           `,
           sql`
@@ -4066,6 +4322,7 @@ export default {
             WHERE c.teacher_id = ${teacherId}
               AND cqs.skill IN ('writing', 'speaking')
               AND css.score IS NULL
+            ORDER BY css.submitted_at ASC
             LIMIT 100
           `,
         ]);
@@ -4081,7 +4338,7 @@ export default {
 
       if (path === '/student/assignments' && method === 'GET') {
         // Require JWT for student endpoints
-        const claims = await requireStudentAuth(request, env);
+        const claims = await requireStudentAuth(request, env, sql);
         if (!claims) return err('Unauthorized', 401);
 
         const classId = url.searchParams.get('class_id');
@@ -4131,7 +4388,7 @@ export default {
 
       // ── All submission versions for a student (version selector) ─────────────
       if ((p = matchPath('/assignments/:id/my-submissions', path)) && method === 'GET') {
-        const claims = await requireStudentAuth(request, env);
+        const claims = await requireStudentAuth(request, env, sql);
         if (!claims) return err('Unauthorized', 401);
         const studentId = String(claims.student_id);
         const versions = await sql`
@@ -4145,7 +4402,7 @@ export default {
 
       // POST /exam-sessions — record (or retrieve) when student first opened an exam
       if (path === '/exam-sessions' && method === 'POST') {
-        const claims = await requireStudentAuth(request, env);
+        const claims = await requireStudentAuth(request, env, sql);
         if (!claims) return err('Unauthorized', 401);
         const studentId = String(claims.student_id);
         const body = await request.json().catch(() => null);
@@ -4199,40 +4456,19 @@ export default {
           return json({ started_at: session?.started_at || new Date().toISOString() });
         }
 
-        // For rewrite attempts, reset the session so the student gets a fresh timer
-        let isRewrite = false;
-        if (body.ref_type === 'assignment') {
-          const [rewriteSub] = await sql`
-            SELECT id FROM submissions
-            WHERE assignment_id = ${body.ref_id} AND student_id = ${studentId}
-              AND rewrite_status = 'requested'
-            LIMIT 1
-          `;
-          isRewrite = !!rewriteSub;
-        }
-
-        let sessionRow;
-        if (isRewrite) {
-          [sessionRow] = await sql`
-            INSERT INTO exam_sessions (student_id, ref_type, ref_id, started_at)
-            VALUES (${studentId}, ${body.ref_type}, ${body.ref_id}, NOW())
-            ON CONFLICT (student_id, ref_type, ref_id) DO UPDATE SET started_at = NOW()
-            RETURNING started_at
-          `;
-        } else {
-          // DO UPDATE SET started_at = existing value — no-op that lets RETURNING work
-          [sessionRow] = await sql`
-            INSERT INTO exam_sessions (student_id, ref_type, ref_id, started_at)
-            VALUES (${studentId}, ${body.ref_type}, ${body.ref_id}, NOW())
-            ON CONFLICT (student_id, ref_type, ref_id) DO UPDATE SET started_at = exam_sessions.started_at
-            RETURNING started_at
-          `;
-        }
+        // F1: Always use no-op UPSERT — rewrite timer is reset at teacher grant time (not here),
+        // so subsequent student refreshes preserve the already-set started_at.
+        const [sessionRow] = await sql`
+          INSERT INTO exam_sessions (student_id, ref_type, ref_id, started_at)
+          VALUES (${studentId}, ${body.ref_type}, ${body.ref_id}, NOW())
+          ON CONFLICT (student_id, ref_type, ref_id) DO UPDATE SET started_at = exam_sessions.started_at
+          RETURNING started_at
+        `;
         return json({ started_at: sessionRow.started_at });
       }
 
       if (path === '/student/change-password' && method === 'POST') {
-        const claims = await requireStudentAuth(request, env);
+        const claims = await requireStudentAuth(request, env, sql);
         if (!claims) return err('Unauthorized', 401);
 
         const body = await request.json().catch(() => null);
@@ -4268,14 +4504,14 @@ export default {
         }
 
         const passwordHash = await hashPassword(newPassword);
-        await sql`UPDATE students SET password_hash = ${passwordHash} WHERE id = ${student.id}`;
+        await sql`UPDATE students SET password_hash = ${passwordHash}, token_version = token_version + 1 WHERE id = ${student.id}`;
         return json({ ok: true });
       }
 
       // ── Practice Attempts (C1.1/C1.2) ─────────────────────────────────────
 
       if (path === '/practice/submit' && method === 'POST') {
-        const claims = await requireStudentAuth(request, env);
+        const claims = await requireStudentAuth(request, env, sql);
         if (!claims) return err('Unauthorized', 401);
 
         const body = await request.json().catch(() => null);
@@ -4311,7 +4547,7 @@ export default {
       }
 
       if (path === '/practice/history' && method === 'GET') {
-        const claims = await requireStudentAuth(request, env);
+        const claims = await requireStudentAuth(request, env, sql);
         if (!claims) return err('Unauthorized', 401);
 
         const studentId    = String(claims.student_id);
@@ -4384,7 +4620,7 @@ export default {
       }
 
       if (path === '/student/profile-answers') {
-        const claims = await requireStudentAuth(request, env);
+        const claims = await requireStudentAuth(request, env, sql);
         if (!claims) return err('Unauthorized', 401);
         const studentId = String(claims.student_id);
 
@@ -4413,19 +4649,27 @@ export default {
             if (parsedEmail === false) return err('Email nhận thông báo không hợp lệ', 400);
           }
 
+          // G4: Batch UNNEST instead of N sequential queries
+          const upsertIds = [], upsertVals = [], deleteIds = [];
           for (const [fieldId, value] of Object.entries(body.answers)) {
             if (!fieldIds.has(String(fieldId))) continue;
             const v = String(value ?? '').trim();
-            if (v) {
-              await sql`
-                INSERT INTO student_profile_answers (student_id, field_id, value, updated_at)
-                VALUES (${studentId}, ${fieldId}, ${v}, NOW())
-                ON CONFLICT (student_id, field_id) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
-              `;
-            } else {
-              await sql`DELETE FROM student_profile_answers WHERE student_id = ${studentId} AND field_id = ${fieldId}`;
-            }
+            if (v) { upsertIds.push(fieldId); upsertVals.push(v); }
+            else deleteIds.push(fieldId);
           }
+          await sql.transaction(txn => {
+            const queries = [];
+            if (upsertIds.length > 0) queries.push(txn`
+              INSERT INTO student_profile_answers (student_id, field_id, value, updated_at)
+              SELECT ${studentId}::uuid, UNNEST(${upsertIds}::uuid[]), UNNEST(${upsertVals}::text[]), NOW()
+              ON CONFLICT (student_id, field_id) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+            `);
+            if (deleteIds.length > 0) queries.push(txn`
+              DELETE FROM student_profile_answers
+              WHERE student_id = ${studentId}::uuid AND field_id = ANY(${deleteIds}::uuid[])
+            `);
+            return queries.length > 0 ? queries : [txn`SELECT 1`];
+          });
 
           if (notificationField) {
             let sourceValue = body.answers[notificationField.id];
@@ -4455,7 +4699,7 @@ export default {
 
       // PATCH /student/me — update student's own full_name
       if (path === '/student/me' && method === 'PATCH') {
-        const claims = await requireStudentAuth(request, env);
+        const claims = await requireStudentAuth(request, env, sql);
         if (!claims) return err('Unauthorized', 401);
         const body = await request.json().catch(() => null);
         const full_name = String(body?.full_name || '').trim();
@@ -4468,7 +4712,7 @@ export default {
       // ── Student Vocab (DB-backed) ──────────────────────────────────────────
 
       if (path === '/student/vocab' && method === 'GET') {
-        const claims = await requireStudentAuth(request, env);
+        const claims = await requireStudentAuth(request, env, sql);
         if (!claims) return err('Unauthorized', 401);
         const studentId = claims.student_id;
         const rows = await sql`
@@ -4480,7 +4724,7 @@ export default {
       }
 
       if (path === '/student/vocab' && method === 'POST') {
-        const claims = await requireStudentAuth(request, env);
+        const claims = await requireStudentAuth(request, env, sql);
         if (!claims) return err('Unauthorized', 401);
         const studentId = claims.student_id;
         const body = await request.json();
@@ -4500,7 +4744,7 @@ export default {
       }
 
       if ((p = matchPath('/student/vocab/:word', path)) && method === 'DELETE') {
-        const claims = await requireStudentAuth(request, env);
+        const claims = await requireStudentAuth(request, env, sql);
         if (!claims) return err('Unauthorized', 401);
         const studentId = claims.student_id;
         await sql`DELETE FROM student_vocab WHERE student_id = ${studentId} AND word = ${decodeURIComponent(p.word)}`;
@@ -4510,7 +4754,7 @@ export default {
       // ── Vocab sessions (streak) ────────────────────────────────────────────
 
       if (path === '/student/vocab/sessions' && method === 'GET') {
-        const claims = await requireStudentAuth(request, env);
+        const claims = await requireStudentAuth(request, env, sql);
         if (!claims) return err('Unauthorized', 401);
         const rows = await sql`
           SELECT practiced_at
@@ -4522,7 +4766,7 @@ export default {
       }
 
       if (path === '/student/vocab/sessions' && method === 'POST') {
-        const claims = await requireStudentAuth(request, env);
+        const claims = await requireStudentAuth(request, env, sql);
         if (!claims) return err('Unauthorized', 401);
         await sql`
           INSERT INTO vocab_sessions (student_id) VALUES (${claims.student_id})
@@ -4690,11 +4934,14 @@ export default {
         if (method === 'DELETE') {
           const [q] = await sql`SELECT content_blocks FROM shared_pool WHERE id = ${p.id}`;
           if (!q) return err('Không tìm thấy đề', 404);
+          // D2: collect shared_attempt audio before cascade delete removes the rows
+          const sharedAudios = await sql`SELECT speaking_audio_urls FROM shared_attempts WHERE shared_pool_id = ${p.id}`;
           await sql`DELETE FROM shared_pool WHERE id = ${p.id}`;
           for (const url of extractContentBlockImageUrls(q.content_blocks || [])) {
             const key = extractR2Key(url, env.R2_PUBLIC_URL);
             if (key) await r2SafeDelete(env, sql, key).catch(() => {});
           }
+          await deleteSharedAttemptAudio(env, sharedAudios);
           return json({ ok: true });
         }
       }
@@ -4703,7 +4950,7 @@ export default {
 
       // List shared pool (student must be in ≥1 class)
       if (path === '/student/shared-pool' && method === 'GET') {
-        const claims = await requireStudentAuth(request, env);
+        const claims = await requireStudentAuth(request, env, sql);
         if (!claims) return err('Unauthorized', 401);
         const studentId = String(claims.student_id);
         const [membership] = await sql`SELECT 1 FROM student_classes WHERE student_id = ${studentId} LIMIT 1`;
@@ -4723,7 +4970,7 @@ export default {
 
       // Get single shared pool question (for taking the test)
       if ((p = matchPath('/student/shared-pool/:id', path)) && method === 'GET') {
-        const claims = await requireStudentAuth(request, env);
+        const claims = await requireStudentAuth(request, env, sql);
         if (!claims) return err('Unauthorized', 401);
         const studentId = String(claims.student_id);
         const [membership] = await sql`SELECT 1 FROM student_classes WHERE student_id = ${studentId} LIMIT 1`;
@@ -4735,7 +4982,7 @@ export default {
 
       // Submit a shared pool attempt
       if ((p = matchPath('/student/shared-pool/:id/attempts', path)) && method === 'POST') {
-        const claims = await requireStudentAuth(request, env);
+        const claims = await requireStudentAuth(request, env, sql);
         if (!claims) return err('Unauthorized', 401);
         const studentId = String(claims.student_id);
 
@@ -4761,6 +5008,16 @@ export default {
         audioUploadKeys = Array.isArray(body.audio_upload_keys) && body.audio_upload_keys.length > 0
           ? body.audio_upload_keys : null;
         const idempotencyKey = String(body.idempotency_key || '').trim() || null;
+
+        // F2: Check idempotency BEFORE expensive STT — early return avoids double-billing
+        if (idempotencyKey) {
+          const [earlyExisting] = await sql`
+            SELECT * FROM shared_attempts
+            WHERE student_id = ${studentId} AND shared_pool_id = ${p.id}
+              AND idempotency_key = ${idempotencyKey}
+          `;
+          if (earlyExisting) return json(earlyExisting, 200);
+        }
 
         // Handle speaking audio transcription
         if (audioUploadKeys) {
@@ -4852,7 +5109,7 @@ export default {
 
       // Student attempt history for a specific shared pool question
       if ((p = matchPath('/student/shared-pool/:id/attempts', path)) && method === 'GET') {
-        const claims = await requireStudentAuth(request, env);
+        const claims = await requireStudentAuth(request, env, sql);
         if (!claims) return err('Unauthorized', 401);
         const studentId = String(claims.student_id);
         const rows = await sql`
@@ -4866,7 +5123,7 @@ export default {
 
       // Get a single shared attempt result
       if ((p = matchPath('/student/shared-attempts/:id', path)) && method === 'GET') {
-        const claims = await requireStudentAuth(request, env);
+        const claims = await requireStudentAuth(request, env, sql);
         if (!claims) return err('Unauthorized', 401);
         const studentId = String(claims.student_id);
         const [row] = await sql`
@@ -4882,7 +5139,7 @@ export default {
 
       // Retry AI grading for a stuck shared attempt (student-triggered)
       if ((p = matchPath('/student/shared-attempts/:id/retry-ai', path)) && method === 'POST') {
-        const claims = await requireStudentAuth(request, env);
+        const claims = await requireStudentAuth(request, env, sql);
         if (!claims) return err('Unauthorized', 401);
         const studentId = String(claims.student_id);
         // Rate limit: 5 retries per student per 60s (synchronous AI call — must protect aggressively)
@@ -4947,7 +5204,7 @@ export default {
 
       // GET /student/notifications/count — badge count (must be before /student/notifications)
       if (path === '/student/notifications/count' && method === 'GET') {
-        const claims = await requireStudentAuth(request, env);
+        const claims = await requireStudentAuth(request, env, sql);
         if (!claims) return err('Unauthorized', 401);
         const studentId = String(claims.student_id);
         const classId = url.searchParams.get('class_id');
@@ -4973,39 +5230,14 @@ export default {
         return json({ count: row?.count ?? 0 });
       }
 
-      // GET /student/notifications — fetch all + lazy-create deadline reminders
+      // GET /student/notifications — fetch notifications (reminders created by cron, not here)
+      // G3: Removed lazy-insert on every read — cron creates reminders for all students in batch.
       if (path === '/student/notifications' && method === 'GET') {
-        const claims = await requireStudentAuth(request, env);
+        const claims = await requireStudentAuth(request, env, sql);
         if (!claims) return err('Unauthorized', 401);
         const studentId = String(claims.student_id);
         const classId = url.searchParams.get('class_id');
         if (!classId) return err('class_id là bắt buộc', 400);
-
-        // Lazy-create deadline_reminder notifications for approaching deadlines (within 3 days)
-        const today = new Date().toISOString().slice(0, 10);
-        const approaching = await sql`
-          SELECT a.id, a.title, a.deadline, q.skill
-          FROM assignments a
-          JOIN question_pool q ON q.id = a.question_id
-          JOIN student_classes sc ON sc.class_id = a.class_id AND sc.student_id = ${studentId}::uuid
-          LEFT JOIN submissions sub ON sub.assignment_id = a.id AND sub.student_id = ${studentId}::uuid
-          WHERE a.is_active = true
-            AND a.deadline IS NOT NULL
-            AND sub.id IS NULL
-            AND a.deadline > NOW()
-            AND a.deadline <= NOW() + INTERVAL '3 days'
-            AND a.class_id = ${classId}::uuid
-        `;
-        for (const a of approaching) {
-          const msLeft = new Date(a.deadline).getTime() - Date.now();
-          const daysLeft = Math.ceil(msLeft / 86400000);
-          const meta = JSON.stringify({ title: a.title, skill: a.skill, deadline: a.deadline, days_left: daysLeft });
-          await sql`
-            INSERT INTO notifications (student_id, type, ref_id, metadata, day_bucket)
-            VALUES (${studentId}::uuid, 'deadline_reminder', ${a.id}, ${meta}::jsonb, ${today})
-            ON CONFLICT DO NOTHING
-          `;
-        }
 
         // Fetch notifications filtered by class (join assignments to get class_id)
         const rows = await sql`
@@ -5036,7 +5268,7 @@ export default {
 
       // PATCH /student/notifications/read-all — mark all as read for current class (must be before /:id)
       if (path === '/student/notifications/read-all' && method === 'PATCH') {
-        const claims = await requireStudentAuth(request, env);
+        const claims = await requireStudentAuth(request, env, sql);
         if (!claims) return err('Unauthorized', 401);
         const studentId = String(claims.student_id);
         const classId = url.searchParams.get('class_id');
@@ -5059,7 +5291,7 @@ export default {
 
       // PATCH /student/notifications/:id/read — mark single notification as read
       if ((p = matchPath('/student/notifications/:id/read', path)) && method === 'PATCH') {
-        const claims = await requireStudentAuth(request, env);
+        const claims = await requireStudentAuth(request, env, sql);
         if (!claims) return err('Unauthorized', 401);
         const studentId = String(claims.student_id);
         await sql`
@@ -5071,7 +5303,7 @@ export default {
 
       // DELETE /student/notifications/:id — delete a notification
       if ((p = matchPath('/student/notifications/:id', path)) && method === 'DELETE') {
-        const claims = await requireStudentAuth(request, env);
+        const claims = await requireStudentAuth(request, env, sql);
         if (!claims) return err('Unauthorized', 401);
         const studentId = String(claims.student_id);
         await sql`
@@ -5087,7 +5319,7 @@ export default {
 
       // ── Student: get assignment detail (includes sections for composite) ──────
       if ((p = matchPath('/student/assignments/:id', path)) && method === 'GET') {
-        const claims = await requireStudentAuth(request, env);
+        const claims = await requireStudentAuth(request, env, sql);
         if (!claims) return err('Unauthorized', 401);
         const studentId = String(claims.student_id);
         const [assignment] = await sql`
@@ -5126,7 +5358,7 @@ export default {
 
       // ── Student: submit a composite section ───────────────────────────────────
       if ((p = matchPath('/student/composite-sections/:id/submit', path)) && method === 'POST') {
-        const claims = await requireStudentAuth(request, env);
+        const claims = await requireStudentAuth(request, env, sql);
         if (!claims) return err('Unauthorized', 401);
         const studentId = String(claims.student_id);
         if (await checkRateLimit(env.KV, `composite-submit:${studentId}`, 20, 60))
@@ -5177,8 +5409,15 @@ export default {
         `;
         if (!assignment) return err('Không tìm thấy bài tập', 404);
         if (!assignment.is_active) return err('Bài tập đã đóng', 403);
+        // F3: Deadline + duplicate check BEFORE any STT/R2 to avoid wasting cost on rejected requests
+        if (assignment.deadline && new Date(assignment.deadline) < new Date()) return err('Đã hết hạn nộp bài', 403);
+        const [existing_f3] = await sql`
+          SELECT id FROM composite_section_submissions
+          WHERE assignment_id = ${assignmentId} AND section_id = ${p.id} AND student_id = ${studentId}
+        `;
+        if (existing_f3) return err('Bạn đã nộp phần này rồi', 409);
 
-        // Now safe to process audio (access confirmed)
+        // Now safe to process audio (access + deadline + duplicate confirmed)
         if (pendingAudioFile) {
           if (!env.OPENAI_API_KEY) return err('Chưa cấu hình OPENAI_API_KEY', 500);
           const openaiForm = new FormData();
@@ -5186,20 +5425,16 @@ export default {
           openaiForm.append('model', 'gpt-4o-mini-transcribe');
           openaiForm.append('response_format', 'json');
           const sttUrl = getOpenAIEndpoint(env, '/v1/audio/transcriptions', 'stt');
-          const aiRes = await fetch(sttUrl, { method: 'POST', headers: { 'Authorization': `Bearer ${getOpenAIAuthToken(env, sttUrl, 'stt')}` }, body: openaiForm });
+          // G5: 120s timeout for composite multipart STT
+          const cSttAbort = new AbortController();
+          const cSttTimer = setTimeout(() => cSttAbort.abort(), 120_000);
+          const aiRes = await fetch(sttUrl, { method: 'POST', signal: cSttAbort.signal, headers: { 'Authorization': `Bearer ${getOpenAIAuthToken(env, sttUrl, 'stt')}` }, body: openaiForm }).finally(() => clearTimeout(cSttTimer));
           if (!aiRes.ok) { const t = await aiRes.text(); if (isUnsupportedRegionOpenAIError(t)) return err('Dịch vụ nhận diện giọng nói đang bị chặn', 502); return err('Không thể nhận diện giọng nói', 500); }
           content = (await aiRes.json()).text || '';
           audioKey = `speaking/${section.composite_question_id}/${studentId}-${crypto.randomUUID()}-${sanitizeFileName(pendingAudioFile.name)}`;
           await env.R2.put(audioKey, pendingAudioFile.stream(), { httpMetadata: { contentType: pendingAudioFile.type } });
           audioUrl = buildR2PublicUrl(env, audioKey);
         }
-        if (assignment.deadline && new Date(assignment.deadline) < new Date()) return err('Đã hết hạn nộp bài', 403);
-
-        const [existing] = await sql`
-          SELECT id FROM composite_section_submissions
-          WHERE assignment_id = ${assignmentId} AND section_id = ${p.id} AND student_id = ${studentId}
-        `;
-        if (existing) return err('Bạn đã nộp phần này rồi', 409);
 
         // Handle R2 pre-uploaded audio for speaking
         if (section.skill === 'speaking' && (directUploadKey || audioUploadKeys) && !content) {
@@ -5238,6 +5473,7 @@ export default {
         }
 
         // Overtime detection using exam_session for this section
+        // F1c: Fail-closed — if exam mode with time limit, session MUST exist; missing = reject
         let isOvertime = false;
         if (assignment.mode === 'exam' && section.time_limit_minutes) {
           const scopedSession = await loadCompositeSectionExamSession(sql, {
@@ -5250,10 +5486,9 @@ export default {
             WHERE student_id = ${studentId} AND ref_type = 'composite_section' AND ref_id = ${p.id}
           `;
           const session = scopedSession || legacySession;
-          if (session) {
-            const elapsedSec = (Date.now() - new Date(session.started_at).getTime()) / 1000;
-            isOvertime = elapsedSec > section.time_limit_minutes * 60 + 30;
-          }
+          if (!session) return err('Phiên thi không tồn tại — vui lòng bắt đầu bài thi trước khi nộp', 403);
+          const elapsedSec = (Date.now() - new Date(session.started_at).getTime()) / 1000;
+          isOvertime = elapsedSec > section.time_limit_minutes * 60 + 30;
         }
 
         try {
@@ -5293,6 +5528,7 @@ export default {
         if (body?.score !== undefined && body?.score !== null) {
           const scoreNum = Number(body.score);
           if (!isFinite(scoreNum) || scoreNum < 0 || scoreNum > 9) return err('Score không hợp lệ (0–9)', 400);
+          if ((scoreNum * 2) % 1 !== 0) return err('Thang IELTS chỉ chấp nhận bước 0.5 (0, 0.5, 1.0, … 9.0)', 400);
           updateFields.push('score'); updateVals.push(scoreNum);
         }
         if (body?.feedback !== undefined) { updateFields.push('feedback'); updateVals.push(String(body.feedback)); }
@@ -5388,7 +5624,7 @@ export default {
       }
 
       if ((p = matchPath('/student/composite-section-submissions/:id', path)) && method === 'GET') {
-        const claims = await requireStudentAuth(request, env);
+        const claims = await requireStudentAuth(request, env, sql);
         if (!claims) return err('Unauthorized', 401);
         const studentId = String(claims.student_id);
         const [sub] = await sql`
@@ -5478,6 +5714,8 @@ export default {
           shouldEnqueueDeadlines,
         });
         await autoCloseExpired(sql);
+        // G3: Create deadline_reminder notifications in batch for all active students
+        await createDeadlineReminders(sql);
         if (shouldEnqueueDeadlines) {
           await enqueueDeadline1DayEmails(sql);
         }

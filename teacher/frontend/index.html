@@ -60,14 +60,14 @@
     <div class="modal" onclick="event.stopPropagation()">
       <div class="modal-header">
         <h3 id="modal-title">Modal</h3>
-        <button class="modal-close" onclick="closeModal()">×</button>
+        <button class="modal-close" onclick="closeModal()" aria-label="Đóng">×</button>
       </div>
       <div id="modal-body" class="modal-body"></div>
     </div>
   </div>
 
   <!-- Toast container -->
-  <div id="toast-container"></div>
+  <div id="toast-container" role="status" aria-live="polite" aria-atomic="false"></div>
 
   <script src="js/vendor/chart.umd.min.js"></script>
   <script src="js/api.js"></script>

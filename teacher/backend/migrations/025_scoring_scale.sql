@@ -1,4 +1,9 @@
 -- Migration 025: Add scoring_scale to assignments + recalculate existing scores
+--
+-- ⚠️  KHÔNG CHẠY LẠI MIGRATION NÀY TRÊN DATABASE ĐÃ ĐƯỢC MIGRATE.
+-- Guard `overall_score <= 9.0` KHÔNG đủ để idempotent: điểm gốc ≤ 8.1 sau lần
+-- chạy đầu vẫn ≤ 9.0, nên sẽ bị nhân 10/9 thêm lần nữa (8.0 → 8.9 → 9.9).
+-- Comment "SAFE TO RE-RUN" bên dưới là SAI — đã sửa lại để tránh nhầm lẫn.
 
 ALTER TABLE assignments
   ADD COLUMN IF NOT EXISTS scoring_scale VARCHAR(10) NOT NULL DEFAULT '10';
@@ -20,7 +25,7 @@ UPDATE assignments a
     AND jsonb_array_length(q.questions_data) = 40;
 
 -- ── Recalculate overall_score for reading/listening submissions ────────────
--- SAFE TO RE-RUN: guards below prevent double-application.
+-- ⚠️  KHÔNG SAFE TO RE-RUN — xem cảnh báo ở đầu file.
 -- After this migration, thang-10 scores are 0–10 (> 9 is already migrated).
 -- IELTS scores are 0–9 bands (idempotent: re-applying IELTS table to a band
 -- value gives the same result because reverse-engineering is an approximation

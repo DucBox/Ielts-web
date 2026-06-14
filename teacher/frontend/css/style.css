@@ -4698,3 +4698,39 @@ tr[draggable="true"]:active { cursor: grabbing; }
 [data-theme="dark"] .mode-badge--exam     { background: rgba(146,64,14,.25);  color: #fcd34d; }
 [data-theme="dark"] .mode-badge--practice { background: rgba(91,33,182,.25);  color: #c4b5fd; }
 
+
+/* ─── H2: Focus-visible keyboard indicator ──────────────────────────────── */
+:focus-visible {
+  outline: 2px solid var(--primary, #2563eb);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+.form-input:focus-visible,
+.form-select:focus-visible,
+.form-textarea:focus-visible,
+.answer-explanation:focus-visible,
+.listening-script-editor:focus-visible,
+.stats-closed-search:focus-visible,
+.annotation-edit-input:focus-visible {
+  outline: 2px solid var(--primary, #2563eb);
+  outline-offset: 0;
+}
+
+/* ─── H5: Prefers-reduced-motion ────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ─── Toast close button ─────────────────────────────────────────────────── */
+.toast { display: flex; align-items: center; gap: 8px; }
+.toast-close {
+  background: none; border: none; color: inherit;
+  font-size: 18px; line-height: 1; padding: 0 2px;
+  cursor: pointer; opacity: 0.7; flex-shrink: 0;
+}
+.toast-close:hover { opacity: 1; }

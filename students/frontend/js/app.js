@@ -5,6 +5,31 @@
 // $, escapeHtml, renderMarkdownInline, renderSafeMarkdown, btnReset, toast,
 // setLoading, formatDateTime, isOverdue, makeSortIcon — defined in utils.js
 
+// E1: DOM-based sanitizer for block.html content before innerHTML insertion.
+// Uses the browser's own parser — safer than regex for nested/obfuscated payloads.
+function sanitizeBlockHtml(html) {
+  if (!html || typeof html !== 'string') return '';
+  const tmp = document.createElement('div');
+  tmp.innerHTML = html;
+  const dangerousProto = /^(javascript:|vbscript:|data:text\/html)/i;
+  tmp.querySelectorAll('script,style,iframe,object,embed,form,base,meta,link').forEach(el => el.remove());
+  tmp.querySelectorAll('*').forEach(el => {
+    for (const attr of [...el.attributes]) {
+      const name = attr.name.toLowerCase();
+      // Remove all event handlers, namespace attrs (xlink:href etc.), action/formaction
+      if (/^on\w+$/.test(name) || name.includes(':') || name === 'action' || name === 'formaction') {
+        el.removeAttribute(attr.name);
+        continue;
+      }
+      // Remove href/src/srcset with dangerous schemes
+      if ((name === 'href' || name === 'src' || name === 'srcset') && dangerousProto.test(attr.value.trim())) {
+        el.removeAttribute(attr.name);
+      }
+    }
+  });
+  return tmp.innerHTML;
+}
+
 function upsertStickyToast(id, html, type = 'info') {
   const container = $('#toast-container');
   if (!container) return null;
@@ -225,19 +250,29 @@ function renderQuestionContentHTML(blocks, fallbackText = '', extraClass = '') {
     <div class="mixed-content ${extraClass}">
       ${normalized.map(block => block.type === 'image'
         ? `<figure class="mixed-content-image-wrap" data-block-id="${escapeHtml(block.id)}" style="width:${Math.max(1, Number(block.width) || 100)}%"><img class="mixed-content-image" src="${escapeHtml(block.url)}" alt="${escapeHtml(block.alt || 'Question image')}" /></figure>`
-        : `<div class="mixed-content-text" data-block-id="${escapeHtml(block.id)}">${block.html ?? escapeHtml(block.text || '')}</div>`
+        : `<div class="mixed-content-text" data-block-id="${escapeHtml(block.id)}">${sanitizeBlockHtml(block.html ?? '') || escapeHtml(block.text || '')}</div>`
       ).join('')}
     </div>`;
 }
 
+let _modalPreviousFocus = null;
+const FOCUSABLE = 'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
+
 function openModal(title, bodyHtml) {
   const overlay = document.getElementById('modal-overlay');
+  const shell = overlay?.querySelector('.modal-shell');
   const titleEl = document.getElementById('modal-title');
   const bodyEl = document.getElementById('modal-body');
   if (!overlay || !titleEl || !bodyEl) return;
+  _modalPreviousFocus = document.activeElement;
   titleEl.textContent = title;
   bodyEl.innerHTML = bodyHtml;
+  overlay.setAttribute('role', 'dialog');
+  overlay.setAttribute('aria-modal', 'true');
+  overlay.setAttribute('aria-labelledby', 'modal-title');
   overlay.classList.remove('hidden');
+  const first = (shell || overlay).querySelector(FOCUSABLE);
+  if (first) first.focus();
 }
 
 function closeModal(event) {
@@ -247,7 +282,24 @@ function closeModal(event) {
   if (event && event.target !== overlay) return;
   overlay.classList.add('hidden');
   if (bodyEl) bodyEl.innerHTML = '';
+  if (_modalPreviousFocus) { _modalPreviousFocus.focus(); _modalPreviousFocus = null; }
 }
+
+document.addEventListener('keydown', e => {
+  const overlay = document.getElementById('modal-overlay');
+  if (!overlay || overlay.classList.contains('hidden')) return;
+  const shell = overlay.querySelector('.modal-shell') || overlay;
+  if (e.key === 'Escape') { closeModal(); return; }
+  if (e.key === 'Tab') {
+    const focusable = [...shell.querySelectorAll(FOCUSABLE)];
+    if (!focusable.length) return;
+    const first = focusable[0], last = focusable[focusable.length - 1];
+    if (e.shiftKey ? document.activeElement === first : document.activeElement === last) {
+      e.preventDefault();
+      (e.shiftKey ? last : first).focus();
+    }
+  }
+});
 
 function syncPasswordToggleButton(btn, input) {
   if (!btn || !input) return;
@@ -1055,6 +1107,20 @@ function formatAudioPlaybackTime(seconds) {
   return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
 }
 
+// Global registry of active locked-audio elements so router() can stop them on navigate
+const _activeLockedAudios = new Set();
+
+function stopAllLockedAudio() {
+  for (const audio of _activeLockedAudios) {
+    try {
+      audio._lockedListeningStopped = true; // signal pause-handler to not resume
+      audio.pause();
+      audio.src = '';
+    } catch {}
+  }
+  _activeLockedAudios.clear();
+}
+
 function setupLockedListeningAudio() {
   const audios = Array.from(document.querySelectorAll('[data-locked-audio]'));
   if (!audios.length) return;
@@ -1115,6 +1181,7 @@ function setupLockedListeningAudio() {
       state.progressFill.style.width = `${pct}%`;
     }
 
+    _activeLockedAudios.add(audio); // register for cleanup on navigate
     audio.addEventListener('contextmenu', e => e.preventDefault());
     audio.addEventListener('loadedmetadata', syncAudioUi);
     audio.addEventListener('timeupdate', () => {
@@ -1127,6 +1194,8 @@ function setupLockedListeningAudio() {
       syncAudioUi();
     });
     audio.addEventListener('pause', () => {
+      // Don't fight pause if we're navigating away or audio was explicitly stopped
+      if (audio._lockedListeningStopped || !document.contains(audio)) return;
       const nearEnd = Number.isFinite(audio.duration) && audio.duration > 0
         && audio.currentTime >= audio.duration - 0.1;
       if (!state.started || state.finished || audio.ended || nearEnd) return;
@@ -1420,11 +1489,11 @@ function openForgotPasswordModal() {
         placeholder="Nhập username học sinh"
         autocomplete="username"
         onkeydown="if(event.key==='Enter') submitForgotPassword(document.getElementById('forgot-password-btn'))" />
-      <div class="form-hint">Mật khẩu mới sẽ được tạo ngẫu nhiên và gửi tới Gmail đang lưu trong hồ sơ.</div>
+      <div class="form-hint">Link đặt lại mật khẩu sẽ được gửi tới Gmail đang lưu trong hồ sơ. Hiệu lực 20 phút.</div>
     </div>
     <div class="modal-actions">
       <button class="btn btn-outline" onclick="closeModal()">Hủy</button>
-      <button class="btn btn-primary" id="forgot-password-btn" onclick="submitForgotPassword(this)">Gửi mật khẩu mới</button>
+      <button class="btn btn-primary" id="forgot-password-btn" onclick="submitForgotPassword(this)">Gửi link đặt lại</button>
     </div>
   `);
   const presetUsername = $('#login-username')?.value?.trim();
@@ -1440,26 +1509,90 @@ async function submitForgotPassword(btn) {
     || $('#login-username')?.value?.trim()
     || '';
   if (!username) {
-    toast('Vui lòng nhập username để gửi mật khẩu mới.', 'error');
+    toast('Vui lòng nhập username để gửi link đặt lại mật khẩu.', 'error');
     return;
   }
-
-  const ok = await confirmSubmit({
-    title: 'Xác nhận quên mật khẩu',
-    message: `Hệ thống sẽ tạo mật khẩu mới và gửi tới Gmail đã lưu cho username <strong>${escapeHtml(username)}</strong>.`,
-    confirmText: 'Gửi mật khẩu mới',
-    cancelText: 'Hủy',
-  });
-  if (!ok) return;
 
   btnLoading(btn);
   try {
     const response = await api.post('/auth/forgot-password', { username });
     closeModal();
-    toast(response.message || 'Mật khẩu mới đã được gửi qua Gmail.', 'success');
+    toast(response.message || 'Link đặt lại mật khẩu đã được gửi qua Gmail.', 'success');
   } catch (e) {
     btnReset(btn);
-    toast(e.error || 'Không thể gửi mật khẩu mới lúc này.', 'error');
+    toast(e.error || 'Không thể gửi link đặt lại lúc này.', 'error');
+  }
+}
+
+function showResetPasswordPage(token) {
+  $('#app').classList.remove('with-header');
+  $('#app-header').classList.add('hidden');
+  $('#app').innerHTML = `
+    <div class="login-page">
+      <div class="login-card">
+        <div class="login-logo">
+          <span class="login-logo-icon">🔑</span>
+          <div class="login-logo-title">Đặt lại mật khẩu</div>
+          <div class="login-logo-sub">Nhập mật khẩu mới cho tài khoản của bạn</div>
+        </div>
+        <div id="reset-error" class="login-error"></div>
+        <div class="form-group">
+          <label class="form-label">Mật khẩu mới</label>
+          <div class="password-wrap">
+            <input id="reset-new-password" class="form-input" type="password"
+              placeholder="Nhập mật khẩu mới"
+              autocomplete="new-password"
+              onkeydown="if(event.key==='Enter') document.getElementById('reset-confirm-password').focus()" />
+            <button type="button" class="btn-eye" onclick="togglePasswordVisibility(this,'reset-new-password')" title="Hiện mật khẩu" aria-label="Hiện mật khẩu">🙈</button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Xác nhận mật khẩu</label>
+          <div class="password-wrap">
+            <input id="reset-confirm-password" class="form-input" type="password"
+              placeholder="Nhập lại mật khẩu mới"
+              autocomplete="new-password"
+              onkeydown="if(event.key==='Enter') submitResetPassword(document.getElementById('reset-btn'),'${escapeHtml(token)}')" />
+            <button type="button" class="btn-eye" onclick="togglePasswordVisibility(this,'reset-confirm-password')" title="Hiện mật khẩu" aria-label="Hiện mật khẩu">🙈</button>
+          </div>
+        </div>
+        <button class="btn btn-primary" id="reset-btn" style="width:100%;margin-top:8px"
+          onclick="submitResetPassword(this,'${escapeHtml(token)}')">Đặt lại mật khẩu</button>
+        <div style="text-align:center;margin-top:16px">
+          <button class="btn btn-outline btn-sm" onclick="history.replaceState(null,'',location.pathname);navigate('/login')">Quay lại đăng nhập</button>
+        </div>
+      </div>
+    </div>`;
+  setTimeout(() => $('#reset-new-password')?.focus(), 50);
+}
+
+async function submitResetPassword(btn, token) {
+  const newPassword = $('#reset-new-password')?.value || '';
+  const confirmPassword = $('#reset-confirm-password')?.value || '';
+  const errEl = $('#reset-error');
+
+  if (!newPassword || !confirmPassword) {
+    if (errEl) errEl.textContent = 'Vui lòng nhập đầy đủ mật khẩu mới và xác nhận.';
+    return;
+  }
+  if (newPassword !== confirmPassword) {
+    if (errEl) errEl.textContent = 'Mật khẩu nhập lại không khớp.';
+    return;
+  }
+
+  btnLoading(btn);
+  try {
+    const result = await api.post('/auth/reset-password', {
+      token,
+      new_password: newPassword,
+      confirm_password: confirmPassword,
+    });
+    toast(result.message || 'Đặt lại mật khẩu thành công! Vui lòng đăng nhập.', 'success');
+    history.replaceState(null, '', location.pathname);
+    navigate('/login');
+  } catch (e) {
+    btnReset(btn);
+    if (errEl) errEl.textContent = e.error || 'Không thể đặt lại mật khẩu. Link có thể đã hết hạn.';
   }
 }
 
@@ -1601,6 +1734,7 @@ function router() {
   stopCompositeSectionTimer();
   _removeExamBeforeUnload();
   _stopAiFeedbackPoll();
+  stopAllLockedAudio();
   _activeAssignmentId = null;
   _activeSectionId = null;
   _compositeExam = null;
@@ -3596,7 +3730,7 @@ function renderMyVocabList() {
 
       ${all.length > 0 ? `
         <div class="my-vocab-toolbar">
-          <input class="form-input search-input" placeholder="🔍 Tìm từ hoặc nghĩa..."
+          <input class="form-input search-input" aria-label="Tìm từ hoặc nghĩa" placeholder="🔍 Tìm từ hoặc nghĩa..."
             value="${escapeHtml(_myVocabSearch)}"
             oninput="_myVocabSearch=this.value; renderMyVocabList()" />
           <div class="mvc-sort-pills">
@@ -4892,7 +5026,10 @@ function renderGradedResult(sub) {
   }).join('');
 
   const total = questionsData.length;
-  const score = sub.overall_score ?? (total > 0 ? Math.round(correctCount / total * 9 * 10) / 10 : 0);
+  const isIelts = (sub.scoring_scale || '10') === 'ielts';
+  const score = sub.overall_score ?? (total > 0 ? (isIelts
+    ? Math.round(correctCount / total * 9 * 10) / 10
+    : Math.round(correctCount / total * 10 * 10) / 10) : 0);
   const colSpanEmpty = hasActions ? 5 : 4;
 
   const vocabList = sub.vocabulary || [];
@@ -4956,7 +5093,7 @@ function renderGradedResult(sub) {
           <div class="result-header" style="margin-bottom:16px;">
             <div class="score-display" style="margin-top:0;">
               <div class="score-number">${score}</div>
-              <div class="score-band">Band Score / 9.0</div>
+              <div class="score-band">${isIelts ? 'Band Score / 9.0' : 'Điểm / 10'}</div>
             </div>
             <div class="result-stats">
               <div class="stat-item">
@@ -5616,7 +5753,7 @@ function renderVocabGames() {
         </div>
         ${withVocab.length > 3 ? `
         <div class="vocab-search-bar">
-          <input class="form-input" placeholder="🔍 Tìm bài theo tên hoặc kỹ năng..."
+          <input class="form-input" aria-label="Tìm bài theo tên hoặc kỹ năng" placeholder="🔍 Tìm bài theo tên hoặc kỹ năng..."
             oninput="_vocabSearch=this.value; renderVocabGames()" />
         </div>` : ''}
         <div id="vocab-teacher-list">${buildVocabTeacherHtml(withVocab)}</div>
@@ -6067,7 +6204,10 @@ window.selectMatchCard     = selectMatchCard;
 window.exitMatchGame       = exitMatchGame;
 window.switchClass      = switchClass;
 window.chooseClass      = chooseClass;
-window.submitLogin      = submitLogin;
+window.submitLogin              = submitLogin;
+window.openForgotPasswordModal  = openForgotPasswordModal;
+window.submitForgotPassword     = submitForgotPassword;
+window.submitResetPassword      = submitResetPassword;
 window.submitAnswers    = submitAnswers;
 window.submitWriting    = submitWriting;
 window.updateWordCount  = updateWordCount;
@@ -7181,7 +7321,10 @@ function _renderSharedGradedResult(sub) {
   }).join('');
 
   const total = questionsData.length;
-  const score = sub.overall_score ?? (total > 0 ? Math.round(correctCount / total * 9 * 10) / 10 : 0);
+  const isIelts = total === 40;
+  const score = sub.overall_score ?? (total > 0 ? (isIelts
+    ? Math.round(correctCount / total * 9 * 10) / 10
+    : Math.round(correctCount / total * 10 * 10) / 10) : 0);
   const wrongCount = total - correctCount;
 
   const vocabList = sub.vocabulary || [];
@@ -7241,7 +7384,7 @@ function _renderSharedGradedResult(sub) {
           <div class="result-header" style="margin-bottom:16px">
             <div class="score-display" style="margin-top:0">
               <div class="score-number">${score}</div>
-              <div class="score-band">Band Score / 9.0</div>
+              <div class="score-band">${isIelts ? 'Band Score / 9.0' : 'Điểm / 10'}</div>
             </div>
             <div class="result-stats">
               <div class="stat-item"><div class="stat-value" style="color:var(--success)">${correctCount}</div><div class="stat-label">Đúng</div></div>
@@ -8451,5 +8594,11 @@ function renderCompositeResult(composite) {
 }
 window.renderCompositeResult = renderCompositeResult;
 
-router();
-syncStudentProfileSummary();
+// Handle password reset link: ?reset_token=<hex> in URL
+const _resetTokenParam = new URLSearchParams(window.location.search).get('reset_token');
+if (_resetTokenParam) {
+  showResetPasswordPage(_resetTokenParam);
+} else {
+  router();
+  syncStudentProfileSummary();
+}

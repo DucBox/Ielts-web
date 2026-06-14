@@ -84,13 +84,17 @@ const api = {
     }
   },
 
+  // G8: AbortController factory — 30s timeout; postForm skipped (audio uploads can be slow)
+  _fetchWithTimeout(url, options, timeoutMs = 30_000) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    return fetch(url, { ...options, signal: ctrl.signal }).finally(() => clearTimeout(timer));
+  },
+
   async get(path) {
     const cached = this._readCache(path);
     if (cached) return cached;
-    const res = await fetch(API_BASE + path, {
-      headers: this._authHeaders(),
-      credentials: 'include',
-    });
+    const res = await this._fetchWithTimeout(API_BASE + path, { headers: this._authHeaders(), credentials: 'include' });
     if (!res.ok) { this._handle401(res); throw ((await this._readJsonSafe(res)) || { error: 'Request failed' }); }
     const data = await this._readJsonSafe(res);
     this._writeCache(path, data);
@@ -98,7 +102,7 @@ const api = {
   },
 
   async post(path, data) {
-    const res = await fetch(API_BASE + path, {
+    const res = await this._fetchWithTimeout(API_BASE + path, {
       method: 'POST',
       headers: this._authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(data),
@@ -110,6 +114,7 @@ const api = {
   },
 
   async postForm(path, formData) {
+    // No timeout — audio uploads can take several minutes
     const res = await fetch(API_BASE + path, {
       method: 'POST',
       headers: this._authHeaders(),
@@ -122,7 +127,7 @@ const api = {
   },
 
   async patch(path, data) {
-    const res = await fetch(API_BASE + path, {
+    const res = await this._fetchWithTimeout(API_BASE + path, {
       method: 'PATCH',
       headers: this._authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(data),
@@ -134,7 +139,7 @@ const api = {
   },
 
   async delete(path) {
-    const res = await fetch(API_BASE + path, {
+    const res = await this._fetchWithTimeout(API_BASE + path, {
       method: 'DELETE',
       headers: this._authHeaders(),
       credentials: 'include',

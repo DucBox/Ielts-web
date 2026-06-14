@@ -65,11 +65,25 @@ function btnReset(btn) {
 }
 
 function toast(msg, type = 'success') {
+  const duration = type === 'error' ? 6000 : 3500;
   const el = document.createElement('div');
   el.className = `toast toast-${type}`;
-  el.textContent = msg;
+  el.setAttribute('role', 'alert');
+  const text = document.createElement('span');
+  text.textContent = msg;
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'toast-close';
+  closeBtn.setAttribute('aria-label', 'Đóng thông báo');
+  closeBtn.textContent = '×';
+  closeBtn.onclick = () => el.remove();
+  el.appendChild(text);
+  el.appendChild(closeBtn);
+  el.addEventListener('mouseenter', () => el.classList.add('toast-paused'));
+  el.addEventListener('mouseleave', () => el.classList.remove('toast-paused'));
   $('#toast-container').appendChild(el);
-  setTimeout(() => el.remove(), 3500);
+  const timer = setTimeout(() => el.remove(), duration);
+  el.addEventListener('mouseenter', () => clearTimeout(timer));
+  el.addEventListener('mouseleave', () => setTimeout(() => el.remove(), 1000));
 }
 
 function setLoading(msg = 'Đang tải...') {

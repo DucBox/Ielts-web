@@ -1,7 +1,7 @@
 -- Current bootstrap schema for the IELTS Web Platform.
 --
 -- This file is intended for initializing a fresh NeonDB database.
--- Last synced: 2026-06-06 (through migration 027)
+-- Last synced: 2026-06-14 (through migration 031)
 --
 -- For existing databases, run migrations in teacher/backend/migrations/ instead
 -- of relying on CREATE TABLE IF NOT EXISTS to reshape old tables.
@@ -34,8 +34,20 @@ CREATE TABLE IF NOT EXISTS students (
   full_name TEXT NOT NULL,
   username TEXT UNIQUE NOT NULL,
   password_hash TEXT NOT NULL,
-  email TEXT
+  email TEXT,
+  token_version INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS student_password_reset_tokens (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  token_hash TEXT NOT NULL UNIQUE,
+  student_id UUID NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+  expires_at TIMESTAMPTZ NOT NULL,
+  used_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_prt_student_id ON student_password_reset_tokens(student_id);
+CREATE INDEX IF NOT EXISTS idx_prt_valid ON student_password_reset_tokens(token_hash) WHERE used_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS student_classes (
   student_id UUID REFERENCES students(id) ON DELETE CASCADE,
@@ -80,6 +92,7 @@ CREATE TABLE IF NOT EXISTS submissions (
   student_id UUID REFERENCES students(id) ON DELETE CASCADE,
   student_answers JSONB,
   writing_content TEXT,
+  word_count INTEGER,
   speaking_audio_url TEXT,
   speaking_audio_urls JSONB NOT NULL DEFAULT '[]'::jsonb,
   speaking_script TEXT,
@@ -148,6 +161,7 @@ CREATE TABLE IF NOT EXISTS student_email_events (
     OR event_type LIKE 'score_released:%'
   ),
   status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'sending', 'sent', 'failed', 'skipped')),
+  attempt_count INT NOT NULL DEFAULT 0,
   provider_message_id TEXT,
   last_error TEXT,
   sent_at TIMESTAMPTZ,
@@ -210,8 +224,13 @@ CREATE TABLE IF NOT EXISTS shared_attempts (
   overall_score NUMERIC(5,2),
   max_score INTEGER,
   ai_feedback JSONB,
-  submitted_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  submitted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  idempotency_key TEXT
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_shared_attempts_idempotency
+  ON shared_attempts (student_id, shared_pool_id, idempotency_key)
+  WHERE idempotency_key IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS question_folders (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

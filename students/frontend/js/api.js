@@ -82,17 +82,24 @@ const api = {
     return this._readJsonSafe(res);
   },
 
+  // G8: AbortController factory — 30s timeout for regular calls; skipped for postForm (uploads)
+  _fetchWithTimeout(url, options, timeoutMs = 30_000) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    return fetch(url, { ...options, signal: ctrl.signal }).finally(() => clearTimeout(timer));
+  },
+
   async get(path) {
     const cached = this._readCache(path);
     if (cached) return cached;
-    const res = await fetch(API_BASE + path, { headers: this._authHeaders() });
+    const res = await this._fetchWithTimeout(API_BASE + path, { headers: this._authHeaders() });
     const data = await this._handle(res);
     this._writeCache(path, data);
     return data;
   },
 
   async post(path, data) {
-    const res = await fetch(API_BASE + path, {
+    const res = await this._fetchWithTimeout(API_BASE + path, {
       method: 'POST',
       headers: this._authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(data),
@@ -104,6 +111,7 @@ const api = {
 
   async postForm(path, formData) {
     // No Content-Type header — browser sets it automatically for FormData (with boundary)
+    // No timeout — audio uploads can take several minutes
     const res = await fetch(API_BASE + path, {
       method: 'POST',
       headers: this._authHeaders(),
@@ -115,7 +123,7 @@ const api = {
   },
 
   async patch(path, data) {
-    const res = await fetch(API_BASE + path, {
+    const res = await this._fetchWithTimeout(API_BASE + path, {
       method: 'PATCH',
       headers: this._authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(data),
@@ -126,7 +134,7 @@ const api = {
   },
 
   async delete(path) {
-    const res = await fetch(API_BASE + path, {
+    const res = await this._fetchWithTimeout(API_BASE + path, {
       method: 'DELETE',
       headers: this._authHeaders(),
     });

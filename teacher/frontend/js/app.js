@@ -6913,7 +6913,7 @@ let _audioSlots = [_newAudioSlot()];
 let _audioFiles = _audioSlots; // legacy alias
 let _audioUploading = false;
 let _scriptTranscribing = false;
-let _sttModel = 'diarize';      // 'mini' | 'diarize'
+let _sttModel = 'mini';         // 'mini' | 'diarize'
 let _speakerNames = [];         // [{original:'A', replace:''}, ...]
 let _audioFile = null, _audioUploadUrl = null, _audioUploadKey = null, _audioUploadName = '', _audioUploadSize = 0;
 let _vocabItems = [];

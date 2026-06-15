@@ -7565,6 +7565,12 @@ function clearSlotFile(idx) {
   _audioSlots[idx] = { ..._newAudioSlot(), displayName: _audioSlots[idx].displayName };
   _audioUploading = _audioSlots.some(s => s.status === 'uploading');
   _renderAudioSlots();
+  // Replacing a file invalidates its old script — clear textarea so new
+  // transcription fills it cleanly. _renderCombinedTranscript will restore
+  // content if other slots already have real transcripts.
+  const scriptEl = $('#listening-script');
+  if (scriptEl) scriptEl.value = '';
+  _renderCombinedTranscript();
 }
 
 async function requestDirectAudioUpload(file, scope, extra = {}) {
@@ -7774,10 +7780,14 @@ function removeAudioSlot(idx) {
   _audioSlots.splice(idx, 1);
   _audioUploading = _audioSlots.some(s => s.status === 'uploading');
   _renderAudioSlots();
+  // Always clear and rebuild — removing a slot removes its script contribution.
+  // _renderCombinedTranscript restores content for remaining slots that have
+  // real transcript strings; pre-populated slots (transcript=null) don't contribute.
+  const scriptEl = $('#listening-script');
+  if (scriptEl) scriptEl.value = '';
+  _renderCombinedTranscript();
   const doneCount = _audioSlots.filter(s => s.status === 'done').length;
   if (doneCount === 0) {
-    const scriptEl = $('#listening-script');
-    if (scriptEl) scriptEl.value = '';
     const loadingEl = $('#script-loading');
     if (loadingEl) loadingEl.classList.add('hidden');
   }

@@ -3865,6 +3865,7 @@ function renderAssignments(assignments) {
     ? assignments.filter(a => a.skill === _assignmentSkillFilter)
     : assignments;
 
+  const rewrite = filtered.filter(a => a.skill !== 'composite' && a.rewrite_status === 'requested');
   const pending = filtered.filter(a => a.skill !== 'composite'
     ? (!a.submission_id && a.is_active)
     : (a.is_active && !isCompositeAssignmentDone(a)));
@@ -3872,7 +3873,7 @@ function renderAssignments(assignments) {
     ? (!a.submission_id && !a.is_active)
     : (!a.is_active && !isCompositeAssignmentDone(a)));
   const done    = filtered.filter(a => a.skill !== 'composite'
-    ? !!a.submission_id
+    ? (!!a.submission_id && a.rewrite_status !== 'requested')
     : isCompositeAssignmentDone(a));
 
   function assignCard(a) {
@@ -3947,12 +3948,18 @@ function renderAssignments(assignments) {
         </div>`;
     }
 
+    const needsRewriteCard = !isComposite && a.rewrite_status === 'requested';
+    const isPendingCard = isComposite
+      ? (a.is_active && !isCompositeAssignmentDone(a))
+      : (!a.submission_id && a.is_active);
     const href = isComposite
       ? `#/composite/${a.id}`
+      : needsRewriteCard ? `#/assignment/${a.id}`
       : (isDone ? `#/result/${a.id}` : `#/assignment/${a.id}`);
 
+    const cardClass = needsRewriteCard ? 'rewrite' : isPendingCard ? 'pending-card' : isDone ? 'done' : '';
     return `
-      <a class="assignment-card ${isDone ? 'done' : ''}" href="${href}">
+      <a class="assignment-card ${cardClass}" href="${href}">
         <div class="assignment-card-icon">${icon}</div>
         <div class="assignment-card-body">
           <div class="assignment-card-title">${escapeHtml(a.title)}</div>
@@ -4010,8 +4017,14 @@ function renderAssignments(assignments) {
 
       ${filtered.length === 0 ? emptyAll : ''}
 
+      ${rewrite.length > 0 ? `
+        <div class="section-label section-label-rewrite">✏️ Yêu cầu làm lại (${rewrite.length})</div>
+        <div class="assignment-list" style="margin-bottom:28px">
+          ${rewrite.map(assignCard).join('')}
+        </div>` : ''}
+
       ${pending.length > 0 ? `
-        <div class="section-label">Cần làm (${pending.length})</div>
+        <div class="section-label section-label-pending">📌 Cần làm (${pending.length})</div>
         <div class="assignment-list" style="margin-bottom:28px">
           ${pending.map(assignCard).join('')}
         </div>` : ''}

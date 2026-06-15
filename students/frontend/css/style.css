@@ -1485,6 +1485,43 @@ body {
   margin-bottom: 10px;
 }
 
+/* "Yêu cầu làm lại" — most prominent, red */
+.section-label-rewrite {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  color: #dc2626;
+}
+/* "Cần làm" — stands out above the muted "Đã nộp" */
+.section-label-pending {
+  font-size: 14px;
+  color: var(--primary);
+}
+
+/* Rewrite-requested cards: bold red so they jump out */
+.assignment-card.rewrite {
+  border: 2px solid #ef4444;
+  background: linear-gradient(180deg, #fff5f5 0%, var(--card-bg) 70%);
+  box-shadow: 0 4px 14px rgba(239, 68, 68, .18);
+}
+.assignment-card.rewrite:hover { border-color: #dc2626; box-shadow: 0 6px 18px rgba(239, 68, 68, .26); }
+
+/* "Cần làm" cards: full presence + primary accent bar (vs the dimmed "Đã nộp") */
+.assignment-card.pending-card {
+  border-color: var(--primary-lt);
+  border-left: 4px solid var(--primary);
+}
+.assignment-card.pending-card:hover { border-color: var(--primary); }
+
+[data-theme="dark"] .assignment-card.rewrite {
+  border-color: #f87171;
+  background: linear-gradient(180deg, rgba(239,68,68,.12) 0%, var(--card-bg) 70%);
+  box-shadow: 0 4px 14px rgba(239, 68, 68, .25);
+}
+[data-theme="dark"] .section-label-rewrite { color: #f87171; }
+[data-theme="dark"] .section-label-pending { color: #5eead4; }
+
 /* ═══ HEADER EXTRAS ══════════════════════════════════════════════════════════ */
 .btn-switch-class {
   background: var(--primary-lt);

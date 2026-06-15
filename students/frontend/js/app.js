@@ -478,6 +478,58 @@ let _audioCtx        = null;       // shared AudioContext for waveform
 const ASSIGNMENT_DRAFT_TTL_MS = 15 * 60 * 1000;
 const ASSIGNMENT_AUTOSAVE_INTERVAL_MS = 15 * 1000;
 const ASSIGNMENT_AUTOSAVE_DEBOUNCE_MS = 800;
+const ASSIGNMENTS_STORE_TTL_MS = 60 * 1000;
+let _assignmentsStore = { key: '', data: null, fetchedAt: 0, promise: null };
+
+function currentAssignmentsStoreKey() {
+  if (!_student?.id || !_selectedClass?.id) return '';
+  return `${_student.id}:${_selectedClass.id}`;
+}
+
+function syncAssignmentsCache(data) {
+  window._cachedAssignments = data;
+  const key = currentAssignmentsStoreKey();
+  if (!key) return data;
+  _assignmentsStore = { key, data, fetchedAt: Date.now(), promise: null };
+  return data;
+}
+
+function invalidateAssignmentsCache(clearData = false) {
+  _assignmentsStore = {
+    key: currentAssignmentsStoreKey(),
+    data: clearData ? null : _assignmentsStore.data,
+    fetchedAt: 0,
+    promise: null,
+  };
+  if (clearData) window._cachedAssignments = null;
+}
+
+async function getAssignments(opts = {}) {
+  const { force = false, ttlMs = ASSIGNMENTS_STORE_TTL_MS } = opts;
+  const key = currentAssignmentsStoreKey();
+  if (!key) return [];
+
+  if (_assignmentsStore.key !== key) {
+    _assignmentsStore = { key, data: null, fetchedAt: 0, promise: null };
+  }
+  if (!force && _assignmentsStore.data && (Date.now() - _assignmentsStore.fetchedAt) < ttlMs) {
+    window._cachedAssignments = _assignmentsStore.data;
+    return _assignmentsStore.data;
+  }
+  if (!force && _assignmentsStore.promise) {
+    return _assignmentsStore.promise;
+  }
+
+  const request = api.get(`/student/assignments?student_id=${_student.id}&class_id=${_selectedClass.id}`)
+    .then(data => syncAssignmentsCache(data))
+    .catch(err => {
+      _assignmentsStore.promise = null;
+      throw err;
+    });
+
+  _assignmentsStore.promise = request;
+  return request;
+}
 
 function draftKey(aid, kind = 'answers') {
   return `ielts_draft:${_student?.id || 'anon'}:${aid}:${kind}`;
@@ -1386,6 +1438,7 @@ function saveAuth(student, token) {
 function selectClass(cls) {
   _selectedClass = cls;
   localStorage.setItem('ielts_class', JSON.stringify(cls));
+  invalidateAssignmentsCache(true);
 }
 
 function clearAuth() {
@@ -1394,8 +1447,10 @@ function clearAuth() {
   api._token = null;
   api.clearCache?.();
   _myVocabCache = null;
+  window._cachedAssignments = null;
   window._cachedProfileData = null;
   _studentProfileSummaryPromise = null;
+  _assignmentsStore = { key: '', data: null, fetchedAt: 0, promise: null };
   localStorage.removeItem('ielts_student');
   localStorage.removeItem('ielts_class');
   localStorage.removeItem('ielts_token');
@@ -2382,10 +2437,9 @@ async function showHome() {
   setLoading('Đang tải trang chủ...');
   try {
     const [assignments, vocabSessions] = await Promise.all([
-      api.get(`/student/assignments?student_id=${_student.id}&class_id=${_selectedClass.id}`),
+      getAssignments(),
       api.get('/student/vocab/sessions').catch(() => []),
     ]);
-    window._cachedAssignments = assignments;
     window._cachedVocabSessions = vocabSessions;
     renderHome(assignments);
   } catch (e) {
@@ -2530,10 +2584,7 @@ let _historyFilter = { skill: '', minBand: 0 };
 async function showHistory() {
   setLoading('Đang tải lịch sử...');
   try {
-    const assignments = await api.get(
-      `/student/assignments?student_id=${_student.id}&class_id=${_selectedClass.id}`
-    );
-    window._cachedAssignments = assignments;
+    const assignments = await getAssignments();
     renderHistory(getHistorySourceItems(assignments));
   } catch (e) {
     toast('Lỗi tải lịch sử: ' + (e.error || e.message), 'error');
@@ -2622,10 +2673,7 @@ let _calMonth = null; // [year, month] zero-based
 async function showCalendar() {
   setLoading('Đang tải lịch...');
   try {
-    const assignments = await api.get(
-      `/student/assignments?student_id=${_student.id}&class_id=${_selectedClass.id}`
-    );
-    window._cachedAssignments = assignments;
+    const assignments = await getAssignments();
     if (!_calMonth) {
       const now = new Date();
       _calMonth = [now.getFullYear(), now.getMonth()];
@@ -2748,12 +2796,11 @@ async function showProfile() {
   setLoading('Đang tải hồ sơ...');
   try {
     const [assignments, profileData, vocabSessions] = await Promise.all([
-      api.get(`/student/assignments?student_id=${_student.id}&class_id=${_selectedClass.id}`),
+      getAssignments(),
       api.get('/student/profile-answers').catch(() => ({ fields: [], answers: {} })),
       api.get('/student/vocab/sessions').catch(() => []),
       loadMyVocab(),
     ]);
-    window._cachedAssignments = assignments;
     window._cachedProfileData = profileData;
     window._cachedVocabSessions = vocabSessions;
     updateStudentState({ email: getStudentNotificationEmail(profileData) || null });
@@ -3851,8 +3898,7 @@ window.mfcAnswer   = mfcAnswer;
 async function showAssignments() {
   setLoading('Đang tải danh sách bài tập...');
   try {
-    const assignments = await api.get(`/student/assignments?student_id=${_student.id}&class_id=${_selectedClass.id}`);
-    window._cachedAssignments = assignments;
+    const assignments = await getAssignments();
     renderAssignments(assignments);
   } catch (e) {
     toast('Lỗi tải bài tập: ' + (e.error || e.message), 'error');
@@ -4387,6 +4433,7 @@ async function submitAnswers(assignmentId, qCount, skill, btn, isAuto = false) {
     await api.post(`/assignments/${assignmentId}/submit`, {
       student_id: _student.id, student_answers: answers,
     });
+    invalidateAssignmentsCache(true);
     await syncNotifUIAfterSubmit();
     clearAllDrafts(assignmentId);
     stopAutoSave(); stopTaskTimer(); stopAssignmentCountdown(); _removeExamBeforeUnload();
@@ -4493,6 +4540,7 @@ async function submitWriting(assignmentId, btn, isAuto = false) {
     await api.post(`/assignments/${assignmentId}/submit`, {
       student_id: _student.id, writing_content: content, word_count: wc,
     });
+    invalidateAssignmentsCache(true);
     await syncNotifUIAfterSubmit();
     clearAllDrafts(assignmentId);
     stopAutoSave(); stopTaskTimer(); stopAssignmentCountdown(); _removeExamBeforeUnload();
@@ -4948,6 +4996,7 @@ async function submitSpeaking(assignmentId, btn, isAuto = false) {
       student_id: _student.id,
       audio_upload_keys: audioUploadKeys,
     });
+    invalidateAssignmentsCache(true);
     await syncNotifUIAfterSubmit();
     clearAllDrafts(assignmentId);
     stopAutoSave(); stopTaskTimer(); stopAssignmentCountdown(); _removeExamBeforeUnload();
@@ -5648,7 +5697,7 @@ async function showVocabGames() {
   await Promise.all([
     loadMyVocab(),
     needsAssignments
-      ? api.get(`/student/assignments?student_id=${_student.id}&class_id=${_selectedClass.id}`)
+      ? getAssignments()
           .then(r => { window._cachedAssignments = r; })
           .catch(() => {})
       : Promise.resolve(),
@@ -8235,6 +8284,7 @@ async function _submitCompositeSectionAndBack(compositeId, sectionId, btn, isAut
     body.assignment_id = _compositeExam.id;
 
     const result = await api.post(`/student/composite-sections/${sectionId}/submit`, body);
+    invalidateAssignmentsCache(true);
     clearAllDrafts(`${compositeId}_${sectionId}`);
     const secIdx = _compositeExam.sections.findIndex(s => s.id === sectionId);
     if (secIdx >= 0) Object.assign(_compositeExam.sections[secIdx], {

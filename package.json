@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
+    "build:frontends": "node tools/build_frontends.js",
     "test": "playwright test",
     "test:report": "playwright show-report"
   },

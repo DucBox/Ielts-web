@@ -73,6 +73,27 @@ function btnLoading(btn) {
     : '<span class="btn-spinner"></span> Đang xử lý...';
 }
 
+let _chartJsLoadingPromise = null;
+
+function ensureChartJsLoaded() {
+  if (window.Chart) return Promise.resolve(window.Chart);
+  if (_chartJsLoadingPromise) return _chartJsLoadingPromise;
+
+  _chartJsLoadingPromise = new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = 'js/vendor/chart.umd.min.js';
+    script.async = true;
+    script.onload = () => resolve(window.Chart);
+    script.onerror = () => {
+      _chartJsLoadingPromise = null;
+      reject(new Error('Không thể tải Chart.js'));
+    };
+    document.head.appendChild(script);
+  });
+
+  return _chartJsLoadingPromise;
+}
+
 
 function renderRouteError(title, error, retryHash = window.location.hash.slice(1) || '/classes') {
   const message = error?.error || error?.message || 'Không thể tải dữ liệu. Vui lòng thử lại.';
@@ -2022,8 +2043,8 @@ function renderStatsTab(container, data) {
     ${studentTableHtml}
     ${assignTableHtml}`;
 
-  // Initialize all charts
-  requestAnimationFrame(() => {
+  // Initialize all charts only when this analytics view is actually opened.
+  ensureChartJsLoaded().then(() => requestAnimationFrame(() => {
     // Chart 1: Skill score horizontal bar
     const skillScoreCanvas = document.getElementById('chart-skill-score');
     if (skillScoreCanvas) {
@@ -2206,6 +2227,14 @@ function renderStatsTab(container, data) {
         },
       });
       _statsCharts.push(chart);
+    }
+  })).catch(() => {
+    const chartsRow = container.querySelector('.stats-charts-row');
+    if (chartsRow) {
+      chartsRow.insertAdjacentHTML(
+        'beforebegin',
+        '<div class="empty-state" style="margin-bottom:16px"><p>Không thể tải biểu đồ lúc này. Bạn vẫn có thể xem dữ liệu dạng bảng bên dưới.</p></div>'
+      );
     }
   });
 }
@@ -8739,36 +8768,43 @@ function _buildSharedStatsChart(students) {
     return { bg: '#dc262699', border: '#dc2626' };
   });
 
-  _sharedStatsChart = new Chart(canvas, {
-    type: 'bar',
-    data: {
-      labels: buckets.map(b => b % 1 === 0 ? String(b) : b.toFixed(1)),
-      datasets: [{
-        label: _sharedStatsMode === 'avg' ? 'Điểm TB / HS' : 'Điểm cao nhất / HS',
-        data: counts,
-        backgroundColor: colors.map(c => c.bg),
-        borderColor: colors.map(c => c.border),
-        borderWidth: 1,
-        borderRadius: 4,
-      }],
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          callbacks: {
-            title: ctx => `Band ${ctx[0].label}`,
-            label: ctx => `${ctx.raw} học sinh`,
+  ensureChartJsLoaded().then(() => {
+    _sharedStatsChart = new Chart(canvas, {
+      type: 'bar',
+      data: {
+        labels: buckets.map(b => b % 1 === 0 ? String(b) : b.toFixed(1)),
+        datasets: [{
+          label: _sharedStatsMode === 'avg' ? 'Điểm TB / HS' : 'Điểm cao nhất / HS',
+          data: counts,
+          backgroundColor: colors.map(c => c.bg),
+          borderColor: colors.map(c => c.border),
+          borderWidth: 1,
+          borderRadius: 4,
+        }],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              title: ctx => `Band ${ctx[0].label}`,
+              label: ctx => `${ctx.raw} học sinh`,
+            },
           },
         },
+        scales: {
+          x: { title: { display: true, text: 'Band IELTS' }, grid: { display: false } },
+          y: { title: { display: true, text: 'Số học sinh' }, beginAtZero: true, ticks: { stepSize: 1 } },
+        },
       },
-      scales: {
-        x: { title: { display: true, text: 'Band IELTS' }, grid: { display: false } },
-        y: { title: { display: true, text: 'Số học sinh' }, beginAtZero: true, ticks: { stepSize: 1 } },
-      },
-    },
+    });
+  }).catch(() => {
+    const host = canvas.parentElement;
+    if (host) {
+      host.innerHTML = '<div class="empty-state" style="height:100%;display:flex;align-items:center;justify-content:center"><p>Không thể tải biểu đồ lúc này.</p></div>';
+    }
   });
 }
 

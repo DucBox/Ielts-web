@@ -3357,8 +3357,13 @@ export default {
         }
         if (method === 'PATCH') {
           const body = await request.json();
-          const [existing] = await sql`SELECT content_blocks, skill FROM question_pool WHERE id = ${p.id}`;
+          const [existing] = await sql`SELECT content_blocks, skill, content_url, content_urls FROM question_pool WHERE id = ${p.id}`;
           if (!existing) return err('Không tìm thấy đề', 404);
+          // Audio (listening) replace/remove on edit: undefined = don't touch.
+          const updateAudioUrl  = body.content_url  !== undefined;
+          const updateAudioUrls = body.content_urls !== undefined;
+          const nextAudioUrl     = body.content_url ?? null;
+          const nextAudioUrlsJson = updateAudioUrls ? JSON.stringify(body.content_urls ?? []) : null;
           const normalizedBlocks = body.content_blocks !== undefined
             ? normalizeContentBlocks(body.content_blocks)
             : null;
@@ -3393,6 +3398,8 @@ export default {
                 vocabulary     = COALESCE(${vocabularyJson}::jsonb,       vocabulary),
                 tags           = COALESCE(${tagsArr},                     tags),
                 script         = COALESCE(${scriptVal},                   script),
+                content_url    = CASE WHEN ${updateAudioUrl}  THEN ${nextAudioUrl} ELSE content_url END,
+                content_urls   = CASE WHEN ${updateAudioUrls} THEN ${nextAudioUrlsJson}::jsonb ELSE content_urls END,
                 folder_id      = CASE WHEN ${shouldUpdateFolder} THEN ${folderIdVal}::uuid ELSE folder_id END
             WHERE id = ${p.id}
             RETURNING *
@@ -3487,6 +3494,27 @@ export default {
             }
             for (const key of oldKeys) {
               if (!newKeySet.has(key)) await r2SafeDelete(env, sql, key).catch(e => console.error('R2 image cleanup failed:', e));
+            }
+          }
+
+          // R2 audio ref cleanup — ref-track newly added listening audio and delete
+          // files that were replaced/removed (mirrors the image cleanup above).
+          if (updateAudioUrl || updateAudioUrls) {
+            const keyOf = (item) => item?.key || extractR2Key(item?.url, env.R2_PUBLIC_URL);
+            const oldAudioKeys = ((existing.content_urls && existing.content_urls.length)
+              ? existing.content_urls.map(keyOf)
+              : [extractR2Key(existing.content_url, env.R2_PUBLIC_URL)]).filter(Boolean);
+            const newAudioItems = updateAudioUrls
+              ? (body.content_urls || [])
+              : (body.content_url ? [{ url: body.content_url, key: body.content_upload_key }] : []);
+            const newAudioKeys = newAudioItems.map(keyOf).filter(Boolean);
+            const oldAudioKeySet = new Set(oldAudioKeys);
+            const newAudioKeySet = new Set(newAudioKeys);
+            for (const key of newAudioKeys) {
+              if (!oldAudioKeySet.has(key)) await r2RefIncrement(sql, key).catch(e => console.error('R2 audio ref increment failed:', e));
+            }
+            for (const key of oldAudioKeys) {
+              if (!newAudioKeySet.has(key)) await r2SafeDelete(env, sql, key).catch(e => console.error('R2 audio cleanup failed:', e));
             }
           }
           return json(row);

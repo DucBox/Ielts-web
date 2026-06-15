@@ -6652,19 +6652,27 @@ function renderQuestionDetail(q) {
   } else if (q.skill === 'listening') {
     const audioTracks = Array.isArray(q.content_urls) && q.content_urls.length > 0
       ? q.content_urls
-      : (q.content_url ? [{ url: q.content_url, name: '' }] : []);
-    const multi = audioTracks.length > 1;
+      : (q.content_url ? [{ url: q.content_url, name: '', key: null }] : []);
+    // Pre-populate the audio slots with the existing files so the teacher can
+    // replace (Thử lại), remove (×) or add (+ Thêm) audio when editing.
+    _audioSlots = audioTracks.length > 0
+      ? audioTracks.map(t => ({
+          ..._newAudioSlot(),
+          displayName: t.name || '',
+          name: t.filename || t.name || 'audio',
+          url: t.url || null,
+          key: t.key || null,
+          status: 'done',
+          transcript: null,
+        }))
+      : [_newAudioSlot()];
+    _audioFiles = _audioSlots;
     skillSection = `
-      ${audioTracks.length > 0 ? `
-        <div class="form-group">
-          <label class="form-label">Audio hiện tại</label>
-          ${audioTracks.map((t, i) => `
-            <div style="${multi ? 'margin-bottom:10px' : ''}">
-              ${multi ? `<div style="font-size:12px;font-weight:600;color:var(--gray-500);margin-bottom:4px">${escapeHtml(t.name || ('File ' + (i + 1)))}</div>` : ''}
-              <audio controls src="${escapeHtml(t.url || '')}" style="width:100%;border-radius:8px"></audio>
-            </div>`).join('')}
-          <div class="form-hint">Không hỗ trợ thay audio — xoá và tạo lại đề nếu cần đổi file.</div>
-        </div>` : ''}
+      <div class="form-group">
+        <label class="form-label">File audio</label>
+        ${audioUploadHtml()}
+        <div class="form-hint">Bấm “Thử lại” để thay file, “×” để xoá bớt, “+ Thêm file audio” để thêm. Đề Listening cần ít nhất 1 file audio.</div>
+      </div>
       <div class="form-group" id="script-section">
         <label class="form-label">Script Listening
           <span style="font-size:12px;font-weight:400;color:var(--gray-400)"> — có thể chỉnh sửa</span>
@@ -6836,6 +6844,14 @@ async function submitQuestionEdit(id, btn) {
 
   if (_contentImageUploadCount > 0) { toast('Ảnh đang upload, vui lòng đợi xong rồi lưu', 'warning'); return; }
 
+  if (skill === 'listening') {
+    if (_audioUploading) { toast('Audio vẫn đang upload, vui lòng đợi xong rồi lưu', 'warning'); return; }
+    if (_audioSlots.filter(s => s.status === 'done').length === 0) {
+      toast('Đề Listening cần ít nhất 1 file audio', 'error');
+      return;
+    }
+  }
+
   const contentBlocks = normalizeContentBlocksForEditor(_contentBlocks);
   const content = blocksToPlainText(contentBlocks) || null;
 
@@ -6858,9 +6874,15 @@ async function submitQuestionEdit(id, btn) {
       questions_data,
       vocabulary: _vocabItems,
       tags,
-      ...(skill === 'listening' ? {
-        script: ($('#listening-script')?.value || '').trim() || null,
-      } : {}),
+      ...(skill === 'listening' ? (() => {
+        const doneSlots = _audioSlots.filter(s => s.status === 'done');
+        return {
+          script: ($('#listening-script')?.value || '').trim() || null,
+          content_url: doneSlots[0]?.url || null,
+          content_upload_key: doneSlots[0]?.key || null,
+          content_urls: doneSlots.map(s => ({ url: s.url, key: s.key, name: s.displayName || s.name, filename: s.name })),
+        };
+      })() : {}),
     });
     stopQuestionDraftAutosave();
     clearQuestionDraft(getQuestionDraftKey('edit', id));

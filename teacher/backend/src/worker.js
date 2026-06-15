@@ -4228,16 +4228,15 @@ export default {
             }
             return json(updatedComposite);
           }
+          // "Hoàn thành" (complete) finalizes the grade and clears any pending
+          // rewrite request → the submission moves back to "Đã làm". Only
+          // "Yêu cầu viết lại" sets 'requested'.
           const newRewriteStatus = body.action === 'request_rewrite' ? 'requested' : null;
           const [sub] = await sql`
             UPDATE submissions
             SET teacher_feedback = ${body.teacher_feedback != null ? JSON.stringify(body.teacher_feedback) : null}::jsonb,
                 overall_score    = COALESCE(${body.overall_score ?? null}, overall_score),
-                rewrite_status   = CASE
-                  WHEN ${body.action} = 'request_rewrite' THEN 'requested'
-                  WHEN rewrite_status = 'requested' THEN 'requested'
-                  ELSE NULL
-                END
+                rewrite_status   = ${newRewriteStatus}
             WHERE id = ${p.id}
             RETURNING *
           `;

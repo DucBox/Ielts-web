@@ -490,13 +490,13 @@ tbody tr:hover { background: var(--bg-surface-alt); }
 
 .answer-row-main {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 8px;
 }
 
 .location-row {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 6px;
   padding: 6px 10px 6px 38px;
   border-top: 1px dashed var(--gray-200);
@@ -525,7 +525,6 @@ tbody tr:hover { background: var(--bg-surface-alt); }
   white-space: normal;
   word-break: break-word;
   font-style: italic;
-  padding-top: 1px;
 }
 
 .btn-pick-location {
@@ -1355,7 +1354,6 @@ body.resizing-image {
   font-weight: 700;
   color: var(--primary);
   min-width: 30px;
-  padding-top: 4px;
 }
 
 .chip-container {

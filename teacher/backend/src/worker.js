@@ -4354,6 +4354,7 @@ export default {
             WHERE c.teacher_id = ${teacherId}
               AND q.skill IN ('writing', 'speaking')
               AND sub.overall_score IS NOT NULL
+              AND sub.rewrite_status IS DISTINCT FROM 'rewritten'
             ORDER BY sub.submitted_at DESC
             LIMIT 200
           `,

@@ -891,12 +891,16 @@ let _inboxSortCol = 'submitted_at';
 let _inboxSortDir = 'desc';
 let _inboxTab = 'pending';        // 'pending' | 'graded'
 let _inboxGradedItems = null;     // lazy-loaded on first switch to "Đã chấm"
+let _inboxGradedSortCol = 'submitted_at';
+let _inboxGradedSortDir = 'desc';
 
 async function showInbox() {
   _inboxSortCol = 'submitted_at';
   _inboxSortDir = 'desc';
   _inboxTab = 'pending';
   _inboxGradedItems = null;
+  _inboxGradedSortCol = 'submitted_at';
+  _inboxGradedSortDir = 'desc';
   setLoading('Đang tải hộp thư...');
   try {
     const items = await api.get('/inbox');
@@ -1025,6 +1029,42 @@ function inboxPendingHtml() {
     </div>`;
 }
 
+function sortedGradedItems() {
+  const items = _inboxGradedItems || [];
+  if (!_inboxGradedSortCol) return items;
+  return [...items].sort((a, b) => {
+    let va, vb;
+    switch (_inboxGradedSortCol) {
+      case 'student_name':  va = a.student_name.toLowerCase(); vb = b.student_name.toLowerCase(); break;
+      case 'class_name':    va = a.class_name.toLowerCase();   vb = b.class_name.toLowerCase();   break;
+      case 'skill':         va = a.skill || '';                vb = b.skill || '';                break;
+      case 'overall_score': va = Number(a.overall_score) || 0; vb = Number(b.overall_score) || 0; break;
+      case 'submitted_at':  va = a.submitted_at || '';         vb = b.submitted_at || '';         break;
+      default: return 0;
+    }
+    if (va < vb) return _inboxGradedSortDir === 'asc' ? -1 : 1;
+    if (va > vb) return _inboxGradedSortDir === 'asc' ? 1 : -1;
+    return 0;
+  });
+}
+
+function sortInboxGraded(col) {
+  if (_inboxGradedSortCol === col) {
+    _inboxGradedSortDir = _inboxGradedSortDir === 'asc' ? 'desc' : 'asc';
+  } else {
+    _inboxGradedSortCol = col;
+    _inboxGradedSortDir = (col === 'student_name' || col === 'class_name' || col === 'skill') ? 'asc' : 'desc';
+  }
+  const body = document.getElementById('inbox-graded-body');
+  if (body) body.innerHTML = buildGradedRows(sortedGradedItems());
+  document.querySelectorAll('th[data-graded-col]').forEach(th => {
+    const icon = th.querySelector('.sort-icon');
+    if (icon) icon.remove();
+    th.insertAdjacentHTML('beforeend', makeSortIcon(th.dataset.gradedCol, _inboxGradedSortCol, _inboxGradedSortDir));
+  });
+}
+window.sortInboxGraded = sortInboxGraded;
+
 function inboxGradedHtml() {
   const items = _inboxGradedItems || [];
   if (items.length === 0) {
@@ -1034,31 +1074,37 @@ function inboxGradedHtml() {
       <div class="empty-desc">Các bài Writing/Speaking đã chấm điểm sẽ hiển thị ở đây.</div>
     </div>`;
   }
+  const gsi = col => makeSortIcon(col, _inboxGradedSortCol, _inboxGradedSortDir);
   return `
     <div class="table-wrap">
       <table>
         <thead><tr>
-          <th>Kỹ năng</th>
-          <th>Học sinh</th>
+          <th class="sortable" data-graded-col="skill" onclick="sortInboxGraded('skill')">Kỹ năng ${gsi('skill')}</th>
+          <th class="sortable" data-graded-col="student_name" onclick="sortInboxGraded('student_name')">Học sinh ${gsi('student_name')}</th>
           <th>Bài tập</th>
-          <th>Lớp</th>
-          <th>Thời gian nộp</th>
-          <th>Điểm</th>
+          <th class="sortable" data-graded-col="class_name" onclick="sortInboxGraded('class_name')">Lớp ${gsi('class_name')}</th>
+          <th class="sortable" data-graded-col="submitted_at" onclick="sortInboxGraded('submitted_at')">Thời gian nộp ${gsi('submitted_at')}</th>
+          <th class="sortable" data-graded-col="overall_score" onclick="sortInboxGraded('overall_score')">Điểm ${gsi('overall_score')}</th>
           <th></th>
         </tr></thead>
-        <tbody>${buildGradedRows(items)}</tbody>
+        <tbody id="inbox-graded-body">${buildGradedRows(sortedGradedItems())}</tbody>
       </table>
     </div>`;
 }
 
 function buildGradedRows(items) {
-  return items.map(it => `
+  return items.map(it => {
+    const attemptBadge = (it.attempt_number || 1) > 1
+      ? `<span class="inbox-rewrite-badge">BÀI VIẾT LẠI · Lần ${it.attempt_number}</span>` : '';
+    const requestedBadge = it.rewrite_status === 'requested'
+      ? `<span class="inbox-rewrite-pending-badge">✏️ Đã yêu cầu viết lại</span>` : '';
+    return `
     <tr>
       <td>${skillBadge(it.skill)}</td>
       <td><strong>${escapeHtml(it.student_name)}</strong></td>
       <td>
         ${escapeHtml(it.assignment_title)}
-        ${(it.attempt_number || 1) > 1 ? `<span class="inbox-rewrite-badge">BÀI VIẾT LẠI · Lần ${it.attempt_number}</span>` : ''}
+        ${attemptBadge}${requestedBadge}
       </td>
       <td><span class="inbox-class">${escapeHtml(it.class_name)}</span></td>
       <td style="font-size:12px;color:var(--text-muted)">${formatDateTime(it.submitted_at)}</td>
@@ -1067,7 +1113,8 @@ function buildGradedRows(items) {
         <button class="btn btn-sm btn-outline"
           onclick="openInboxSubmission('${it.submission_kind || 'assignment'}','${it.submission_id}','${it.skill}','${it.assignment_id || ''}')">👁 Xem lại</button>
       </td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
 }
 
 async function switchInboxTab(tab) {

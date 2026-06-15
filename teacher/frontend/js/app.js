@@ -6673,7 +6673,7 @@ function renderQuestionDetail(q) {
       <div class="form-group">
         <label class="form-label">File audio</label>
         ${audioUploadHtml()}
-        <div class="form-hint">Bấm “Thử lại” để thay file, “×” để xoá bớt, “+ Thêm file audio” để thêm. Đề Listening cần ít nhất 1 file audio.</div>
+        <div class="form-hint">Bấm “Đổi file” để thay, “×” để xoá bớt, “+ Thêm file audio” để thêm. Đề Listening cần ít nhất 1 file audio.</div>
       </div>
       <div class="form-group" id="script-section">
         <label class="form-label">Script Listening
@@ -6773,6 +6773,8 @@ function renderQuestionDetail(q) {
 
   attachChipListeners();
   initContentComposer(q.content_blocks, q.content_text || '');
+  // Paint the pre-populated audio slots (existing files) so they can be replaced/removed.
+  if (q.skill === 'listening') _renderAudioSlots();
 
   const countInput = $('#answer-count');
   if (countInput) {

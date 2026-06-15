@@ -1646,7 +1646,7 @@ const API_BASE="https://ielts-teacher-api.quangducngo0811.workers.dev",API_CACHE
     </label>
   </div>`}function setSttModel(t){_sttModel=t}function audioUploadHtml(){return`<div id="audio-upload-area"><div id="audio-slot-list"></div>
     <button class="btn btn-outline btn-sm" style="margin-top:8px" onclick="addAudioSlot()">+ Th\xEAm file audio</button>
-  </div>`}function _renderAudioSlots(){const t=$("#audio-slot-list");t&&(t.innerHTML=_audioSlots.map((e,n)=>{const s=_audioSlots.length>1?`<button class="remove-audio-slot" onclick="removeAudioSlot(${n})" title="Xo\xE1 slot" aria-label="Xo\xE1 audio slot">\xD7</button>`:"";let o="";if(e.status==="idle")o=`
+  </div>`}function _renderAudioSlots(){const t=$("#audio-slot-list");t&&(t.innerHTML=_audioSlots.map((e,n)=>{const s=_audioSlots.length>1||e.status==="done"?`<button class="remove-audio-slot" onclick="removeAudioSlot(${n})" title="Xo\xE1 slot" aria-label="Xo\xE1 audio slot">\xD7</button>`:"";let o="";if(e.status==="idle")o=`
         <input id="audio-slot-input-${n}" type="file" accept="audio/*" style="display:none" onchange="onSlotFileSelected(this,${n})" />
         <button class="audio-pick-btn" onclick="document.getElementById('audio-slot-input-${n}').click()">\u{1F3B5} Ch\u1ECDn file audio</button>
         <span style="font-size:12px;color:var(--gray-400)">MP3, WAV, M4A... t\u1ED1i \u0111a 200MB</span>`;else if(e.status==="uploading"){const a=e.pct<100&&e.eta!=null?` \xB7 ETA ${_fmtEta(e.eta)}`:"";o=`

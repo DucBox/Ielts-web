@@ -7443,7 +7443,9 @@ function _renderAudioSlots() {
   const listEl = $('#audio-slot-list');
   if (!listEl) return;
   listEl.innerHTML = _audioSlots.map((s, i) => {
-    const canRemove = _audioSlots.length > 1;
+    // Show × when there are multiple slots OR when this single slot already has a file
+    // (so teacher can clear it). Clicking × on the last slot resets to idle via clearSlotFile.
+    const canRemove = _audioSlots.length > 1 || s.status === 'done';
     const removeBtn = canRemove
       ? `<button class="remove-audio-slot" onclick="removeAudioSlot(${i})" title="Xoá slot" aria-label="Xoá audio slot">×</button>`
       : '';

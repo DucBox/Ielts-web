@@ -2372,6 +2372,11 @@ export default {
               sub.id, sub.student_id, sub.assignment_id,
               sub.overall_score::float AS overall_score,
               sub.submitted_at, sub.status, sub.is_overtime,
+              -- Punctuality is judged by the FIRST attempt's time, so a teacher-
+              -- requested rewrite never turns an on-time student into a late one.
+              (SELECT MIN(s2.submitted_at) FROM submissions s2
+                 WHERE s2.assignment_id = sub.assignment_id
+                   AND s2.student_id = sub.student_id) AS first_submitted_at,
               q.skill, a.deadline, a.is_active, a.title AS assignment_title,
               a.scoring_scale,
               s.full_name AS student_name
@@ -2495,7 +2500,7 @@ export default {
           }
           if (!sub.is_active && sub.deadline) {
             st.closedTotal++;
-            if (new Date(sub.submitted_at) <= new Date(sub.deadline)) st.onTime++;
+            if (new Date(sub.first_submitted_at || sub.submitted_at) <= new Date(sub.deadline)) st.onTime++;
             else st.late++;
           }
           st.subs.push({
@@ -2506,7 +2511,7 @@ export default {
             submitted_at: sub.submitted_at,
             is_active: sub.is_active,
             deadline: sub.deadline,
-            on_time: sub.deadline ? new Date(sub.submitted_at) <= new Date(sub.deadline) : null,
+            on_time: sub.deadline ? new Date(sub.first_submitted_at || sub.submitted_at) <= new Date(sub.deadline) : null,
             is_overtime: sub.is_overtime ?? false,
           });
         }
@@ -2563,7 +2568,7 @@ export default {
           a.submitted++;
           if (sub.overall_score !== null) a.scores.push(Number(sub.overall_score));
           if (!sub.is_active && sub.deadline) {
-            if (new Date(sub.submitted_at) <= new Date(sub.deadline)) a.onTime++;
+            if (new Date(sub.first_submitted_at || sub.submitted_at) <= new Date(sub.deadline)) a.onTime++;
             else a.late++;
           }
         }
@@ -3628,7 +3633,16 @@ export default {
         await autoCloseExpired(sql, { assignmentId: p.id });
         const assignment = await loadStudentAssignmentAccess(sql, p.id, String(claims.student_id));
         if (!assignment) return err('Không tìm thấy bài tập', 404);
-        if (!assignment.is_active) return err('Bài tập đã đóng', 403);
+        if (!assignment.is_active) {
+          // Allow access past the deadline only when the teacher has requested a rewrite.
+          const [pendingRewrite] = await sql`
+            SELECT 1 FROM submissions
+            WHERE assignment_id = ${p.id} AND student_id = ${claims.student_id}
+              AND rewrite_status = 'requested'
+            LIMIT 1
+          `;
+          if (!pendingRewrite) return err('Bài tập đã đóng', 403);
+        }
         return json({ ...assignment, questions_data: redactQuestionsData(assignment.questions_data) });
       }
 
@@ -3705,7 +3719,9 @@ export default {
           return err('Bạn đã nộp bài này rồi', 409);
         }
         const nextAttemptNumber = existing ? existing.attempt_number + 1 : 1;
-        if (!assignment.is_active) {
+        // Rewrites (teacher-requested) bypass the closed/deadline gate.
+        const isRewrite = existing?.rewrite_status === 'requested';
+        if (!assignment.is_active && !isRewrite) {
           await safeDeleteOwnedKeys();
           return err('Bài tập đã đóng', 403);
         }

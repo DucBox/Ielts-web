@@ -101,13 +101,13 @@ const api = {
     return data;
   },
 
-  async post(path, data) {
+  async post(path, data, opts = {}) {
     const res = await this._fetchWithTimeout(API_BASE + path, {
       method: 'POST',
       headers: this._authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(data),
       credentials: 'include',
-    });
+    }, opts.timeoutMs);
     if (!res.ok) { this._handle401(res); throw ((await this._readJsonSafe(res)) || { error: 'Request failed' }); }
     this.clearCache();
     return this._readJsonSafe(res);

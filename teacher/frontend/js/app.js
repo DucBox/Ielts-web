@@ -4041,7 +4041,9 @@ function renderAiCriterionCard(icon, title, code, score, criterion) {
 async function requestAiFeedback(btn) {
   btnLoading(btn);
   try {
-    const res = await api.post(`/submissions/${_gradingSubmissionId}/ai-feedback`, {});
+    // AI grading can take well over 30s (backend allows 120s) — give it 150s so
+    // the call isn't aborted client-side before the backend responds.
+    const res = await api.post(`/submissions/${_gradingSubmissionId}/ai-feedback`, {}, { timeoutMs: 150_000 });
     _gradingAiFeedback = res.ai_feedback;
     refreshAiFeedbackDisplay();
     toast('AI đã phân tích xong! ✓');
@@ -7779,8 +7781,10 @@ function removeAudioFile(idx) { removeAudioSlot(idx); }
 function removeAudio(e) { if (e) e.stopPropagation(); removeAudioSlot(0); }
 
 // Direct synchronous call — returns result object. Throws on error.
+// Transcription can take minutes (backend allows up to 5'); use a 5.5' client
+// timeout so the backend's own error surfaces instead of a premature client abort.
 async function transcribeListeningScript({ key, model }) {
-  return await api.post('/questions/transcribe-audio', { key, model });
+  return await api.post('/questions/transcribe-audio', { key, model }, { timeoutMs: 330_000 });
 }
 
 function toggleExplanation(btn) {

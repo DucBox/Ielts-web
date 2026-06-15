@@ -792,6 +792,7 @@ const routes = {
   '/shared-pool/:id':      showSharedPoolDetail,
   '/composite/:id':        showCompositeSubmissions,
   '/inbox':                showInbox,
+  '/graded':               showGraded,
   '/profile-fields':       showProfileFields,
 };
 
@@ -807,6 +808,7 @@ const routeLoadingMessages = {
   '/shared-pool/new':  'Đang mở form tạo đề...',
   '/shared-pool/:id':  'Đang tải đề...',
   '/inbox':            'Đang tải hộp thư...',
+  '/graded':           'Đang tải bài đã chấm...',
   '/profile-fields':   'Đang tải hồ sơ học sinh...',
 };
 
@@ -833,7 +835,10 @@ function router() {
       link.classList.toggle('active',
         (route === 'classes' && hash.startsWith('/class')) ||
         (route === 'questions' && hash.startsWith('/questions')) ||
-        (route === 'shared-pool' && hash.startsWith('/shared-pool'))
+        (route === 'shared-pool' && hash.startsWith('/shared-pool')) ||
+        (route === 'inbox' && hash === '/inbox') ||
+        (route === 'graded' && hash.startsWith('/graded')) ||
+        (route === 'profile-fields' && hash.startsWith('/profile-fields'))
       );
     });
 
@@ -889,28 +894,36 @@ window.addEventListener('hashchange', router);
 let _inboxItems = [];
 let _inboxSortCol = 'submitted_at';
 let _inboxSortDir = 'desc';
-let _inboxTab = 'pending';        // 'pending' | 'graded'
-let _inboxGradedItems = null;     // lazy-loaded on first switch to "Đã chấm"
+let _inboxGradedItems = null;     // loaded when the "Đã chấm" page opens
 let _inboxGradedSortCol = 'submitted_at';
 let _inboxGradedSortDir = 'desc';
 
 async function showInbox() {
   _inboxSortCol = 'submitted_at';
   _inboxSortDir = 'desc';
-  _inboxTab = 'pending';
-  _inboxGradedItems = null;
-  _inboxGradedSortCol = 'submitted_at';
-  _inboxGradedSortDir = 'desc';
   setLoading('Đang tải hộp thư...');
   try {
     const items = await api.get('/inbox');
     _inboxItems = items;
-    renderInbox(items);
+    renderInbox();
     // Update badge in sidebar
     updateInboxBadge(items.length);
   } catch (e) {
     toast('Lỗi tải inbox: ' + (e.error || e.message), 'error');
     renderRouteError('Không tải được hộp thư', e, '/inbox');
+  }
+}
+
+async function showGraded() {
+  _inboxGradedSortCol = 'submitted_at';
+  _inboxGradedSortDir = 'desc';
+  setLoading('Đang tải bài đã chấm...');
+  try {
+    _inboxGradedItems = await api.get('/inbox/graded');
+    renderGraded();
+  } catch (e) {
+    toast('Lỗi tải bài đã chấm: ' + (e.error || e.message), 'error');
+    renderRouteError('Không tải được danh sách đã chấm', e, '/graded');
   }
 }
 
@@ -975,45 +988,16 @@ function openInboxSubmission(submissionKind, submissionId, skill, assignmentId) 
 }
 window.openInboxSubmission = openInboxSubmission;
 
-function renderInbox(items) {
-  if (items) _inboxItems = items;
+function renderInbox() {
+  const isi = col => makeSortIcon(col, _inboxSortCol, _inboxSortDir);
   $('#app').innerHTML = `
     <div class="page-header">
       <div>
-        <div class="page-title">📥 Chấm bài</div>
-        <div class="page-subtitle" id="inbox-subtitle"></div>
+        <div class="page-title">📥 Cần chấm</div>
+        <div class="page-subtitle">${_inboxItems.length} bài Writing/Speaking chưa chấm điểm</div>
       </div>
     </div>
-    <div class="tab-bar">
-      <button class="tab-btn ${_inboxTab === 'pending' ? 'active' : ''}" data-inbox-tab="pending" onclick="switchInboxTab('pending')">
-        Cần chấm${_inboxItems.length ? ` <span class="inbox-tab-count">${_inboxItems.length}</span>` : ''}
-      </button>
-      <button class="tab-btn ${_inboxTab === 'graded' ? 'active' : ''}" data-inbox-tab="graded" onclick="switchInboxTab('graded')">
-        Đã chấm
-      </button>
-    </div>
-    <div id="inbox-content"></div>`;
-  renderInboxContent();
-}
-
-function renderInboxContent() {
-  const sub = document.getElementById('inbox-subtitle');
-  const el = document.getElementById('inbox-content');
-  if (!el) return;
-  if (_inboxTab === 'pending') {
-    if (sub) sub.textContent = `${_inboxItems.length} bài Writing/Speaking chưa chấm điểm`;
-    el.innerHTML = inboxPendingHtml();
-  } else {
-    const n = _inboxGradedItems ? _inboxGradedItems.length : 0;
-    if (sub) sub.textContent = `${n} bài Writing/Speaking đã chấm`;
-    el.innerHTML = inboxGradedHtml();
-  }
-}
-
-function inboxPendingHtml() {
-  const isi = col => makeSortIcon(col, _inboxSortCol, _inboxSortDir);
-  if (_inboxItems.length === 0) return buildInboxRows([]);
-  return `
+    ${_inboxItems.length > 0 ? `
     <div class="table-wrap">
       <table>
         <thead><tr>
@@ -1026,7 +1010,19 @@ function inboxPendingHtml() {
         </tr></thead>
         <tbody id="inbox-list-body">${buildInboxRows(sortedInboxItems())}</tbody>
       </table>
-    </div>`;
+    </div>` : buildInboxRows([])}`;
+}
+
+function renderGraded() {
+  const items = _inboxGradedItems || [];
+  $('#app').innerHTML = `
+    <div class="page-header">
+      <div>
+        <div class="page-title">✅ Đã chấm</div>
+        <div class="page-subtitle">${items.length} bài Writing/Speaking đã chấm</div>
+      </div>
+    </div>
+    ${inboxGradedHtml()}`;
 }
 
 function sortedGradedItems() {
@@ -1117,24 +1113,6 @@ function buildGradedRows(items) {
   }).join('');
 }
 
-async function switchInboxTab(tab) {
-  if (tab === _inboxTab) return;
-  _inboxTab = tab;
-  document.querySelectorAll('.tab-bar .tab-btn[data-inbox-tab]').forEach(b =>
-    b.classList.toggle('active', b.dataset.inboxTab === tab));
-  if (tab === 'graded' && _inboxGradedItems === null) {
-    const el = document.getElementById('inbox-content');
-    if (el) el.innerHTML = `<div style="text-align:center;padding:48px"><div class="spinner"></div></div>`;
-    try {
-      _inboxGradedItems = await api.get('/inbox/graded');
-    } catch (e) {
-      toast('Lỗi tải bài đã chấm: ' + (e.error || e.message), 'error');
-      _inboxGradedItems = [];
-    }
-  }
-  renderInboxContent();
-}
-window.switchInboxTab = switchInboxTab;
 
 function updateInboxBadge(count) {
   const badge = document.getElementById('inbox-badge');

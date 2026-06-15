@@ -4306,15 +4306,6 @@ export default {
             RETURNING *
           `;
           if (!sub) return err('Không tìm thấy bài nộp', 404);
-          // F1a: Reset exam_session timer when teacher grants rewrite — student gets fresh timer
-          // without resetting again on every page refresh (POST /student/exam-session uses no-op UPSERT)
-          if (body.action === 'request_rewrite') {
-            await sql`
-              INSERT INTO exam_sessions (student_id, ref_type, ref_id, started_at)
-              VALUES (${sub.student_id}, 'assignment', ${sub.assignment_id}, NOW())
-              ON CONFLICT (student_id, ref_type, ref_id) DO UPDATE SET started_at = NOW()
-            `.catch(e => console.error('F1: reset exam_session for rewrite failed:', e));
-          }
           // Create score_released notification on first grade of Writing/Speaking
           if (body.overall_score != null && wasUnscored) {
             const [asgn] = await sql`
@@ -4550,11 +4541,38 @@ export default {
         // Verify student has access to this ref
         if (body.ref_type === 'assignment') {
           const [row] = await sql`
-            SELECT a.time_limit_minutes FROM assignments a
+            SELECT a.time_limit_minutes,
+              (SELECT sub.rewrite_status FROM submissions sub
+               WHERE sub.assignment_id = a.id AND sub.student_id = ${studentId}
+               ORDER BY sub.attempt_number DESC LIMIT 1) AS latest_rewrite_status
+            FROM assignments a
             JOIN student_classes sc ON sc.class_id = a.class_id
             WHERE a.id = ${body.ref_id} AND sc.student_id = ${studentId} LIMIT 1
           `;
           if (!row) return err('Không tìm thấy bài tập', 404);
+
+          // F1b: Reset timer when student opens a rewrite AND previous timer has expired.
+          // Timer starts when student OPENS (not when teacher requests rewrite).
+          let resetForRewrite = false;
+          if (row.time_limit_minutes && row.latest_rewrite_status === 'requested') {
+            const [es] = await sql`
+              SELECT started_at FROM exam_sessions
+              WHERE student_id = ${studentId} AND ref_type = 'assignment' AND ref_id = ${body.ref_id}
+            `;
+            if (es) {
+              const elapsedSec = (Date.now() - new Date(es.started_at).getTime()) / 1000;
+              resetForRewrite = elapsedSec > row.time_limit_minutes * 60;
+            }
+          }
+
+          const [sessionRow] = await sql`
+            INSERT INTO exam_sessions (student_id, ref_type, ref_id, started_at)
+            VALUES (${studentId}, ${body.ref_type}, ${body.ref_id}, NOW())
+            ON CONFLICT (student_id, ref_type, ref_id) DO UPDATE
+              SET started_at = CASE WHEN ${resetForRewrite} THEN NOW() ELSE exam_sessions.started_at END
+            RETURNING started_at
+          `;
+          return json({ started_at: sessionRow.started_at });
         } else if (body.ref_type === 'composite_section') {
           const [row] = compositeAssignmentId
             ? await sql`
@@ -4593,8 +4611,7 @@ export default {
           return json({ started_at: session?.started_at || new Date().toISOString() });
         }
 
-        // F1: Always use no-op UPSERT — rewrite timer is reset at teacher grant time (not here),
-        // so subsequent student refreshes preserve the already-set started_at.
+        // shared_pool and legacy composite_section (no assignment_id): no-op UPSERT preserves timer across refreshes.
         const [sessionRow] = await sql`
           INSERT INTO exam_sessions (student_id, ref_type, ref_id, started_at)
           VALUES (${studentId}, ${body.ref_type}, ${body.ref_id}, NOW())

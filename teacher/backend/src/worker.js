@@ -3979,10 +3979,10 @@ export default {
           return json(result[0]);
         }
         if (method === 'DELETE') {
-          const subAudios = await sql`
-            SELECT speaking_audio_url, speaking_audio_urls FROM submissions
-            WHERE assignment_id = ${p.id}
-          `;
+          const [subAudios, compositeAudios] = await Promise.all([
+            sql`SELECT speaking_audio_url, speaking_audio_urls FROM submissions WHERE assignment_id = ${p.id}`,
+            sql`SELECT audio_key FROM composite_section_submissions WHERE assignment_id = ${p.id} AND audio_key IS NOT NULL`,
+          ]);
           await sql`DELETE FROM assignments WHERE id = ${p.id}`;
           for (const sub of subAudios) {
             const entries = Array.isArray(sub.speaking_audio_urls) && sub.speaking_audio_urls.length > 0
@@ -3993,6 +3993,7 @@ export default {
               if (key) await env.R2.delete(key).catch(err => console.error('R2 speaking cleanup failed:', err));
             }
           }
+          await deleteCompositeSectionAudio(env, compositeAudios);
           return json({ ok: true });
         }
       }

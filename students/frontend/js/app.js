@@ -947,17 +947,9 @@ async function autoSubmitAssignment(ctx) {
   const { assignmentId, skill, qCount } = ctx || {};
   if (!assignmentId) return;
   freezeExamInputs();
+  toast('⏰ Hết giờ! Đang tự động nộp bài...', 'warning');
   const btn = document.getElementById('submit-btn');
 
-  if (skill === 'speaking') {
-    const doneSlots = _speakingSlots.filter(s => s.status === 'done');
-    if (doneSlots.length === 0) {
-      toast('⏰ Hết giờ — không có file thu âm để nộp. Liên hệ giáo viên.', 'warning');
-      return;
-    }
-  }
-
-  toast('⏰ Hết giờ! Đang tự động nộp bài...', 'warning');
   if (skill === 'reading' || skill === 'listening') {
     await submitAnswers(assignmentId, qCount, skill, btn, true);
   } else if (skill === 'writing') {

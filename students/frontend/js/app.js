@@ -3954,7 +3954,6 @@ function renderAssignments(assignments) {
       : (!a.submission_id && a.is_active);
     const href = isComposite
       ? `#/composite/${a.id}`
-      : needsRewriteCard ? `#/assignment/${a.id}`
       : (isDone ? `#/result/${a.id}` : `#/assignment/${a.id}`);
 
     const cardClass = needsRewriteCard ? 'rewrite' : isPendingCard ? 'pending-card' : isDone ? 'done' : '';

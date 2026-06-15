@@ -889,10 +889,14 @@ window.addEventListener('hashchange', router);
 let _inboxItems = [];
 let _inboxSortCol = 'submitted_at';
 let _inboxSortDir = 'desc';
+let _inboxTab = 'pending';        // 'pending' | 'graded'
+let _inboxGradedItems = null;     // lazy-loaded on first switch to "Đã chấm"
 
 async function showInbox() {
   _inboxSortCol = 'submitted_at';
   _inboxSortDir = 'desc';
+  _inboxTab = 'pending';
+  _inboxGradedItems = null;
   setLoading('Đang tải hộp thư...');
   try {
     const items = await api.get('/inbox');
@@ -968,17 +972,44 @@ function openInboxSubmission(submissionKind, submissionId, skill, assignmentId) 
 window.openInboxSubmission = openInboxSubmission;
 
 function renderInbox(items) {
-  _inboxItems = items;
-  const isi = col => makeSortIcon(col, _inboxSortCol, _inboxSortDir);
-
+  if (items) _inboxItems = items;
   $('#app').innerHTML = `
     <div class="page-header">
       <div>
-        <div class="page-title">📥 Hộp thư cần chấm</div>
-        <div class="page-subtitle">${items.length} bài Writing/Speaking chưa chấm điểm</div>
+        <div class="page-title">📥 Chấm bài</div>
+        <div class="page-subtitle" id="inbox-subtitle"></div>
       </div>
     </div>
-    ${items.length > 0 ? `
+    <div class="tab-bar">
+      <button class="tab-btn ${_inboxTab === 'pending' ? 'active' : ''}" data-inbox-tab="pending" onclick="switchInboxTab('pending')">
+        Cần chấm${_inboxItems.length ? ` <span class="inbox-tab-count">${_inboxItems.length}</span>` : ''}
+      </button>
+      <button class="tab-btn ${_inboxTab === 'graded' ? 'active' : ''}" data-inbox-tab="graded" onclick="switchInboxTab('graded')">
+        Đã chấm
+      </button>
+    </div>
+    <div id="inbox-content"></div>`;
+  renderInboxContent();
+}
+
+function renderInboxContent() {
+  const sub = document.getElementById('inbox-subtitle');
+  const el = document.getElementById('inbox-content');
+  if (!el) return;
+  if (_inboxTab === 'pending') {
+    if (sub) sub.textContent = `${_inboxItems.length} bài Writing/Speaking chưa chấm điểm`;
+    el.innerHTML = inboxPendingHtml();
+  } else {
+    const n = _inboxGradedItems ? _inboxGradedItems.length : 0;
+    if (sub) sub.textContent = `${n} bài Writing/Speaking đã chấm`;
+    el.innerHTML = inboxGradedHtml();
+  }
+}
+
+function inboxPendingHtml() {
+  const isi = col => makeSortIcon(col, _inboxSortCol, _inboxSortDir);
+  if (_inboxItems.length === 0) return buildInboxRows([]);
+  return `
     <div class="table-wrap">
       <table>
         <thead><tr>
@@ -991,8 +1022,72 @@ function renderInbox(items) {
         </tr></thead>
         <tbody id="inbox-list-body">${buildInboxRows(sortedInboxItems())}</tbody>
       </table>
-    </div>` : buildInboxRows([])}`;
+    </div>`;
 }
+
+function inboxGradedHtml() {
+  const items = _inboxGradedItems || [];
+  if (items.length === 0) {
+    return `<div class="empty-state-v2">
+      <span class="empty-illu">📭</span>
+      <div class="empty-title">Chưa có bài nào đã chấm</div>
+      <div class="empty-desc">Các bài Writing/Speaking đã chấm điểm sẽ hiển thị ở đây.</div>
+    </div>`;
+  }
+  return `
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>Kỹ năng</th>
+          <th>Học sinh</th>
+          <th>Bài tập</th>
+          <th>Lớp</th>
+          <th>Thời gian nộp</th>
+          <th>Điểm</th>
+          <th></th>
+        </tr></thead>
+        <tbody>${buildGradedRows(items)}</tbody>
+      </table>
+    </div>`;
+}
+
+function buildGradedRows(items) {
+  return items.map(it => `
+    <tr>
+      <td>${skillBadge(it.skill)}</td>
+      <td><strong>${escapeHtml(it.student_name)}</strong></td>
+      <td>
+        ${escapeHtml(it.assignment_title)}
+        ${(it.attempt_number || 1) > 1 ? `<span class="inbox-rewrite-badge">BÀI VIẾT LẠI · Lần ${it.attempt_number}</span>` : ''}
+      </td>
+      <td><span class="inbox-class">${escapeHtml(it.class_name)}</span></td>
+      <td style="font-size:12px;color:var(--text-muted)">${formatDateTime(it.submitted_at)}</td>
+      <td><span class="inbox-score-pill">${it.overall_score != null ? Number(it.overall_score).toFixed(1) : '—'}</span></td>
+      <td>
+        <button class="btn btn-sm btn-outline"
+          onclick="openInboxSubmission('${it.submission_kind || 'assignment'}','${it.submission_id}','${it.skill}','${it.assignment_id || ''}')">👁 Xem lại</button>
+      </td>
+    </tr>`).join('');
+}
+
+async function switchInboxTab(tab) {
+  if (tab === _inboxTab) return;
+  _inboxTab = tab;
+  document.querySelectorAll('.tab-bar .tab-btn[data-inbox-tab]').forEach(b =>
+    b.classList.toggle('active', b.dataset.inboxTab === tab));
+  if (tab === 'graded' && _inboxGradedItems === null) {
+    const el = document.getElementById('inbox-content');
+    if (el) el.innerHTML = `<div style="text-align:center;padding:48px"><div class="spinner"></div></div>`;
+    try {
+      _inboxGradedItems = await api.get('/inbox/graded');
+    } catch (e) {
+      toast('Lỗi tải bài đã chấm: ' + (e.error || e.message), 'error');
+      _inboxGradedItems = [];
+    }
+  }
+  renderInboxContent();
+}
+window.switchInboxTab = switchInboxTab;
 
 function updateInboxBadge(count) {
   const badge = document.getElementById('inbox-badge');

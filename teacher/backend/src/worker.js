@@ -4334,6 +4334,62 @@ export default {
         return json(rows);
       }
 
+      // ── Inbox: already-graded Writing/Speaking submissions ─────────────────
+      if (path === '/inbox/graded' && method === 'GET') {
+        if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
+        const teacherId = await getTeacherId(sql);
+        const [standardRows, compositeRows] = await Promise.all([
+          sql`
+            SELECT sub.id AS submission_id, sub.submitted_at, sub.overall_score, sub.status,
+              sub.teacher_feedback IS NOT NULL AS has_teacher_feedback,
+              sub.attempt_number, sub.rewrite_status,
+              st.full_name AS student_name,
+              a.id AS assignment_id, a.title AS assignment_title,
+              q.skill, c.class_name, c.id AS class_id
+            FROM submissions sub
+            JOIN assignments a ON a.id = sub.assignment_id
+            JOIN question_pool q ON q.id = a.question_id
+            JOIN classes c ON c.id = a.class_id
+            JOIN students st ON st.id = sub.student_id
+            WHERE c.teacher_id = ${teacherId}
+              AND q.skill IN ('writing', 'speaking')
+              AND sub.overall_score IS NOT NULL
+            ORDER BY sub.submitted_at DESC
+            LIMIT 200
+          `,
+          sql`
+            SELECT
+              css.id AS submission_id,
+              css.submitted_at,
+              css.score AS overall_score,
+              'submitted'::text AS status,
+              css.feedback IS NOT NULL AS has_teacher_feedback,
+              st.full_name AS student_name,
+              a.id AS assignment_id,
+              (a.title || ' · ' || cqs.label) AS assignment_title,
+              cqs.skill,
+              c.class_name,
+              c.id AS class_id
+            FROM composite_section_submissions css
+            JOIN composite_question_sections cqs ON cqs.id = css.section_id
+            JOIN assignments a ON a.id = css.assignment_id
+            JOIN classes c ON c.id = a.class_id
+            JOIN students st ON st.id = css.student_id
+            WHERE c.teacher_id = ${teacherId}
+              AND cqs.skill IN ('writing', 'speaking')
+              AND css.score IS NOT NULL
+            ORDER BY css.submitted_at DESC
+            LIMIT 200
+          `,
+        ]);
+        const rows = [
+          ...standardRows.map(row => ({ ...row, submission_kind: 'assignment' })),
+          ...compositeRows.map(row => ({ ...row, submission_kind: 'composite_section' })),
+        ]
+          .sort((a, b) => new Date(b.submitted_at) - new Date(a.submitted_at));
+        return json(rows);
+      }
+
       // ── Student Assignments ────────────────────────────────────────────────
 
       if (path === '/student/assignments' && method === 'GET') {

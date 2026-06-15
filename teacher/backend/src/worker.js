@@ -2813,7 +2813,7 @@ export default {
 
         const password = generateStudentPassword();
         const passwordHash = await hashPassword(password);
-        await sql`UPDATE students SET password_hash = ${passwordHash} WHERE id = ${p.id}`;
+        await sql`UPDATE students SET password_hash = ${passwordHash}, token_version = token_version + 1 WHERE id = ${p.id}`;
         return json({
           student,
           credentials: {
@@ -4239,8 +4239,10 @@ export default {
           `;
           if (body.overall_score != null) {
             const s = Number(body.overall_score);
-            if (!isFinite(s) || s < 0 || s > 9) return err('Score không hợp lệ (0–9)', 400);
-            if ((prev?.scoring_scale ?? 'ielts') === 'ielts' && (s * 2) % 1 !== 0)
+            const isIelts = (prev?.scoring_scale ?? 'ielts') === 'ielts';
+            const maxScore = isIelts ? 9 : 10;
+            if (!isFinite(s) || s < 0 || s > maxScore) return err(`Score không hợp lệ (0–${maxScore})`, 400);
+            if (isIelts && (s * 2) % 1 !== 0)
               return err('Thang IELTS chỉ chấp nhận bước 0.5 (0, 0.5, 1.0, … 9.0)', 400);
           }
           const wasUnscored = prev && prev.overall_score == null;
@@ -4279,6 +4281,7 @@ export default {
                 await sql`
                   INSERT INTO notifications (student_id, type, ref_id, metadata)
                   VALUES (${updatedComposite.student_id}, 'score_released', ${asgn.assignment_id}, ${meta}::jsonb)
+                  ON CONFLICT DO NOTHING
                 `;
                 await queueStudentEmailEvent(sql, {
                   studentId: updatedComposite.student_id,
@@ -4293,15 +4296,17 @@ export default {
             }
             return json(updatedComposite);
           }
-          // "Hoàn thành" (complete) finalizes the grade and clears any pending
-          // rewrite request → the submission moves back to "Đã làm". Only
-          // "Yêu cầu viết lại" sets 'requested'.
-          const newRewriteStatus = body.action === 'request_rewrite' ? 'requested' : null;
+          // "Hoàn thành" clears any pending rewrite → "Đã làm". "Yêu cầu viết lại" sets 'requested'.
+          // CASE WHEN prevents accidentally clearing 'rewritten' on old attempts if action is absent.
           const [sub] = await sql`
             UPDATE submissions
             SET teacher_feedback = ${body.teacher_feedback != null ? JSON.stringify(body.teacher_feedback) : null}::jsonb,
                 overall_score    = COALESCE(${body.overall_score ?? null}, overall_score),
-                rewrite_status   = ${newRewriteStatus}
+                rewrite_status   = CASE
+                  WHEN ${body.action ?? ''} = 'request_rewrite' THEN 'requested'
+                  WHEN ${body.action ?? ''} = 'complete'        THEN NULL
+                  ELSE rewrite_status
+                END
             WHERE id = ${p.id}
             RETURNING *
           `;
@@ -4320,6 +4325,7 @@ export default {
               await sql`
                 INSERT INTO notifications (student_id, type, ref_id, metadata)
                 VALUES (${sub.student_id}, 'score_released', ${asgn.assignment_id}, ${meta}::jsonb)
+                ON CONFLICT DO NOTHING
               `;
               await queueStudentEmailEvent(sql, {
                 studentId: sub.student_id,
@@ -4600,6 +4606,28 @@ export default {
         } else {
           const [row] = await sql`SELECT id, time_limit_minutes FROM shared_pool WHERE id = ${body.ref_id}`;
           if (!row) return err('Không tìm thấy đề', 404);
+
+          // Reset shared_pool timer if previous attempt's timer has fully expired —
+          // allows a fresh window for each new real_test attempt.
+          let resetShared = false;
+          if (row.time_limit_minutes) {
+            const [es] = await sql`
+              SELECT started_at FROM exam_sessions
+              WHERE student_id = ${studentId} AND ref_type = 'shared_pool' AND ref_id = ${body.ref_id}
+            `;
+            if (es) {
+              const elapsedSec = (Date.now() - new Date(es.started_at).getTime()) / 1000;
+              resetShared = elapsedSec > row.time_limit_minutes * 60;
+            }
+          }
+          const [sessionRow] = await sql`
+            INSERT INTO exam_sessions (student_id, ref_type, ref_id, started_at)
+            VALUES (${studentId}, 'shared_pool', ${body.ref_id}, NOW())
+            ON CONFLICT (student_id, ref_type, ref_id) DO UPDATE
+              SET started_at = CASE WHEN ${resetShared} THEN NOW() ELSE exam_sessions.started_at END
+            RETURNING started_at
+          `;
+          return json({ started_at: sessionRow.started_at });
         }
 
         if (body.ref_type === 'composite_section' && compositeAssignmentId) {
@@ -4611,7 +4639,7 @@ export default {
           return json({ started_at: session?.started_at || new Date().toISOString() });
         }
 
-        // shared_pool and legacy composite_section (no assignment_id): no-op UPSERT preserves timer across refreshes.
+        // Legacy composite_section (no assignment_id): no-op UPSERT preserves timer across refreshes.
         const [sessionRow] = await sql`
           INSERT INTO exam_sessions (student_id, ref_type, ref_id, started_at)
           VALUES (${studentId}, ${body.ref_type}, ${body.ref_id}, NOW())

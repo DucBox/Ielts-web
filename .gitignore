@@ -23,8 +23,10 @@ package-lock.json
 playwright-report/
 test-results/
 
-# Responsive audit artifacts (temporary)
+# Audit artifacts (temporary) — responsive + contrast/dark-mode
 audit-shots/
+audit2-shots/
+audit*-shots/
 tests/_*.js
 
 # OS

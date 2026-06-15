@@ -1271,9 +1271,27 @@ async function claimNextStudentEmailEvent(sql, { ownerId, delayMs = 2000, leaseM
         AND e.attempt_count < 2
         AND (
           e.event_type != ${EMAIL_EVENT_TYPES.DEADLINE_1DAY}
-          OR EXISTS (
-            SELECT 1 FROM assignments a
-            WHERE a.id = e.assignment_id AND a.deadline > NOW()
+          OR (
+            -- Re-check at SEND time: deadline still in the future AND the student
+            -- has not finished the assignment. The enqueue-time filter can be stale
+            -- if the student submits between enqueue and send (different cron ticks).
+            EXISTS (
+              SELECT 1 FROM assignments a
+              WHERE a.id = e.assignment_id AND a.deadline > NOW()
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM submissions sub
+              WHERE sub.assignment_id = e.assignment_id AND sub.student_id = e.student_id
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM assignments a2
+              JOIN question_pool q2 ON q2.id = a2.question_id AND q2.skill = 'composite'
+              WHERE a2.id = e.assignment_id
+                AND (SELECT COUNT(*) FROM composite_question_sections cqs WHERE cqs.composite_id = a2.question_id) > 0
+                AND (SELECT COUNT(DISTINCT css.section_id) FROM composite_section_submissions css
+                       WHERE css.assignment_id = e.assignment_id AND css.student_id = e.student_id)
+                    >= (SELECT COUNT(*) FROM composite_question_sections cqs WHERE cqs.composite_id = a2.question_id)
+            )
           )
         )
       ORDER BY

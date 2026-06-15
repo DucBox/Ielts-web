@@ -992,7 +992,15 @@ function navigate(hash) {
   window.location.hash = hash;
 }
 
+// Navigation token: bumped on every route dispatch. An async route handler
+// captures the current token at start (routeToken()) and skips its render if the
+// user has navigated elsewhere by the time it resolves (routeChanged()).
+let _navSeq = 0;
+function routeToken() { return _navSeq; }
+function routeChanged(token) { return token !== _navSeq; }
+
 function router() {
+  _navSeq++;
   stopQuestionDraftAutosave();
   stopSpDraftAutosave();
   document.getElementById('preview-sticky-float')?.classList.remove('is-visible');
@@ -1093,13 +1101,16 @@ async function showInbox() {
   _inboxSortCol = 'submitted_at';
   _inboxSortDir = 'desc';
   setLoading('Đang tải hộp thư...');
+  const _t = routeToken();
   try {
     const items = await api.get('/inbox');
+    if (routeChanged(_t)) return;
     _inboxItems = items;
     renderInbox();
     // Update badge in sidebar
     updateInboxBadge(items.length);
   } catch (e) {
+    if (routeChanged(_t)) return;
     toast('Lỗi tải inbox: ' + (e.error || e.message), 'error');
     renderRouteError('Không tải được hộp thư', e, '/inbox');
   }
@@ -1110,10 +1121,14 @@ async function showGraded() {
   _inboxGradedSortDir = 'desc';
   _gradedShowHidden = false;
   setLoading('Đang tải bài đã chấm...');
+  const _t = routeToken();
   try {
-    _inboxGradedItems = await api.get('/inbox/graded');
+    const graded = await api.get('/inbox/graded');
+    if (routeChanged(_t)) return;
+    _inboxGradedItems = graded;
     renderGraded();
   } catch (e) {
+    if (routeChanged(_t)) return;
     toast('Lỗi tải bài đã chấm: ' + (e.error || e.message), 'error');
     renderRouteError('Không tải được danh sách đã chấm', e, '/graded');
   }
@@ -1336,10 +1351,13 @@ async function refreshInboxBadge() {
 
 async function showClasses() {
   setLoading('Đang tải danh sách lớp...');
+  const _t = routeToken();
   try {
     const classes = await api.get('/classes');
+    if (routeChanged(_t)) return;
     renderClasses(classes);
   } catch (e) {
+    if (routeChanged(_t)) return;
     toast('Lỗi tải danh sách lớp: ' + (e.error || e.message), 'error');
     renderRouteError('Không tải được danh sách lớp', e, '/classes');
   }
@@ -1487,11 +1505,13 @@ async function submitCreateClass(btn) {
 
 async function showClassDetail({ id }) {
   setLoading('Đang tải thông tin lớp...');
+  const _t = routeToken();
   try {
     const [cls, students] = await Promise.all([
       api.get(`/classes/${id}`),
       api.get(`/classes/${id}/students`),
     ]);
+    if (routeChanged(_t)) return;
     _cachedCls = cls;
     _cachedStudents = students;
     _classDetailTab = 'assignments';
@@ -1511,6 +1531,7 @@ async function showClassDetail({ id }) {
     destroyStatsCharts();
     renderClassDetail(cls, students);
   } catch (e) {
+    if (routeChanged(_t)) return;
     toast('Lỗi tải lớp: ' + (e.error || e.message), 'error');
     renderRouteError('Không tải được thông tin lớp', e, `/class/${id}`);
   }
@@ -2936,10 +2957,13 @@ async function showAssignmentSubmissions({ id }) {
   _submissionsSortCol = '';
   _submissionsSortDir = 'desc';
   setLoading('Đang tải danh sách bài nộp...');
+  const _t = routeToken();
   try {
     const { assignment, students } = await api.get(`/assignments/${id}/submissions`);
+    if (routeChanged(_t)) return;
     renderAssignmentSubmissions(assignment, students);
   } catch (e) {
+    if (routeChanged(_t)) return;
     toast('Lỗi tải dữ liệu: ' + (e.error || e.message), 'error');
     renderRouteError('Không tải được danh sách bài nộp', e, `/assignment/${id}`);
   }
@@ -3408,11 +3432,14 @@ function unbindGradingShortcuts() {
 
 async function showGradingPage({ id }) {
   setLoading('Đang tải bài làm...');
+  const _t = routeToken();
   try {
     const sub = await api.get(`/submissions/${id}`);
+    if (routeChanged(_t)) return;
     renderGradingPage(sub);
     bindGradingShortcuts();
   } catch (e) {
+    if (routeChanged(_t)) return;
     toast('Lỗi: ' + (e.error || e.message), 'error');
     renderRouteError('Không tải được bài làm', e, `/grading/${id}`);
   }
@@ -4381,13 +4408,18 @@ async function showQuestions() {
   _questionSortCol = '';
   _questionSortDir = 'asc';
   setLoading('Đang tải kho đề...');
+  const _t = routeToken();
   try {
-    [_allQuestions, _allFolders] = await Promise.all([
+    const [questions, folders] = await Promise.all([
       api.get('/questions'),
       api.get('/question-folders'),
     ]);
+    if (routeChanged(_t)) return;
+    _allQuestions = questions;
+    _allFolders = folders;
     renderQuestions();
   } catch (e) {
+    if (routeChanged(_t)) return;
     toast('Lỗi tải kho đề: ' + (e.error || e.message), 'error');
     renderRouteError('Không tải được kho đề', e, '/questions');
   }
@@ -6577,10 +6609,13 @@ async function handleComposerPaste(e) {
 
 async function showQuestionDetail({ id }) {
   setLoading('Đang tải đề...');
+  const _t = routeToken();
   try {
     const q = await api.get(`/questions/${id}`);
+    if (routeChanged(_t)) return;
     renderQuestionDetail(q);
   } catch (e) {
+    if (routeChanged(_t)) return;
     toast('Lỗi tải đề: ' + (e.error || e.message), 'error');
     renderRouteError('Không tải được đề', e, `/questions/${id}`);
   }
@@ -8017,10 +8052,13 @@ async function removeStudentFromClass(studentId, classId, btn) {
 
 async function showProfileFields() {
   setLoading('Đang tải...');
+  const _t = routeToken();
   try {
     const fields = await api.get('/profile-fields');
+    if (routeChanged(_t)) return;
     renderProfileFieldsPage(fields);
   } catch (e) {
+    if (routeChanged(_t)) return;
     toast('Lỗi: ' + (e.error || e.message), 'error');
     renderRouteError('Không tải được hồ sơ học sinh', e, '/profile-fields');
   }
@@ -8728,12 +8766,17 @@ let _sharedSearch = '';
 let _sharedSkillFilter = '';
 
 async function showSharedPool() {
+  const _t = routeToken();
+  let questions;
   try {
-    _sharedQuestions = await api.get('/shared-pool');
+    questions = await api.get('/shared-pool');
   } catch (e) {
+    if (routeChanged(_t)) return;
     renderRouteError('Không tải được kho đề luyện tập', e, '/shared-pool');
     return;
   }
+  if (routeChanged(_t)) return;
+  _sharedQuestions = questions;
   renderSharedPool();
 }
 
@@ -9097,10 +9140,13 @@ async function showSharedPoolForm() {
 }
 
 async function showSharedPoolDetail({ id }) {
+  const _t = routeToken();
   let q;
   try { q = await api.get(`/shared-pool/${id}`); } catch (e) {
+    if (routeChanged(_t)) return;
     renderRouteError('Không tải được đề', e, '/shared-pool'); return;
   }
+  if (routeChanged(_t)) return;
   _sharedEditingId = id;
   _vocabItems = Array.isArray(q.vocabulary) ? [...q.vocabulary] : [];
   _contentBlocks = Array.isArray(q.content_blocks) && q.content_blocks.length
@@ -9117,6 +9163,7 @@ async function showSharedPoolDetail({ id }) {
   // Load and show stats dashboard below form
   try {
     const stats = await api.get(`/shared-pool/${id}/stats`);
+    if (routeChanged(_t)) return;
     renderSharedPoolStats(stats, id);
   } catch (_) {}
 }
@@ -9538,10 +9585,13 @@ window.onCQSkillChange = onCQSkillChange;
 
 async function showCompositeSubmissions({ id }) {
   setLoading('Đang tải đề tổng hợp...');
+  const _t = routeToken();
   try {
     const data = await api.get(`/assignments/${id}/composite-submissions`);
+    if (routeChanged(_t)) return;
     renderCompositeSubmissions(data);
   } catch (e) {
+    if (routeChanged(_t)) return;
     renderRouteError('Không tải được dữ liệu', e, '/classes');
   }
 }

@@ -2890,11 +2890,17 @@ async function saveDeadline(id, btn) {
   const raw = $('#new-deadline-input')?.value;
   if (!raw) { toast('Vui lòng chọn thời gian', 'error'); return; }
   const deadline = new Date(raw).toISOString();
+  // If the new deadline is in the future, reopen the assignment so students can
+  // submit again — otherwise an auto-closed assignment stays closed despite the
+  // extended deadline (toggle would remain off).
+  const isFuture = new Date(deadline).getTime() > Date.now();
+  const wasClosed = _cachedCls?.assignments?.find(a => a.id === id)?.is_active === false;
+  const reopened = isFuture && wasClosed;
   btnLoading(btn);
   try {
-    await api.patch(`/assignments/${id}`, { deadline });
+    await api.patch(`/assignments/${id}`, reopened ? { deadline, is_active: true } : { deadline });
     closeModal();
-    toast('Đã cập nhật hạn nộp');
+    toast(reopened ? 'Đã cập nhật hạn nộp và mở lại bài tập' : 'Đã cập nhật hạn nộp');
     if (_cachedCls?.id) await showClassDetail({ id: _cachedCls.id });
   } catch (e) {
     toast('Lỗi: ' + (e.error || e.message), 'error');

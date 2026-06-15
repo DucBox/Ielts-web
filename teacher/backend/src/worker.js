@@ -1667,12 +1667,21 @@ async function enqueueDeadline1DayEmails(sql) {
     FROM assignments a
     JOIN student_classes sc ON sc.class_id = a.class_id
     JOIN students s ON s.id = sc.student_id
-    LEFT JOIN submissions sub ON sub.assignment_id = a.id AND sub.student_id = sc.student_id
     WHERE a.is_active = true
       AND a.deadline IS NOT NULL
       AND a.deadline > NOW()
       AND a.deadline <= NOW() + INTERVAL '24 hours'
-      AND sub.id IS NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM submissions sub
+        WHERE sub.assignment_id = a.id AND sub.student_id = sc.student_id
+      )
+      AND NOT (
+        EXISTS (SELECT 1 FROM question_pool q WHERE q.id = a.question_id AND q.skill = 'composite')
+        AND (SELECT COUNT(*) FROM composite_question_sections cqs WHERE cqs.composite_id = a.question_id) > 0
+        AND (SELECT COUNT(DISTINCT css.section_id) FROM composite_section_submissions css
+               WHERE css.assignment_id = a.id AND css.student_id = sc.student_id)
+            >= (SELECT COUNT(*) FROM composite_question_sections cqs WHERE cqs.composite_id = a.question_id)
+      )
   `;
   const grouped = new Map();
   for (const row of rows) {
@@ -2021,12 +2030,21 @@ async function createDeadlineReminders(sql) {
     FROM assignments a
     JOIN question_pool q ON q.id = a.question_id
     JOIN student_classes sc ON sc.class_id = a.class_id
-    LEFT JOIN submissions sub ON sub.assignment_id = a.id AND sub.student_id = sc.student_id
     WHERE a.is_active = true
       AND a.deadline IS NOT NULL
-      AND sub.id IS NULL
       AND a.deadline > NOW()
       AND a.deadline <= NOW() + INTERVAL '3 days'
+      AND NOT EXISTS (
+        SELECT 1 FROM submissions sub
+        WHERE sub.assignment_id = a.id AND sub.student_id = sc.student_id
+      )
+      AND NOT (
+        q.skill = 'composite'
+        AND (SELECT COUNT(*) FROM composite_question_sections cqs WHERE cqs.composite_id = a.question_id) > 0
+        AND (SELECT COUNT(DISTINCT css.section_id) FROM composite_section_submissions css
+               WHERE css.assignment_id = a.id AND css.student_id = sc.student_id)
+            >= (SELECT COUNT(*) FROM composite_question_sections cqs WHERE cqs.composite_id = a.question_id)
+      )
   `;
   if (approaching.length === 0) return;
   const studentIds = approaching.map(r => r.student_id);
@@ -5296,6 +5314,13 @@ export default {
                   SELECT 1 FROM submissions sub
                   WHERE sub.assignment_id = a.id AND sub.student_id = ${studentId}::uuid
                 )
+                AND NOT (
+                  EXISTS (SELECT 1 FROM question_pool q WHERE q.id = a.question_id AND q.skill = 'composite')
+                  AND (SELECT COUNT(*) FROM composite_question_sections cqs WHERE cqs.composite_id = a.question_id) > 0
+                  AND (SELECT COUNT(DISTINCT css.section_id) FROM composite_section_submissions css
+                         WHERE css.assignment_id = a.id AND css.student_id = ${studentId}::uuid)
+                      >= (SELECT COUNT(*) FROM composite_question_sections cqs WHERE cqs.composite_id = a.question_id)
+                )
               )
             )
         `;
@@ -5325,9 +5350,18 @@ export default {
                 AND a.is_active = true
                 AND (
                   n.is_read = true
-                  OR NOT EXISTS (
-                    SELECT 1 FROM submissions sub
-                    WHERE sub.assignment_id = a.id AND sub.student_id = ${studentId}::uuid
+                  OR (
+                    NOT EXISTS (
+                      SELECT 1 FROM submissions sub
+                      WHERE sub.assignment_id = a.id AND sub.student_id = ${studentId}::uuid
+                    )
+                    AND NOT (
+                      EXISTS (SELECT 1 FROM question_pool q WHERE q.id = a.question_id AND q.skill = 'composite')
+                      AND (SELECT COUNT(*) FROM composite_question_sections cqs WHERE cqs.composite_id = a.question_id) > 0
+                      AND (SELECT COUNT(DISTINCT css.section_id) FROM composite_section_submissions css
+                             WHERE css.assignment_id = a.id AND css.student_id = ${studentId}::uuid)
+                          >= (SELECT COUNT(*) FROM composite_question_sections cqs WHERE cqs.composite_id = a.question_id)
+                    )
                   )
                 )
               )
@@ -5574,6 +5608,25 @@ export default {
             )
             RETURNING *
           `;
+          // If every section is now submitted, the composite is complete — mark its
+          // assignment reminders as read (mirrors the non-composite submit path).
+          const [completion] = await sql`
+            SELECT (
+              (SELECT COUNT(DISTINCT css.section_id) FROM composite_section_submissions css
+                 WHERE css.assignment_id = ${assignmentId}::uuid AND css.student_id = ${studentId}::uuid)
+              >= (SELECT COUNT(*) FROM composite_question_sections cqs
+                    WHERE cqs.composite_id = (SELECT question_id FROM assignments WHERE id = ${assignmentId}::uuid))
+            ) AS done
+          `;
+          if (completion?.done) {
+            await sql`
+              UPDATE notifications SET is_read = true, read_at = NOW()
+              WHERE student_id = ${studentId}::uuid
+                AND ref_id = ${assignmentId}::uuid
+                AND type IN ('new_assignment', 'deadline_reminder')
+                AND is_read = false
+            `;
+          }
           return json(submission, 201);
         } catch (dbErr) {
           const isDuplicate = dbErr?.code === '23505' || dbErr?.message?.includes('unique') || dbErr?.message?.includes('duplicate');

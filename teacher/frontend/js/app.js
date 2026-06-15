@@ -6671,14 +6671,18 @@ function renderQuestionDetail(q) {
     _audioFiles = _audioSlots;
     skillSection = `
       <div class="form-group">
-        <label class="form-label">File audio</label>
+        <label class="form-label">File Audio <span style="color:var(--danger)">*</span></label>
         ${audioUploadHtml()}
         <div class="form-hint">Bấm “Đổi file” để thay, “×” để xoá bớt, “+ Thêm file audio” để thêm. Đề Listening cần ít nhất 1 file audio.</div>
       </div>
       <div class="form-group" id="script-section">
         <label class="form-label">Script Listening
-          <span style="font-size:12px;font-weight:400;color:var(--gray-400)"> — có thể chỉnh sửa</span>
+          <span style="font-size:12px;font-weight:400;color:var(--gray-400)"> — tự động trích xuất sau khi upload audio, có thể chỉnh sửa</span>
         </label>
+        ${sttSelectorHtml()}
+        <div id="script-loading" class="script-loading hidden">
+          <span class="btn-spinner btn-spinner--dark"></span> <span id="script-loading-msg">Đang trích xuất script...</span>
+        </div>
         <textarea id="listening-script" class="form-textarea listening-script-editor" rows="8"
           placeholder="Script listening...">${escapeHtml(q.script || '')}</textarea>
         ${speakerRenameSectionHtml()}

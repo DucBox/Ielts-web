@@ -1435,14 +1435,18 @@ const API_BASE="https://ielts-teacher-api.quangducngo0811.workers.dev",API_CACHE
       ${answerGridHtml()}
       ${vocabSectionHtml()}`;else if(t.skill==="listening"){const s=Array.isArray(t.content_urls)&&t.content_urls.length>0?t.content_urls:t.content_url?[{url:t.content_url,name:"",key:null}]:[];_audioSlots=s.length>0?s.map(o=>({..._newAudioSlot(),displayName:o.name||"",name:o.filename||o.name||"audio",url:o.url||null,key:o.key||null,status:"done",transcript:null})):[_newAudioSlot()],_audioFiles=_audioSlots,e=`
       <div class="form-group">
-        <label class="form-label">File audio</label>
+        <label class="form-label">File Audio <span style="color:var(--danger)">*</span></label>
         ${audioUploadHtml()}
         <div class="form-hint">B\u1EA5m \u201C\u0110\u1ED5i file\u201D \u0111\u1EC3 thay, \u201C\xD7\u201D \u0111\u1EC3 xo\xE1 b\u1EDBt, \u201C+ Th\xEAm file audio\u201D \u0111\u1EC3 th\xEAm. \u0110\u1EC1 Listening c\u1EA7n \xEDt nh\u1EA5t 1 file audio.</div>
       </div>
       <div class="form-group" id="script-section">
         <label class="form-label">Script Listening
-          <span style="font-size:12px;font-weight:400;color:var(--gray-400)"> \u2014 c\xF3 th\u1EC3 ch\u1EC9nh s\u1EEDa</span>
+          <span style="font-size:12px;font-weight:400;color:var(--gray-400)"> \u2014 t\u1EF1 \u0111\u1ED9ng tr\xEDch xu\u1EA5t sau khi upload audio, c\xF3 th\u1EC3 ch\u1EC9nh s\u1EEDa</span>
         </label>
+        ${sttSelectorHtml()}
+        <div id="script-loading" class="script-loading hidden">
+          <span class="btn-spinner btn-spinner--dark"></span> <span id="script-loading-msg">\u0110ang tr\xEDch xu\u1EA5t script...</span>
+        </div>
         <textarea id="listening-script" class="form-textarea listening-script-editor" rows="8"
           placeholder="Script listening...">${escapeHtml(t.script||"")}</textarea>
         ${speakerRenameSectionHtml()}

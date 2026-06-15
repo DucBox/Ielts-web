@@ -152,6 +152,8 @@ function renderRouteError(title, error, retryHash = window.location.hash.slice(1
   if (retryHash) window._lastFailedRoute = retryHash;
 }
 
+const SORTABLE_TH_ATTRS = 'class="sortable" role="button" tabindex="0"';
+
 const QUESTION_DRAFT_PREFIX = 'ielts_teacher_question_draft:';
 const QUESTION_DRAFT_TTL_MS = 15 * 60 * 1000;
 const QUESTION_DRAFT_SAVE_INTERVAL_MS = 15 * 1000;
@@ -571,6 +573,71 @@ function confirmAction({
     overlay.onclick = (event) => {
       if (event.target === overlay) finish(false);
     };
+  });
+}
+
+function promptAction({
+  title = 'Nhập thông tin',
+  message = '',
+  initialValue = '',
+  placeholder = '',
+  confirmText = 'Lưu',
+  cancelText = 'Huỷ',
+  validate,
+} = {}) {
+  return new Promise(resolve => {
+    openModal(title, `
+      <div style="display:flex;flex-direction:column;gap:16px">
+        ${message ? `<div style="line-height:1.6;color:var(--text)">${message}</div>` : ''}
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <input id="prompt-action-input" class="form-input" type="text" value="${escapeHtml(initialValue)}" placeholder="${escapeHtml(placeholder)}" />
+          <div id="prompt-action-error" style="min-height:18px;font-size:12px;color:var(--danger)"></div>
+        </div>
+        <div class="modal-footer" style="display:flex;justify-content:flex-end;gap:8px">
+          <button class="btn btn-outline" data-prompt-action="cancel">${escapeHtml(cancelText)}</button>
+          <button class="btn btn-primary" data-prompt-action="confirm">${escapeHtml(confirmText)}</button>
+        </div>
+      </div>
+    `);
+    const overlay = $('#modal-overlay');
+    const input = overlay?.querySelector('#prompt-action-input');
+    const errorEl = overlay?.querySelector('#prompt-action-error');
+    const cancelBtn = overlay?.querySelector('[data-prompt-action="cancel"]');
+    const confirmBtn = overlay?.querySelector('[data-prompt-action="confirm"]');
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      closeModal();
+      resolve(value);
+    };
+    const submit = () => {
+      const value = input?.value ?? '';
+      const trimmed = value.trim();
+      const error = typeof validate === 'function' ? validate(trimmed, value) : '';
+      if (error) {
+        if (errorEl) errorEl.textContent = error;
+        input?.focus();
+        input?.select?.();
+        return;
+      }
+      finish(trimmed);
+    };
+    cancelBtn.onclick = () => finish(null);
+    confirmBtn.onclick = submit;
+    input?.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        submit();
+      }
+    });
+    overlay.onclick = (event) => {
+      if (event.target === overlay) finish(null);
+    };
+    requestAnimationFrame(() => {
+      input?.focus();
+      input?.select?.();
+    });
   });
 }
 
@@ -1118,11 +1185,11 @@ function renderInbox() {
     <div class="table-wrap">
       <table>
         <thead><tr>
-          <th class="sortable" data-inbox-col="skill" onclick="sortInbox('skill')">Kỹ năng ${isi('skill')}</th>
-          <th class="sortable" data-inbox-col="student_name" onclick="sortInbox('student_name')">Học sinh ${isi('student_name')}</th>
+          <th ${SORTABLE_TH_ATTRS} data-inbox-col="skill" onclick="sortInbox('skill')">Kỹ năng ${isi('skill')}</th>
+          <th ${SORTABLE_TH_ATTRS} data-inbox-col="student_name" onclick="sortInbox('student_name')">Học sinh ${isi('student_name')}</th>
           <th>Bài tập</th>
-          <th class="sortable" data-inbox-col="class_name" onclick="sortInbox('class_name')">Lớp ${isi('class_name')}</th>
-          <th class="sortable" data-inbox-col="submitted_at" onclick="sortInbox('submitted_at')">Thời gian nộp ${isi('submitted_at')}</th>
+          <th ${SORTABLE_TH_ATTRS} data-inbox-col="class_name" onclick="sortInbox('class_name')">Lớp ${isi('class_name')}</th>
+          <th ${SORTABLE_TH_ATTRS} data-inbox-col="submitted_at" onclick="sortInbox('submitted_at')">Thời gian nộp ${isi('submitted_at')}</th>
           <th></th>
         </tr></thead>
         <tbody id="inbox-list-body">${buildInboxRows(sortedInboxItems())}</tbody>
@@ -1199,12 +1266,12 @@ function inboxGradedHtml() {
     <div class="table-wrap">
       <table>
         <thead><tr>
-          <th class="sortable" data-graded-col="skill" onclick="sortInboxGraded('skill')">Kỹ năng ${gsi('skill')}</th>
-          <th class="sortable" data-graded-col="student_name" onclick="sortInboxGraded('student_name')">Học sinh ${gsi('student_name')}</th>
+          <th ${SORTABLE_TH_ATTRS} data-graded-col="skill" onclick="sortInboxGraded('skill')">Kỹ năng ${gsi('skill')}</th>
+          <th ${SORTABLE_TH_ATTRS} data-graded-col="student_name" onclick="sortInboxGraded('student_name')">Học sinh ${gsi('student_name')}</th>
           <th>Bài tập</th>
-          <th class="sortable" data-graded-col="class_name" onclick="sortInboxGraded('class_name')">Lớp ${gsi('class_name')}</th>
-          <th class="sortable" data-graded-col="submitted_at" onclick="sortInboxGraded('submitted_at')">Thời gian nộp ${gsi('submitted_at')}</th>
-          <th class="sortable" data-graded-col="overall_score" onclick="sortInboxGraded('overall_score')">Điểm ${gsi('overall_score')}</th>
+          <th ${SORTABLE_TH_ATTRS} data-graded-col="class_name" onclick="sortInboxGraded('class_name')">Lớp ${gsi('class_name')}</th>
+          <th ${SORTABLE_TH_ATTRS} data-graded-col="submitted_at" onclick="sortInboxGraded('submitted_at')">Thời gian nộp ${gsi('submitted_at')}</th>
+          <th ${SORTABLE_TH_ATTRS} data-graded-col="overall_score" onclick="sortInboxGraded('overall_score')">Điểm ${gsi('overall_score')}</th>
           <th></th>
         </tr></thead>
         <tbody id="inbox-graded-body">${buildGradedRows(sortedGradedItems())}</tbody>
@@ -1978,15 +2045,15 @@ function renderStatsTab(container, data) {
         : `<div class="table-wrap">
           <table class="stats-table">
             <thead><tr>
-              <th class="sortable" onclick="sortStudentTable('name')">Học sinh ${sortIcon('name')}</th>
-              <th class="sortable" onclick="sortStudentTable('submitted')">Đã nộp ${sortIcon('submitted')}</th>
-              <th class="sortable" onclick="sortStudentTable('avg_score')">Điểm TB ${sortIcon('avg_score')}</th>
+              <th ${SORTABLE_TH_ATTRS} onclick="sortStudentTable('name')">Học sinh ${sortIcon('name')}</th>
+              <th ${SORTABLE_TH_ATTRS} onclick="sortStudentTable('submitted')">Đã nộp ${sortIcon('submitted')}</th>
+              <th ${SORTABLE_TH_ATTRS} onclick="sortStudentTable('avg_score')">Điểm TB ${sortIcon('avg_score')}</th>
               ${!sf ? `
-                <th class="sortable" style="color:#3b82f6" onclick="sortStudentTable('avg_reading')">Reading ${sortIcon('avg_reading')}</th>
-                <th class="sortable" style="color:#f59e0b" onclick="sortStudentTable('avg_listening')">Listening ${sortIcon('avg_listening')}</th>
-                <th class="sortable" style="color:#8b5cf6" onclick="sortStudentTable('avg_writing')">Writing ${sortIcon('avg_writing')}</th>
-                <th class="sortable" style="color:#22c55e" onclick="sortStudentTable('avg_speaking')">Speaking ${sortIcon('avg_speaking')}</th>` : ''}
-              <th class="sortable" onclick="sortStudentTable('on_time_rate')">Đúng hạn ${sortIcon('on_time_rate')}</th>
+                <th ${SORTABLE_TH_ATTRS} style="color:#3b82f6" onclick="sortStudentTable('avg_reading')">Reading ${sortIcon('avg_reading')}</th>
+                <th ${SORTABLE_TH_ATTRS} style="color:#f59e0b" onclick="sortStudentTable('avg_listening')">Listening ${sortIcon('avg_listening')}</th>
+                <th ${SORTABLE_TH_ATTRS} style="color:#8b5cf6" onclick="sortStudentTable('avg_writing')">Writing ${sortIcon('avg_writing')}</th>
+                <th ${SORTABLE_TH_ATTRS} style="color:#22c55e" onclick="sortStudentTable('avg_speaking')">Speaking ${sortIcon('avg_speaking')}</th>` : ''}
+              <th ${SORTABLE_TH_ATTRS} onclick="sortStudentTable('on_time_rate')">Đúng hạn ${sortIcon('on_time_rate')}</th>
               <th></th>
             </tr></thead>
             <tbody>
@@ -2019,11 +2086,11 @@ function renderStatsTab(container, data) {
                     <div class="stats-expand-body">
                       <table class="stats-sub-table">
                             <thead id="stats-sub-thead-${st.id}"><tr>
-                              <th class="sortable" onclick="sortStatsSubTable('${st.id}','title')">Bài tập ${makeSortIcon('title',_statsSubSortCol,_statsSubSortDir)}</th>
-                              <th class="sortable" onclick="sortStatsSubTable('${st.id}','skill')">Kỹ năng ${makeSortIcon('skill',_statsSubSortCol,_statsSubSortDir)}</th>
-                              <th class="sortable" onclick="sortStatsSubTable('${st.id}','score')">Điểm ${makeSortIcon('score',_statsSubSortCol,_statsSubSortDir)}</th>
-                              <th class="sortable" onclick="sortStatsSubTable('${st.id}','submitted_at')">Ngày nộp ${makeSortIcon('submitted_at',_statsSubSortCol,_statsSubSortDir)}</th>
-                              <th class="sortable" onclick="sortStatsSubTable('${st.id}','on_time')">Đúng hạn ${makeSortIcon('on_time',_statsSubSortCol,_statsSubSortDir)}</th>
+                              <th ${SORTABLE_TH_ATTRS} onclick="sortStatsSubTable('${st.id}','title')">Bài tập ${makeSortIcon('title',_statsSubSortCol,_statsSubSortDir)}</th>
+                              <th ${SORTABLE_TH_ATTRS} onclick="sortStatsSubTable('${st.id}','skill')">Kỹ năng ${makeSortIcon('skill',_statsSubSortCol,_statsSubSortDir)}</th>
+                              <th ${SORTABLE_TH_ATTRS} onclick="sortStatsSubTable('${st.id}','score')">Điểm ${makeSortIcon('score',_statsSubSortCol,_statsSubSortDir)}</th>
+                              <th ${SORTABLE_TH_ATTRS} onclick="sortStatsSubTable('${st.id}','submitted_at')">Ngày nộp ${makeSortIcon('submitted_at',_statsSubSortCol,_statsSubSortDir)}</th>
+                              <th ${SORTABLE_TH_ATTRS} onclick="sortStatsSubTable('${st.id}','on_time')">Đúng hạn ${makeSortIcon('on_time',_statsSubSortCol,_statsSubSortDir)}</th>
                               <th>Overtime</th>
                             </tr></thead>
                             <tbody id="stats-sub-tbody-${st.id}">${buildStatsSubRows(st.submissions.filter(s => filteredAssignmentIds.has(s.assignment_id)))}</tbody>
@@ -2068,16 +2135,16 @@ function renderStatsTab(container, data) {
         : `<div class="table-wrap">
           <table class="stats-table">
             <thead><tr>
-              <th class="sortable" onclick="sortAssignTable('skill')">Kỹ năng ${atsi('skill')}</th>
-              <th class="sortable" onclick="sortAssignTable('title')">Tên bài tập ${atsi('title')}</th>
-              <th class="sortable" onclick="sortAssignTable('mode')">Chế độ ${atsi('mode')}</th>
+              <th ${SORTABLE_TH_ATTRS} onclick="sortAssignTable('skill')">Kỹ năng ${atsi('skill')}</th>
+              <th ${SORTABLE_TH_ATTRS} onclick="sortAssignTable('title')">Tên bài tập ${atsi('title')}</th>
+              <th ${SORTABLE_TH_ATTRS} onclick="sortAssignTable('mode')">Chế độ ${atsi('mode')}</th>
               <th>Thời gian</th>
-              <th class="sortable" onclick="sortAssignTable('submitted_rate')">Tỷ lệ nộp ${atsi('submitted_rate')}</th>
-              <th class="sortable" onclick="sortAssignTable('avg_score')">Điểm TB ${atsi('avg_score')}</th>
-              <th class="sortable" onclick="sortAssignTable('on_time')">Đúng hạn ${atsi('on_time')}</th>
-              <th class="sortable" onclick="sortAssignTable('late')">Muộn ${atsi('late')}</th>
-              <th class="sortable" onclick="sortAssignTable('missing')">Chưa nộp ${atsi('missing')}</th>
-              <th class="sortable" onclick="sortAssignTable('is_active')">Trạng thái ${atsi('is_active')}</th>
+              <th ${SORTABLE_TH_ATTRS} onclick="sortAssignTable('submitted_rate')">Tỷ lệ nộp ${atsi('submitted_rate')}</th>
+              <th ${SORTABLE_TH_ATTRS} onclick="sortAssignTable('avg_score')">Điểm TB ${atsi('avg_score')}</th>
+              <th ${SORTABLE_TH_ATTRS} onclick="sortAssignTable('on_time')">Đúng hạn ${atsi('on_time')}</th>
+              <th ${SORTABLE_TH_ATTRS} onclick="sortAssignTable('late')">Muộn ${atsi('late')}</th>
+              <th ${SORTABLE_TH_ATTRS} onclick="sortAssignTable('missing')">Chưa nộp ${atsi('missing')}</th>
+              <th ${SORTABLE_TH_ATTRS} onclick="sortAssignTable('is_active')">Trạng thái ${atsi('is_active')}</th>
             </tr></thead>
             <tbody>
               ${sortedAssignments.map(a => {
@@ -2498,10 +2565,10 @@ function renderClassDetail(cls, students = []) {
       <div class="table-wrap assign-table-wrap">
         <table>
           <thead><tr>
-            <th class="sortable" id="assign-th-skill" onclick="sortAssignList('skill')">Kỹ năng</th>
-            <th class="sortable" id="assign-th-title" onclick="sortAssignList('title')">Tên bài tập</th>
+            <th ${SORTABLE_TH_ATTRS} id="assign-th-skill" onclick="sortAssignList('skill')">Kỹ năng</th>
+            <th ${SORTABLE_TH_ATTRS} id="assign-th-title" onclick="sortAssignList('title')">Tên bài tập</th>
             <th>Đề</th>
-            <th class="sortable" id="assign-th-deadline" onclick="sortAssignList('deadline')">Hạn nộp</th>
+            <th ${SORTABLE_TH_ATTRS} id="assign-th-deadline" onclick="sortAssignList('deadline')">Hạn nộp</th>
             <th>Mở/Đóng</th><th>Thao tác</th>
           </tr></thead>
           <tbody id="assign-tbody">${assignRows}</tbody>
@@ -2524,8 +2591,8 @@ function renderClassDetail(cls, students = []) {
         <table>
           <thead><tr>
             <th style="width:36px"><input type="checkbox" id="select-all-students" onchange="toggleSelectAllStudents(this, '${cls.id}')" title="Chọn tất cả" /></th>
-            <th class="sortable" id="student-th-name" onclick="sortClassStudentsTable('full_name')">Họ tên</th>
-            <th class="sortable" id="student-th-username" onclick="sortClassStudentsTable('username')">Username</th>
+            <th ${SORTABLE_TH_ATTRS} id="student-th-name" onclick="sortClassStudentsTable('full_name')">Họ tên</th>
+            <th ${SORTABLE_TH_ATTRS} id="student-th-username" onclick="sortClassStudentsTable('username')">Username</th>
             <th>Thao tác</th>
           </tr></thead>
           <tbody id="students-tbody">${studentRows}</tbody>
@@ -3007,10 +3074,10 @@ function renderAssignmentSubmissions(assignment, students) {
       <table>
         <thead>
           <tr>
-            <th class="sortable" data-sub-col="full_name" onclick="sortSubmissionsTable('full_name')">Học sinh ${sssi('full_name')}</th>
-            <th class="sortable" data-sub-col="status" onclick="sortSubmissionsTable('status')">Trạng thái ${sssi('status')}</th>
-            <th class="sortable" data-sub-col="score" onclick="sortSubmissionsTable('score')">Điểm ${sssi('score')}</th>
-            <th class="sortable" data-sub-col="submitted_at" onclick="sortSubmissionsTable('submitted_at')">Thời gian nộp ${sssi('submitted_at')}</th>
+            <th ${SORTABLE_TH_ATTRS} data-sub-col="full_name" onclick="sortSubmissionsTable('full_name')">Học sinh ${sssi('full_name')}</th>
+            <th ${SORTABLE_TH_ATTRS} data-sub-col="status" onclick="sortSubmissionsTable('status')">Trạng thái ${sssi('status')}</th>
+            <th ${SORTABLE_TH_ATTRS} data-sub-col="score" onclick="sortSubmissionsTable('score')">Điểm ${sssi('score')}</th>
+            <th ${SORTABLE_TH_ATTRS} data-sub-col="submitted_at" onclick="sortSubmissionsTable('submitted_at')">Thời gian nộp ${sssi('submitted_at')}</th>
             <th>Bài làm</th>
           </tr>
         </thead>
@@ -4399,10 +4466,16 @@ function setFolderFilter(v) { _currentFolderFilter = v; renderQuestions(); }
 window.setFolderFilter = setFolderFilter;
 
 async function createFolderPrompt(parentId) {
-  const name = window.prompt(parentId ? 'Tên thư mục con:' : 'Tên thư mục mới:');
-  if (!name?.trim()) return;
+  const name = await promptAction({
+    title: parentId ? 'Tạo thư mục con' : 'Tạo thư mục mới',
+    message: parentId ? 'Nhập tên cho thư mục con mới.' : 'Nhập tên cho thư mục mới trong kho đề.',
+    placeholder: parentId ? 'Ví dụ: Reading Mock 01' : 'Ví dụ: Bộ đề tháng 6',
+    confirmText: 'Tạo thư mục',
+    validate: (trimmed) => !trimmed ? 'Vui lòng nhập tên thư mục.' : '',
+  });
+  if (!name) return;
   try {
-    const folder = await api.post('/question-folders', { name: name.trim(), parent_id: parentId });
+    const folder = await api.post('/question-folders', { name, parent_id: parentId });
     _allFolders.push(folder);
     renderQuestions();
     toast('Đã tạo thư mục "' + folder.name + '"');
@@ -4411,10 +4484,20 @@ async function createFolderPrompt(parentId) {
 window.createFolderPrompt = createFolderPrompt;
 
 async function renameFolderPrompt(id, currentName) {
-  const name = window.prompt('Đổi tên thư mục:', currentName);
-  if (!name?.trim() || name.trim() === currentName) return;
+  const name = await promptAction({
+    title: 'Đổi tên thư mục',
+    message: `Cập nhật tên mới cho thư mục <strong>${escapeHtml(currentName)}</strong>.`,
+    initialValue: currentName,
+    confirmText: 'Lưu tên mới',
+    validate: (trimmed) => {
+      if (!trimmed) return 'Vui lòng nhập tên thư mục.';
+      if (trimmed === currentName) return 'Tên mới đang trùng tên hiện tại.';
+      return '';
+    },
+  });
+  if (!name) return;
   try {
-    const folder = await api.patch(`/question-folders/${id}`, { name: name.trim() });
+    const folder = await api.patch(`/question-folders/${id}`, { name });
     const idx = _allFolders.findIndex(f => f.id === id);
     if (idx >= 0) _allFolders[idx] = folder;
     renderQuestions();
@@ -4900,11 +4983,11 @@ function renderQuestions() {
           <table>
             <thead>
               <tr>
-                <th class="sortable" data-q-col="skill" onclick="sortQuestions('skill')">Kỹ năng ${makeSortIcon('skill', _questionSortCol, _questionSortDir)}</th>
-                <th class="sortable" data-q-col="title" onclick="sortQuestions('title')">Tiêu đề <span style="font-size:11px;font-weight:400;color:var(--text-muted)">(click để xem nhanh)</span> ${makeSortIcon('title', _questionSortCol, _questionSortDir)}</th>
+                <th ${SORTABLE_TH_ATTRS} data-q-col="skill" onclick="sortQuestions('skill')">Kỹ năng ${makeSortIcon('skill', _questionSortCol, _questionSortDir)}</th>
+                <th ${SORTABLE_TH_ATTRS} data-q-col="title" onclick="sortQuestions('title')">Tiêu đề <span style="font-size:11px;font-weight:400;color:var(--text-muted)">(click để xem nhanh)</span> ${makeSortIcon('title', _questionSortCol, _questionSortDir)}</th>
                 <th>Tags</th>
                 <th>Chi tiết</th>
-                <th class="sortable" data-q-col="created_at" onclick="sortQuestions('created_at')">Ngày tạo ${makeSortIcon('created_at', _questionSortCol, _questionSortDir)}</th>
+                <th ${SORTABLE_TH_ATTRS} data-q-col="created_at" onclick="sortQuestions('created_at')">Ngày tạo ${makeSortIcon('created_at', _questionSortCol, _questionSortDir)}</th>
                 <th>Thao tác</th>
               </tr>
             </thead>

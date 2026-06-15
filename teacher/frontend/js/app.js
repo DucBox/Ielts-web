@@ -897,6 +897,23 @@ let _inboxSortDir = 'desc';
 let _inboxGradedItems = null;     // loaded when the "Đã chấm" page opens
 let _inboxGradedSortCol = 'submitted_at';
 let _inboxGradedSortDir = 'desc';
+// Dev/test classes hidden from the "Đã chấm" list by default (toggle to reveal)
+const HIDDEN_GRADED_CLASSES = ['TEST CLASS'];
+let _gradedShowHidden = false;
+
+function isHiddenGradedClass(name) {
+  const n = String(name || '').trim().toLowerCase();
+  return HIDDEN_GRADED_CLASSES.some(h => h.toLowerCase() === n);
+}
+function visibleGradedItems() {
+  const items = _inboxGradedItems || [];
+  return _gradedShowHidden ? items : items.filter(it => !isHiddenGradedClass(it.class_name));
+}
+function toggleGradedHidden() {
+  _gradedShowHidden = !_gradedShowHidden;
+  renderGraded();
+}
+window.toggleGradedHidden = toggleGradedHidden;
 
 async function showInbox() {
   _inboxSortCol = 'submitted_at';
@@ -917,6 +934,7 @@ async function showInbox() {
 async function showGraded() {
   _inboxGradedSortCol = 'submitted_at';
   _inboxGradedSortDir = 'desc';
+  _gradedShowHidden = false;
   setLoading('Đang tải bài đã chấm...');
   try {
     _inboxGradedItems = await api.get('/inbox/graded');
@@ -1014,19 +1032,26 @@ function renderInbox() {
 }
 
 function renderGraded() {
-  const items = _inboxGradedItems || [];
+  const all = _inboxGradedItems || [];
+  const hiddenCount = all.filter(it => isHiddenGradedClass(it.class_name)).length;
+  const visibleCount = visibleGradedItems().length;
+  const toggleBtn = hiddenCount > 0 ? `
+      <button class="btn btn-sm btn-outline" onclick="toggleGradedHidden()" title="Lớp test dùng để dev — mặc định ẩn">
+        ${_gradedShowHidden ? '🙈 Ẩn lớp test' : `👁 Hiện lớp test (${hiddenCount})`}
+      </button>` : '';
   $('#app').innerHTML = `
     <div class="page-header">
       <div>
         <div class="page-title">✅ Đã chấm</div>
-        <div class="page-subtitle">${items.length} bài Writing/Speaking đã chấm</div>
+        <div class="page-subtitle">${visibleCount} bài Writing/Speaking đã chấm</div>
       </div>
+      ${toggleBtn}
     </div>
     ${inboxGradedHtml()}`;
 }
 
 function sortedGradedItems() {
-  const items = _inboxGradedItems || [];
+  const items = visibleGradedItems();
   if (!_inboxGradedSortCol) return items;
   return [...items].sort((a, b) => {
     let va, vb;
@@ -1062,7 +1087,7 @@ function sortInboxGraded(col) {
 window.sortInboxGraded = sortInboxGraded;
 
 function inboxGradedHtml() {
-  const items = _inboxGradedItems || [];
+  const items = sortedGradedItems();
   if (items.length === 0) {
     return `<div class="empty-state-v2">
       <span class="empty-illu">📭</span>

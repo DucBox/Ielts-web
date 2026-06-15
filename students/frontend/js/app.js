@@ -590,6 +590,8 @@ function clearAllDrafts(aid) {
 
 let _notifPanelOpen = false;
 let _notifPollTimer = null;
+let _notifPreviousFocus = null;
+let _mobileNavPreviousFocus = null;
 
 function notifDaysLabel(daysLeft) {
   if (daysLeft <= 0)  return { text: 'hôm nay', cls: 'urgent' };
@@ -765,9 +767,13 @@ function toggleNotifPanel() {
 
 function openNotifPanel() {
   const panel = document.getElementById('notif-panel');
+  const trigger = document.getElementById('notif-bell-btn');
   if (!panel) return;
+  _notifPreviousFocus = document.activeElement;
   _notifPanelOpen = true;
   panel.classList.remove('hidden');
+  panel.setAttribute('aria-hidden', 'false');
+  trigger?.setAttribute('aria-expanded', 'true');
   loadNotifPanel();
   const list = document.getElementById('notif-list');
   if (list) {
@@ -776,13 +782,21 @@ function openNotifPanel() {
       list.classList.toggle('at-bottom', atBottom);
     };
   }
+  requestAnimationFrame(() => {
+    panel.querySelector('.notif-mark-all-btn, .notif-btn-read, .notif-btn-delete, .notif-item-body')?.focus();
+  });
 }
 
 function closeNotifPanel() {
   const panel = document.getElementById('notif-panel');
+  const trigger = document.getElementById('notif-bell-btn');
   if (!panel) return;
   _notifPanelOpen = false;
   panel.classList.add('hidden');
+  panel.setAttribute('aria-hidden', 'true');
+  trigger?.setAttribute('aria-expanded', 'false');
+  if (_notifPreviousFocus instanceof HTMLElement) _notifPreviousFocus.focus();
+  _notifPreviousFocus = null;
 }
 
 async function syncNotifUIAfterSubmit() {
@@ -1374,6 +1388,20 @@ function confirmSubmit({ title, message, confirmText = 'Vẫn nộp', cancelText
   });
 }
 
+function renderRouteError(title, error, retryHash = window.location.hash.slice(1) || '/home') {
+  const message = error?.error || error?.message || 'Không thể tải dữ liệu. Vui lòng thử lại.';
+  $('#app').innerHTML = `
+    <div class="empty-state-v2 route-error-state">
+      <span class="empty-illu">⚠️</span>
+      <div class="empty-title">${escapeHtml(title)}</div>
+      <div class="empty-desc">${escapeHtml(message)}</div>
+      <div style="display:flex;justify-content:center;gap:10px;flex-wrap:wrap">
+        <button class="btn btn-primary" onclick="router()">Thử lại</button>
+        <button class="btn btn-outline" onclick="navigate('${escapeHtml(retryHash || '/home')}')">Về trang trước</button>
+      </div>
+    </div>`;
+}
+
 window.saveNotePanel = saveNotePanel;
 
 function loadAuth() {
@@ -1743,25 +1771,39 @@ function navigate(hash) {
 
 // ── Mobile nav drawer ──────────────────────────────────────────────────────
 function toggleMobileNav() {
-  const nav      = document.getElementById('mobile-nav');
-  const backdrop = document.getElementById('mobile-nav-backdrop');
+  const nav = document.getElementById('mobile-nav');
   if (!nav) return;
   const isOpen = nav.classList.contains('open');
   isOpen ? closeMobileNav() : openMobileNav();
 }
-function openMobileNav() {
-  const nav      = document.getElementById('mobile-nav');
+function setMobileNavState(isOpen) {
+  const nav = document.getElementById('mobile-nav');
   const backdrop = document.getElementById('mobile-nav-backdrop');
-  nav?.classList.add('open');
-  backdrop?.classList.add('active');
-  document.body.style.overflow = 'hidden';
+  const trigger = document.getElementById('hamburger-btn');
+  if (!nav || !backdrop) return;
+  nav.classList.toggle('open', isOpen);
+  backdrop.classList.toggle('active', isOpen);
+  nav.setAttribute('aria-hidden', String(!isOpen));
+  trigger?.setAttribute('aria-expanded', String(isOpen));
+  if (isOpen) {
+    nav.removeAttribute('inert');
+    document.body.style.overflow = 'hidden';
+    requestAnimationFrame(() => {
+      nav.querySelector('.mobile-nav-close, .mobile-nav-link')?.focus();
+    });
+    return;
+  }
+  nav.setAttribute('inert', '');
+  document.body.style.overflow = '';
+}
+function openMobileNav() {
+  _mobileNavPreviousFocus = document.activeElement;
+  setMobileNavState(true);
 }
 function closeMobileNav() {
-  const nav      = document.getElementById('mobile-nav');
-  const backdrop = document.getElementById('mobile-nav-backdrop');
-  nav?.classList.remove('open');
-  backdrop?.classList.remove('active');
-  document.body.style.overflow = '';
+  setMobileNavState(false);
+  if (_mobileNavPreviousFocus instanceof HTMLElement) _mobileNavPreviousFocus.focus();
+  _mobileNavPreviousFocus = null;
 }
 window.toggleMobileNav = toggleMobileNav;
 window.closeMobileNav  = closeMobileNav;
@@ -2444,6 +2486,7 @@ async function showHome() {
     renderHome(assignments);
   } catch (e) {
     toast('Lỗi tải trang chủ: ' + (e.error || e.message), 'error');
+    renderRouteError('Không tải được trang chủ', e, '/home');
   }
 }
 
@@ -2588,6 +2631,7 @@ async function showHistory() {
     renderHistory(getHistorySourceItems(assignments));
   } catch (e) {
     toast('Lỗi tải lịch sử: ' + (e.error || e.message), 'error');
+    renderRouteError('Không tải được lịch sử', e, '/history');
   }
 }
 
@@ -2681,6 +2725,7 @@ async function showCalendar() {
     renderCalendar(assignments);
   } catch (e) {
     toast('Lỗi tải lịch: ' + (e.error || e.message), 'error');
+    renderRouteError('Không tải được lịch học', e, '/calendar');
   }
 }
 
@@ -2807,6 +2852,7 @@ async function showProfile() {
     renderProfile(assignments, profileData);
   } catch (e) {
     toast('Lỗi: ' + (e.error || e.message), 'error');
+    renderRouteError('Không tải được hồ sơ', e, '/profile');
   }
 }
 
@@ -3902,6 +3948,7 @@ async function showAssignments() {
     renderAssignments(assignments);
   } catch (e) {
     toast('Lỗi tải bài tập: ' + (e.error || e.message), 'error');
+    renderRouteError('Không tải được danh sách bài tập', e, '/assignments');
   }
 }
 
@@ -5693,17 +5740,22 @@ let _vocabSearch = '';
 
 async function showVocabGames() {
   setLoading('Đang tải từ vựng...');
-  const needsAssignments = !window._cachedAssignments && _student && _selectedClass;
-  await Promise.all([
-    loadMyVocab(),
-    needsAssignments
-      ? getAssignments()
-          .then(r => { window._cachedAssignments = r; })
-          .catch(() => {})
-      : Promise.resolve(),
-  ]);
-  _vocabSearch = '';
-  renderVocabGames();
+  try {
+    const needsAssignments = !window._cachedAssignments && _student && _selectedClass;
+    await Promise.all([
+      loadMyVocab(),
+      needsAssignments
+        ? getAssignments()
+            .then(r => { window._cachedAssignments = r; })
+            .catch(() => {})
+        : Promise.resolve(),
+    ]);
+    _vocabSearch = '';
+    renderVocabGames();
+  } catch (e) {
+    toast('Lỗi tải từ vựng: ' + (e.error || e.message), 'error');
+    renderRouteError('Không tải được trang từ vựng', e, '/vocab-games');
+  }
 }
 
 function buildVocabTeacherHtml(withVocab) {
@@ -6228,6 +6280,12 @@ function navigateWithTransition(hash) {
 
 // ═══ KEYBOARD NAV ═══
 document.addEventListener('keydown', (e) => {
+  const buttonLike = e.target?.closest?.('[role="button"][tabindex="0"]');
+  if (buttonLike && (e.key === 'Enter' || e.key === ' ')) {
+    e.preventDefault();
+    buttonLike.click();
+    return;
+  }
   // Flashcard keyboard controls
   if (_fc && document.querySelector('.flashcard-scene')) {
     if (e.code === 'Space') { e.preventDefault(); flipFlashcard(); return; }
@@ -6235,6 +6293,15 @@ document.addEventListener('keydown', (e) => {
     if (e.key === 'ArrowRight') { fcNext(); return; }
   }
   if (e.key === 'Escape') {
+    const mobileNav = document.getElementById('mobile-nav');
+    if (mobileNav?.classList.contains('open')) {
+      closeMobileNav();
+      return;
+    }
+    if (_notifPanelOpen) {
+      closeNotifPanel();
+      return;
+    }
     const overlay = document.querySelector('.modal-overlay:not(.hidden)');
     if (overlay) overlay.querySelector('.modal-close')?.click();
   }

@@ -11,7 +11,7 @@
   <!-- Top navigation (hidden on login screen) -->
   <header class="app-header hidden" id="app-header">
     <div class="header-brand">
-      <button class="hamburger-btn" id="hamburger-btn" onclick="toggleMobileNav()" aria-label="Menu">
+      <button class="hamburger-btn" id="hamburger-btn" onclick="toggleMobileNav()" aria-label="Menu" aria-controls="mobile-nav" aria-expanded="false">
         <span></span><span></span><span></span>
       </button>
       <span class="header-logo">🎓</span>
@@ -34,7 +34,7 @@
       </button>
       <!-- Notification bell -->
       <div class="notif-bell-wrap" id="notif-bell-wrap">
-        <button class="notif-bell-btn" id="notif-bell-btn" onclick="toggleNotifPanel()" aria-label="Thông báo" title="Thông báo">
+        <button class="notif-bell-btn" id="notif-bell-btn" onclick="toggleNotifPanel()" aria-label="Thông báo" title="Thông báo" aria-controls="notif-panel" aria-expanded="false">
           🔔
           <span class="notif-badge hidden" id="notif-badge"></span>
         </button>
@@ -45,11 +45,11 @@
   </header>
 
   <!-- Mobile nav drawer -->
-  <div class="mobile-nav-backdrop" id="mobile-nav-backdrop" onclick="closeMobileNav()"></div>
-  <nav class="mobile-nav" id="mobile-nav">
+  <div class="mobile-nav-backdrop" id="mobile-nav-backdrop" onclick="closeMobileNav()" aria-hidden="true"></div>
+  <nav class="mobile-nav" id="mobile-nav" aria-hidden="true" inert>
     <div class="mobile-nav-header">
       <span>🎓 English Student</span>
-      <button class="mobile-nav-close" onclick="closeMobileNav()">✕</button>
+      <button class="mobile-nav-close" onclick="closeMobileNav()" aria-label="Đóng menu">✕</button>
     </div>
     <a href="#/home" class="mobile-nav-link" data-mobile-nav="home" onclick="closeMobileNav()">🏠 Trang chủ</a>
     <a href="#/assignments" class="mobile-nav-link" data-mobile-nav="assignments" onclick="closeMobileNav()">📋 Bài tập</a>
@@ -75,7 +75,7 @@
   <div id="toast-container" role="status" aria-live="polite" aria-atomic="false"></div>
 
   <!-- Notification panel — at body root level so z-index: 9999 is in root stacking context -->
-  <div class="notif-panel hidden" id="notif-panel">
+  <div class="notif-panel hidden" id="notif-panel" aria-hidden="true">
     <div class="notif-panel-header">
       <span class="notif-panel-title">🔔 Thông báo</span>
       <button class="notif-mark-all-btn" onclick="markAllNotifsRead()">Đánh dấu đọc</button>
@@ -95,6 +95,6 @@
       <div id="modal-body" class="modal-body"></div>
     </div>
   </div>
-  <script src="js/app.bundle.9e37da27c4.js"></script>
+  <script src="js/app.bundle.5e108211ba.js"></script>
 </body>
 </html>

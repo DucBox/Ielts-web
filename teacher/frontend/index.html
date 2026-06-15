@@ -9,10 +9,10 @@
 </head>
 <body>
   <!-- Mobile sidebar backdrop -->
-  <div class="sidebar-backdrop" id="sidebar-backdrop" onclick="closeMobileSidebar()"></div>
+  <div class="sidebar-backdrop" id="sidebar-backdrop" onclick="closeMobileSidebar()" aria-hidden="true"></div>
 
   <!-- Sidebar -->
-  <aside class="sidebar" id="sidebar">
+  <aside class="sidebar" id="sidebar" aria-hidden="false">
     <div class="sidebar-logo">
       <span class="logo-icon">🎓</span>
       <span class="logo-text">English Teacher</span>
@@ -45,7 +45,7 @@
   </aside>
 
   <!-- Mobile hamburger button (fixed, visible only on mobile) -->
-  <button class="mobile-hamburger" id="mobile-hamburger" onclick="openMobileSidebar()" aria-label="Menu">
+  <button class="mobile-hamburger" id="mobile-hamburger" onclick="openMobileSidebar()" aria-label="Menu" aria-controls="sidebar" aria-expanded="false">
     <span></span><span></span><span></span>
   </button>
 
@@ -72,6 +72,6 @@
 
   <!-- Toast container -->
   <div id="toast-container" role="status" aria-live="polite" aria-atomic="false"></div>
-  <script src="js/app.bundle.cc58672dc8.js"></script>
+  <script src="js/app.bundle.0dbd144e68.js"></script>
 </body>
 </html>

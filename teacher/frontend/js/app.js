@@ -38,20 +38,40 @@ function toggleSidebar() {
   localStorage.setItem('sidebar-collapsed', collapsed ? '1' : '0');
 }
 
-function openMobileSidebar() {
-  const sidebar  = document.getElementById('sidebar');
+let _mobileSidebarPreviousFocus = null;
+
+function setMobileSidebarState(isOpen) {
+  const sidebar = document.getElementById('sidebar');
   const backdrop = document.getElementById('sidebar-backdrop');
-  sidebar?.classList.add('sidebar--mobile-open');
-  backdrop?.classList.add('active');
-  document.body.style.overflow = 'hidden';
+  const trigger = document.getElementById('mobile-hamburger');
+  if (!sidebar || !backdrop) return;
+  sidebar.classList.toggle('sidebar--mobile-open', isOpen);
+  backdrop.classList.toggle('active', isOpen);
+  sidebar.setAttribute('aria-hidden', String(!isOpen));
+  trigger?.setAttribute('aria-expanded', String(isOpen));
+  if (isOpen) {
+    sidebar.removeAttribute('inert');
+    document.body.style.overflow = 'hidden';
+    requestAnimationFrame(() => {
+      sidebar.querySelector('.nav-link, .sidebar-toggle, .btn-logout')?.focus();
+    });
+    return;
+  }
+  if ((window.visualViewport?.width ?? window.innerWidth) <= 768) {
+    sidebar.setAttribute('inert', '');
+  }
+  document.body.style.overflow = '';
+}
+
+function openMobileSidebar() {
+  _mobileSidebarPreviousFocus = document.activeElement;
+  setMobileSidebarState(true);
 }
 
 function closeMobileSidebar() {
-  const sidebar  = document.getElementById('sidebar');
-  const backdrop = document.getElementById('sidebar-backdrop');
-  sidebar?.classList.remove('sidebar--mobile-open');
-  backdrop?.classList.remove('active');
-  document.body.style.overflow = '';
+  setMobileSidebarState(false);
+  if (_mobileSidebarPreviousFocus instanceof HTMLElement) _mobileSidebarPreviousFocus.focus();
+  _mobileSidebarPreviousFocus = null;
 }
 
 window.openMobileSidebar  = openMobileSidebar;
@@ -61,7 +81,29 @@ window.closeMobileSidebar = closeMobileSidebar;
   if (localStorage.getItem('sidebar-collapsed') === '1') {
     document.getElementById('sidebar')?.classList.add('sidebar--collapsed');
   }
+  if ((window.visualViewport?.width ?? window.innerWidth) <= 768) {
+    document.getElementById('sidebar')?.setAttribute('inert', '');
+    document.getElementById('sidebar')?.setAttribute('aria-hidden', 'true');
+  }
 })();
+
+window.addEventListener('resize', () => {
+  const sidebar = document.getElementById('sidebar');
+  const trigger = document.getElementById('mobile-hamburger');
+  if (!sidebar) return;
+  if ((window.visualViewport?.width ?? window.innerWidth) <= 768) {
+    if (!sidebar.classList.contains('sidebar--mobile-open')) {
+      sidebar.setAttribute('inert', '');
+      sidebar.setAttribute('aria-hidden', 'true');
+      trigger?.setAttribute('aria-expanded', 'false');
+    }
+    return;
+  }
+  sidebar.removeAttribute('inert');
+  sidebar.setAttribute('aria-hidden', 'false');
+  trigger?.setAttribute('aria-expanded', 'false');
+  document.body.style.overflow = '';
+});
 
 function btnLoading(btn) {
   if (!btn) return;
@@ -497,12 +539,48 @@ function openModal(title, bodyHtml) {
   if (first) first.focus();
 }
 
+function confirmAction({
+  title = 'Xác nhận thao tác',
+  message,
+  confirmText = 'Xác nhận',
+  cancelText = 'Huỷ',
+  danger = false,
+} = {}) {
+  return new Promise(resolve => {
+    openModal(title, `
+      <div style="display:flex;flex-direction:column;gap:16px">
+        <div style="line-height:1.6;color:var(--text)">${message || ''}</div>
+        <div class="modal-footer" style="display:flex;justify-content:flex-end;gap:8px">
+          <button class="btn btn-outline" data-confirm-action="cancel">${escapeHtml(cancelText)}</button>
+          <button class="btn ${danger ? 'btn-danger' : 'btn-primary'}" data-confirm-action="confirm">${escapeHtml(confirmText)}</button>
+        </div>
+      </div>
+    `);
+    const overlay = $('#modal-overlay');
+    const cancelBtn = overlay?.querySelector('[data-confirm-action="cancel"]');
+    const confirmBtn = overlay?.querySelector('[data-confirm-action="confirm"]');
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      closeModal();
+      resolve(value);
+    };
+    cancelBtn.onclick = () => finish(false);
+    confirmBtn.onclick = () => finish(true);
+    overlay.onclick = (event) => {
+      if (event.target === overlay) finish(false);
+    };
+  });
+}
+
 let _oneTimeStudentCredentials = null;
 
 function closeModal(event) {
   const overlay = $('#modal-overlay');
   if (event && event.target !== overlay) return;
   _oneTimeStudentCredentials = null;
+  if (overlay) overlay.onclick = (evt) => closeModal(evt);
   overlay.classList.add('hidden');
   $('#modal-body').innerHTML = '';
   if (_modalPreviousFocus) { _modalPreviousFocus.focus(); _modalPreviousFocus = null; }
@@ -2608,7 +2686,13 @@ window.deselectAll = deselectAll;
 async function bulkRemoveStudents(classId) {
   const ids = getSelectedStudentIds();
   if (ids.length === 0) return;
-  if (!confirm(`Xoá ${ids.length} học sinh khỏi lớp này?`)) return;
+  const ok = await confirmAction({
+    title: 'Xoá học sinh khỏi lớp',
+    message: `Bạn sắp xoá <strong>${ids.length}</strong> học sinh khỏi lớp này.`,
+    confirmText: 'Xoá khỏi lớp',
+    danger: true,
+  });
+  if (!ok) return;
   try {
     await Promise.all(ids.map(sid =>
       api.delete(`/student-classes?student_id=${sid}&class_id=${classId}`)
@@ -2745,7 +2829,13 @@ async function saveDeadline(id, btn) {
 window.saveDeadline = saveDeadline;
 
 async function deleteAssignment(id, classId, btn) {
-  if (!confirm('Xoá bài tập này? Tất cả bài nộp sẽ bị xoá theo.')) return;
+  const ok = await confirmAction({
+    title: 'Xoá bài tập',
+    message: 'Bài tập này và toàn bộ bài nộp liên quan sẽ bị xoá vĩnh viễn.',
+    confirmText: 'Xoá bài tập',
+    danger: true,
+  });
+  if (!ok) return;
   btnLoading(btn);
   try {
     await api.delete(`/assignments/${id}`);
@@ -4335,10 +4425,20 @@ window.renameFolderPrompt = renameFolderPrompt;
 async function deleteFolderConfirm(id, name) {
   const childCount = _allFolders.filter(f => f.parent_id === id).length;
   const qCount     = _allQuestions.filter(q => q.folder_id === id).length;
-  let msg = `Xoá thư mục "${name}"?`;
-  if (childCount > 0) msg += `\n• ${childCount} thư mục con cũng sẽ bị xoá.`;
-  if (qCount     > 0) msg += `\n• ${qCount} đề sẽ được chuyển về Chưa phân loại.`;
-  if (!confirm(msg)) return;
+  let message = `<p style="margin:0">Thư mục <strong>${escapeHtml(name)}</strong> sẽ bị xoá.</p>`;
+  if (childCount > 0 || qCount > 0) {
+    message += '<ul style="margin:12px 0 0 18px;line-height:1.7">';
+    if (childCount > 0) message += `<li>${childCount} thư mục con cũng sẽ bị xoá.</li>`;
+    if (qCount > 0) message += `<li>${qCount} đề sẽ được chuyển về Chưa phân loại.</li>`;
+    message += '</ul>';
+  }
+  const ok = await confirmAction({
+    title: 'Xoá thư mục',
+    message,
+    confirmText: 'Xoá thư mục',
+    danger: true,
+  });
+  if (!ok) return;
   try {
     await api.delete(`/question-folders/${id}`);
     const subtree = _getFolderSubtreeIds(id);
@@ -4442,7 +4542,12 @@ function _buildQuestionTableRows(filtered) {
 
 // B4.6 — Duplicate question
 async function duplicateQuestion(id, btn) {
-  if (!confirm('Tạo bản sao của đề này?')) return;
+  const ok = await confirmAction({
+    title: 'Tạo bản sao đề',
+    message: 'Một bản sao mới sẽ được tạo trong kho đề để bạn chỉnh sửa riêng.',
+    confirmText: 'Tạo bản sao',
+  });
+  if (!ok) return;
   btnLoading(btn);
   try {
     const dup = await api.post(`/questions/${id}/duplicate`, {});
@@ -4945,7 +5050,13 @@ function setSkillFilter(skill) {
 }
 
 async function deleteQuestion(id, btn) {
-  if (!confirm('Xoá đề này khỏi kho? Đề đang được dùng trong bài tập sẽ không xoá được.')) return;
+  const ok = await confirmAction({
+    title: 'Xoá đề khỏi kho',
+    message: 'Nếu đề đang được dùng trong bài tập, hệ thống sẽ chặn thao tác này.',
+    confirmText: 'Xoá đề',
+    danger: true,
+  });
+  if (!ok) return;
   btnLoading(btn);
   try {
     await api.delete(`/questions/${id}`);
@@ -7063,7 +7174,15 @@ async function importPdfIntoQuestion(file) {
 
   const textarea = $('#q-content');
   if (!textarea) return;
-  if (textarea.value.trim() && !confirm('Nội dung hiện tại sẽ bị thay thế bằng text trích xuất từ PDF. Tiếp tục?')) {
+  const ok = textarea.value.trim()
+    ? await confirmAction({
+        title: 'Thay nội dung từ PDF',
+        message: 'Nội dung hiện tại sẽ bị thay bằng text trích xuất từ file PDF này.',
+        confirmText: 'Tiếp tục nhập PDF',
+        danger: true,
+      })
+    : true;
+  if (!ok) {
     return;
   }
 
@@ -7747,8 +7866,15 @@ async function submitAddExistingStudent(btn) {
 }
 
 function openResetPasswordModal(studentId, studentName, btn) {
-  if (!confirm(`Cấp mật khẩu mới cho "${studentName}"?\n\nMật khẩu cũ sẽ hết hiệu lực ngay sau khi đổi.`)) return;
-  submitResetPassword(studentId, btn);
+  confirmAction({
+    title: 'Cấp mật khẩu mới',
+    message: `Mật khẩu cũ của <strong>${escapeHtml(studentName)}</strong> sẽ hết hiệu lực ngay sau khi đổi.`,
+    confirmText: 'Cấp mật khẩu mới',
+    danger: true,
+  }).then(ok => {
+    if (!ok) return;
+    submitResetPassword(studentId, btn);
+  });
 }
 
 async function submitResetPassword(studentId, btn) {
@@ -7768,7 +7894,13 @@ async function submitResetPassword(studentId, btn) {
 
 // Remove student from this class only (not delete account)
 async function removeStudentFromClass(studentId, classId, btn) {
-  if (!confirm('Xoá học sinh khỏi lớp này?\n\nTài khoản học sinh vẫn còn, chỉ rời khỏi lớp này.')) return;
+  const ok = await confirmAction({
+    title: 'Xoá học sinh khỏi lớp',
+    message: 'Tài khoản học sinh vẫn được giữ lại, chỉ bị gỡ khỏi lớp này.',
+    confirmText: 'Gỡ khỏi lớp',
+    danger: true,
+  });
+  if (!ok) return;
   btnLoading(btn);
   try {
     await api.delete(`/student-classes?student_id=${studentId}&class_id=${classId}`);
@@ -7915,7 +8047,13 @@ async function submitAddProfileField(e) {
 window.submitAddProfileField = submitAddProfileField;
 
 async function deleteProfileField(id) {
-  if (!confirm('Xoá câu hỏi này?\nCác câu trả lời của học sinh cũng sẽ bị xoá.')) return;
+  const ok = await confirmAction({
+    title: 'Xoá câu hỏi hồ sơ',
+    message: 'Các câu trả lời của học sinh cho câu hỏi này cũng sẽ bị xoá.',
+    confirmText: 'Xoá câu hỏi',
+    danger: true,
+  });
+  if (!ok) return;
   try {
     await api.delete(`/profile-fields/${id}`);
     toast('Đã xoá câu hỏi');
@@ -8260,7 +8398,19 @@ document.addEventListener('mouseup', (e) => {
 });
 
 document.addEventListener('keydown', (e) => {
+  const buttonLike = e.target?.closest?.('[role="button"][tabindex="0"]');
+  if (buttonLike && (e.key === 'Enter' || e.key === ' ')) {
+    e.preventDefault();
+    buttonLike.click();
+    return;
+  }
   if (e.key === 'Escape') {
+    const sidebar = document.getElementById('sidebar');
+    if (sidebar?.classList.contains('sidebar--mobile-open')) {
+      e.preventDefault();
+      closeMobileSidebar();
+      return;
+    }
     const dragPanel = document.getElementById('drag-assign-panel');
     if (dragPanel || _dragQuestionId) {
       e.preventDefault();
@@ -8572,7 +8722,13 @@ function setSharedSkillFilter(s) { _sharedSkillFilter = s; renderSharedPool(); }
 window.setSharedSkillFilter = setSharedSkillFilter;
 
 async function deleteSharedQuestion(id, title) {
-  if (!confirm(`Xoá đề "${title}" khỏi Kho đề luyện tập?`)) return;
+  const ok = await confirmAction({
+    title: 'Xoá đề khỏi kho luyện tập',
+    message: `Đề <strong>${escapeHtml(title)}</strong> sẽ bị xoá khỏi Kho đề luyện tập.`,
+    confirmText: 'Xoá đề',
+    danger: true,
+  });
+  if (!ok) return;
   try {
     await api.delete(`/shared-pool/${id}`);
     _sharedQuestions = _sharedQuestions.filter(q => q.id !== id);

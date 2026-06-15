@@ -4622,7 +4622,7 @@ function renderQuestions() {
             <thead>
               <tr>
                 <th class="sortable" data-q-col="skill" onclick="sortQuestions('skill')">Kỹ năng ${makeSortIcon('skill', _questionSortCol, _questionSortDir)}</th>
-                <th class="sortable" data-q-col="title" onclick="sortQuestions('title')">Tiêu đề <span style="font-size:11px;font-weight:400;color:var(--gray-400)">(click để xem nhanh)</span> ${makeSortIcon('title', _questionSortCol, _questionSortDir)}</th>
+                <th class="sortable" data-q-col="title" onclick="sortQuestions('title')">Tiêu đề <span style="font-size:11px;font-weight:400;color:var(--text-muted)">(click để xem nhanh)</span> ${makeSortIcon('title', _questionSortCol, _questionSortDir)}</th>
                 <th>Tags</th>
                 <th>Chi tiết</th>
                 <th class="sortable" data-q-col="created_at" onclick="sortQuestions('created_at')">Ngày tạo ${makeSortIcon('created_at', _questionSortCol, _questionSortDir)}</th>

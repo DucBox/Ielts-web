@@ -2016,6 +2016,7 @@ body.resizing-image {
 .toast-success { background: #166534; color: #fff; }
 .toast-error   { background: var(--danger); color: #fff; }
 .toast-info    { background: #1e40af; color: #fff; }
+.toast-warning { background: #92400e; color: #fff; }
 
 @keyframes slideIn {
   from { opacity: 0; transform: translateX(20px); }

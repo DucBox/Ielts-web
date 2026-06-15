@@ -565,9 +565,11 @@ function confirmAction({
     const finish = (value) => {
       if (settled) return;
       settled = true;
+      window._modalCloseCallback = null;
       closeModal();
       resolve(value);
     };
+    window._modalCloseCallback = () => finish(false);
     cancelBtn.onclick = () => finish(false);
     confirmBtn.onclick = () => finish(true);
     overlay.onclick = (event) => {
@@ -608,9 +610,11 @@ function promptAction({
     const finish = (value) => {
       if (settled) return;
       settled = true;
+      window._modalCloseCallback = null;
       closeModal();
       resolve(value);
     };
+    window._modalCloseCallback = () => finish(null);
     const submit = () => {
       const value = input?.value ?? '';
       const trimmed = value.trim();
@@ -648,6 +652,10 @@ function closeModal(event) {
   if (event && event.target !== overlay) return;
   _oneTimeStudentCredentials = null;
   if (overlay) overlay.onclick = (evt) => closeModal(evt);
+  if (window._modalCloseCallback) {
+    window._modalCloseCallback();
+    window._modalCloseCallback = null;
+  }
   overlay.classList.add('hidden');
   $('#modal-body').innerHTML = '';
   if (_modalPreviousFocus) { _modalPreviousFocus.focus(); _modalPreviousFocus = null; }
@@ -2890,7 +2898,7 @@ async function saveDeadline(id, btn) {
     if (_cachedCls?.id) await showClassDetail({ id: _cachedCls.id });
   } catch (e) {
     toast('Lỗi: ' + (e.error || e.message), 'error');
-    btnLoading(btn, false);
+    btnReset(btn);
   }
 }
 window.saveDeadline = saveDeadline;
@@ -8512,11 +8520,7 @@ document.addEventListener('keydown', (e) => {
     if (overlay && !overlay.classList.contains('hidden')) closeModal();
   }
   // Ctrl+S / Cmd+S → save grading if on grading page
-  if ((e.ctrlKey || e.metaKey) && e.key === 's' && _gradingSubmissionId) {
-    e.preventDefault();
-    const saveBtn = document.getElementById('save-btn');
-    if (saveBtn) saveBtn.click();
-  }
+  // Handled by _gradingKeyHandler
 });
 
 // ═══ DARK MODE ═══

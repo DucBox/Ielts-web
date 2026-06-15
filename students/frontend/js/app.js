@@ -280,6 +280,10 @@ function closeModal(event) {
   const bodyEl = document.getElementById('modal-body');
   if (!overlay) return;
   if (event && event.target !== overlay) return;
+  if (window._modalCloseCallback) {
+    window._modalCloseCallback();
+    window._modalCloseCallback = null;
+  }
   overlay.classList.add('hidden');
   if (bodyEl) bodyEl.innerHTML = '';
   if (_modalPreviousFocus) { _modalPreviousFocus.focus(); _modalPreviousFocus = null; }
@@ -1368,6 +1372,73 @@ function stopWaveform() {
 }
 
 // ── B1.9 confirm submit modal ──────────────────────────────────────────────
+function promptAction({
+  title = 'Nhập thông tin',
+  message = '',
+  initialValue = '',
+  placeholder = '',
+  confirmText = 'Lưu',
+  cancelText = 'Huỷ',
+  validate,
+} = {}) {
+  return new Promise(resolve => {
+    openModal(title, `
+      <div style="display:flex;flex-direction:column;gap:16px">
+        ${message ? `<div style="line-height:1.6;color:var(--text)">${message}</div>` : ''}
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <input id="prompt-action-input" class="form-input" type="text" value="${escapeHtml(initialValue)}" placeholder="${escapeHtml(placeholder)}" />
+          <div id="prompt-action-error" style="min-height:18px;font-size:12px;color:var(--danger)"></div>
+        </div>
+        <div class="modal-footer" style="display:flex;justify-content:flex-end;gap:8px">
+          <button class="btn btn-outline" data-prompt-action="cancel">${escapeHtml(cancelText)}</button>
+          <button class="btn btn-primary" data-prompt-action="confirm">${escapeHtml(confirmText)}</button>
+        </div>
+      </div>
+    `);
+    const overlay = $('#modal-overlay');
+    const input = overlay?.querySelector('#prompt-action-input');
+    const errorEl = overlay?.querySelector('#prompt-action-error');
+    const cancelBtn = overlay?.querySelector('[data-prompt-action="cancel"]');
+    const confirmBtn = overlay?.querySelector('[data-prompt-action="confirm"]');
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      window._modalCloseCallback = null;
+      closeModal();
+      resolve(value);
+    };
+    const submit = () => {
+      const value = input?.value ?? '';
+      const trimmed = value.trim();
+      const error = typeof validate === 'function' ? validate(trimmed, value) : '';
+      if (error) {
+        if (errorEl) errorEl.textContent = error;
+        input?.focus();
+        input?.select?.();
+        return;
+      }
+      finish(trimmed);
+    };
+    window._modalCloseCallback = () => finish(null);
+    cancelBtn.onclick = () => finish(null);
+    confirmBtn.onclick = submit;
+    input?.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        submit();
+      }
+    });
+    overlay.onclick = (event) => {
+      if (event.target === overlay) finish(null);
+    };
+    requestAnimationFrame(() => {
+      input?.focus();
+      input?.select?.();
+    });
+  });
+}
+
 function confirmSubmit({ title, message, confirmText = 'Vẫn nộp', cancelText = 'Quay lại' }) {
   return new Promise(resolve => {
     const wrap = document.createElement('div');
@@ -4370,7 +4441,7 @@ function restoreAnswerDraft(aid, qCount) {
 }
 
 // B1.2 Notes: simple sticky note attached to highlighted text
-function addStudentNote() {
+async function addStudentNote() {
   const sel = window.getSelection();
   if (!sel || sel.isCollapsed || !sel.rangeCount) {
     toast('Hãy bôi đen 1 đoạn trong bài đọc trước', 'error');
@@ -4382,15 +4453,23 @@ function addStudentNote() {
     toast('Chỉ có thể ghi chú trong bài đọc', 'error'); return;
   }
   const text = sel.toString();
-  const note = prompt('Ghi chú cho đoạn này:');
+  const note = await promptAction({
+    title: 'Ghi chú cho đoạn này',
+    placeholder: 'Nhập ghi chú...',
+  });
   if (!note) return;
   const mark = document.createElement('mark');
   mark.className = 'student-note';
   mark.dataset.note = note;
   mark.title = note;
   try { range.surroundContents(mark); } catch { toast('Không tạo được ghi chú', 'error'); return; }
-  mark.onclick = () => {
-    const newNote = prompt('Sửa ghi chú (để trống để xoá):', mark.dataset.note);
+  mark.onclick = async () => {
+    const newNote = await promptAction({
+      title: 'Sửa ghi chú',
+      message: 'Để trống để xoá ghi chú',
+      initialValue: mark.dataset.note,
+      placeholder: 'Nhập ghi chú...',
+    });
     if (newNote === null) return;
     if (!newNote.trim()) {
       const p = mark.parentNode;
@@ -4436,8 +4515,13 @@ function restoreNotes(aid) {
       const m = document.createElement('mark');
       m.className = 'student-note'; m.dataset.note = note; m.title = note;
       try { r.surroundContents(m); } catch { /* skip if spans nodes */ }
-      m.onclick = () => {
-        const nn = prompt('Sửa ghi chú (để trống để xoá):', m.dataset.note);
+      m.onclick = async () => {
+        const nn = await promptAction({
+          title: 'Sửa ghi chú',
+          message: 'Để trống để xoá ghi chú',
+          initialValue: m.dataset.note,
+          placeholder: 'Nhập ghi chú...',
+        });
         if (nn === null) return;
         if (!nn.trim()) {
           const p = m.parentNode;
@@ -7869,7 +7953,7 @@ async function saveProfileName() {
   } catch (e) {
     input.disabled = false;
     input.focus();
-    alert(e?.error || 'Không thể cập nhật tên');
+    toast(e?.error || 'Không thể cập nhật tên', 'error');
   }
   if (ok) {
     updateStudentState({ full_name: name });

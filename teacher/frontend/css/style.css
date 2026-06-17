@@ -129,8 +129,9 @@ body {
 }
 .sidebar--collapsed .logo-text,
 .sidebar--collapsed .nav-label { opacity: 0; width: 0; overflow: hidden; }
-.sidebar--collapsed .sidebar-toggle { transform: rotate(180deg); }
-.sidebar--collapsed .sidebar-logo { padding: 20px 14px; justify-content: center; gap: 0; }
+.sidebar--collapsed .logo-icon { display: none; }
+.sidebar--collapsed .sidebar-toggle { width: 32px; height: 32px; font-size: 12px; transform: rotate(180deg); }
+.sidebar--collapsed .sidebar-logo { padding: 20px 10px; justify-content: center; gap: 0; }
 .sidebar--collapsed .nav-link { padding: 10px; justify-content: center; gap: 0; }
 .sidebar--collapsed .sidebar-footer { padding: 12px 8px; display: flex; justify-content: center; }
 .sidebar--collapsed .btn-dark-toggle { width: 36px; }

@@ -692,6 +692,34 @@ function downloadCsvFile(filename, header, rows) {
   URL.revokeObjectURL(url);
 }
 
+async function downloadAudioFile(url, baseName, btn) {
+  if (!url) return;
+  const originalHtml = btn ? btn.innerHTML : '';
+  try {
+    if (btn) { btn.disabled = true; btn.innerHTML = '⏳'; }
+    const res = await fetch(url, { cache: 'no-store' });
+    if (!res.ok) throw new Error('fetch failed');
+    const blob = await res.blob();
+    const urlExt = (url.split('?')[0].match(/\.([a-zA-Z0-9]+)$/) || [])[1];
+    const mimeExt = (blob.type.split('/')[1] || '').split(';')[0];
+    const ext = urlExt || mimeExt || 'webm';
+    const cleanBase = (baseName || 'audio').replace(/\.[a-zA-Z0-9]{2,5}$/, '');
+    const blobUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = blobUrl;
+    a.download = `${cleanBase}.${ext}`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(blobUrl);
+  } catch (err) {
+    toast('Tải file thất bại: ' + (err.message || 'lỗi không xác định'), 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = originalHtml; }
+  }
+}
+window.downloadAudioFile = downloadAudioFile;
+
 function buildStudentCredentialsFilename(prefix = 'student_accounts') {
   const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
   return `${prefix}_${stamp}.csv`;
@@ -3207,7 +3235,10 @@ function renderSubmissionModal(sub, skill) {
     const audioHtml = tracks.length > 0
       ? tracks.map((t, i) => `
           <div style="${multi ? 'margin-bottom:10px' : ''}">
-            ${multi ? `<div style="font-size:12px;font-weight:600;color:var(--gray-500);margin-bottom:4px">${escapeHtml(t.name || ('Phần ' + (i + 1)))}</div>` : ''}
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+              ${multi ? `<div style="font-size:12px;font-weight:600;color:var(--gray-500)">${escapeHtml(t.name || ('Phần ' + (i + 1)))}</div>` : '<div></div>'}
+              <button type="button" class="btn-icon" title="Tải xuống" onclick="downloadAudioFile('${escapeHtml(t.url || '')}', '${escapeHtml((sub.student_name || 'speaking') + '_' + (t.name || ('phan' + (i + 1))))}', this)">📥</button>
+            </div>
             <audio controls src="${escapeHtml(t.url || '')}" style="width:100%;border-radius:8px"></audio>
           </div>`).join('')
       : `<div style="color:var(--gray-400);padding:16px;text-align:center">Không có file audio</div>`;
@@ -3478,7 +3509,10 @@ function renderGradingPage(sub) {
           <div style="font-size:12px;font-weight:700;color:var(--gray-500);margin-bottom:8px;text-transform:uppercase">Audio ghi âm</div>
           ${tracks.map((t, i) => `
             <div style="${multi ? 'margin-bottom:10px' : ''}">
-              ${multi ? `<div style="font-size:12px;color:var(--gray-500);margin-bottom:4px">${escapeHtml(t.name || ('Phần ' + (i + 1)))} <span id="audio-dur-${i}" style="color:var(--gray-400)"></span></div>` : ''}
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+                ${multi ? `<div style="font-size:12px;color:var(--gray-500)">${escapeHtml(t.name || ('Phần ' + (i + 1)))} <span id="audio-dur-${i}" style="color:var(--gray-400)"></span></div>` : '<div></div>'}
+                <button type="button" class="btn-icon" title="Tải xuống" onclick="downloadAudioFile('${escapeHtml(t.url || '')}', '${escapeHtml((sub.student_name || 'speaking') + '_' + (t.name || ('phan' + (i + 1))))}', this)">📥</button>
+              </div>
               ${i === 0 ? `<div id="waveform-container" class="waveform-container"><div class="waveform-loading">Đang tải waveform...</div></div>` : ''}
               <audio ${i === 0 ? 'id="waveform-audio"' : `id="track-audio-${i}"`} controls src="${escapeHtml(t.url || '')}" preload="metadata" style="width:100%;height:36px;outline:none;${i === 0 ? 'margin-top:6px' : ''}"></audio>
             </div>`).join('')}
@@ -6933,8 +6967,27 @@ function vocabSectionHtml() {
         <button id="vocab-submit-btn" class="btn btn-primary btn-sm" onclick="addVocabItem()">+ Thêm</button>
         <button id="vocab-cancel-btn" class="btn btn-outline btn-sm hidden" onclick="cancelVocabEdit()">Hủy sửa</button>
       </div>
+      ${vocabImportBoxHtml()}
       <div class="vocab-list-heading">Danh sách từ vựng</div>
       <div id="vocab-list" class="vocab-list"></div>
+    </div>`;
+}
+
+function vocabImportBoxHtml() {
+  return `
+    <div class="pdf-import-box" style="margin-top:10px">
+      <div class="pdf-import-head">
+        <div>
+          <div class="pdf-import-title">📥 Hoặc import từ file Excel/CSV</div>
+          <div class="pdf-import-sub">Lấy sheet đầu tiên, dòng đầu là tên cột tiếng Anh: word, definition (bắt buộc), pronunciation, collocation, example (tùy chọn).</div>
+        </div>
+        <div class="pdf-import-area" role="button" tabindex="0" aria-label="Upload Excel/CSV" onclick="if(event.target.tagName!=='INPUT')$('#vocab-file-input').click()">
+          <input id="vocab-file-input" type="file" accept=".csv,.xlsx,.xls,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" onchange="handleVocabFileImport(this)" />
+          <button type="button" class="btn btn-outline btn-sm" onclick="event.stopPropagation();$('#vocab-file-input').click()">Chọn file</button>
+          <span class="pdf-import-meta">Excel (.xlsx/.xls) hoặc CSV</span>
+        </div>
+      </div>
+      <div id="vocab-import-status" class="pdf-import-status">Chưa có file nào được import.</div>
     </div>`;
 }
 
@@ -7034,6 +7087,185 @@ function renderVocabList() {
         <button class="vocab-remove" onclick="removeVocabItem(${i})" aria-label="Xoá từ vựng">×</button>
       </div>
     </div>`).join('');
+}
+
+let _xlsxLoadingPromise = null;
+
+function ensureXlsxLoaded() {
+  if (window.XLSX) return Promise.resolve(window.XLSX);
+  if (_xlsxLoadingPromise) return _xlsxLoadingPromise;
+
+  _xlsxLoadingPromise = new Promise((resolve, reject) => {
+    const script = document.createElement('script');
+    script.src = 'js/vendor/xlsx/xlsx.full.min.js';
+    script.async = true;
+    script.onload = () => resolve(window.XLSX);
+    script.onerror = () => {
+      _xlsxLoadingPromise = null;
+      reject(new Error('Không thể tải thư viện đọc Excel'));
+    };
+    document.head.appendChild(script);
+  });
+
+  return _xlsxLoadingPromise;
+}
+
+function parseVocabCsvText(text) {
+  const rows = [];
+  let row = [];
+  let field = '';
+  let inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (text[i + 1] === '"') { field += '"'; i++; }
+        else inQuotes = false;
+      } else {
+        field += c;
+      }
+    } else if (c === '"') {
+      inQuotes = true;
+    } else if (c === ',') {
+      row.push(field); field = '';
+    } else if (c === '\r') {
+      // skip, handled by \n
+    } else if (c === '\n') {
+      row.push(field); field = '';
+      rows.push(row); row = [];
+    } else {
+      field += c;
+    }
+  }
+  if (field.length > 0 || row.length > 0) { row.push(field); rows.push(row); }
+  return rows.filter(r => r.some(cell => String(cell).trim() !== ''));
+}
+
+function vocabHeaderLevenshtein(a, b) {
+  const m = a.length, n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j - 1], dp[i - 1][j], dp[i][j - 1]);
+    }
+  }
+  return dp[m][n];
+}
+
+const VOCAB_CANONICAL_FIELDS = ['word', 'definition', 'pronunciation', 'collocation', 'example'];
+
+function normalizeVocabHeader(s) {
+  return String(s ?? '').toLowerCase().trim().replace(/[^a-z]/g, '');
+}
+
+function mapVocabHeaders(headerRow) {
+  const result = { word: null, definition: null, pronunciation: null, collocation: null, example: null };
+  const used = new Set();
+  headerRow.forEach((raw, idx) => {
+    const norm = normalizeVocabHeader(raw);
+    if (!norm) return;
+    let bestField = null, bestDist = Infinity;
+    for (const field of VOCAB_CANONICAL_FIELDS) {
+      if (used.has(field)) continue;
+      const dist = vocabHeaderLevenshtein(norm, field);
+      if (dist <= 1 && dist < bestDist) { bestDist = dist; bestField = field; }
+    }
+    if (bestField) { result[bestField] = idx; used.add(bestField); }
+  });
+  return result;
+}
+
+function setVocabImportStatus(message, type = '') {
+  const status = $('#vocab-import-status');
+  if (!status) return;
+  status.className = `pdf-import-status${type ? ` is-${type}` : ''}`;
+  status.textContent = message;
+}
+
+async function handleVocabFileImport(input) {
+  const file = input?.files?.[0];
+  if (input) input.value = '';
+  if (!file) return;
+
+  const ext = (file.name.split('.').pop() || '').toLowerCase();
+  const isCsv = ext === 'csv' || file.type === 'text/csv';
+  const isExcel = ext === 'xlsx' || ext === 'xls';
+  if (!isCsv && !isExcel) {
+    setVocabImportStatus('Chỉ hỗ trợ file .csv, .xlsx hoặc .xls.', 'error');
+    toast('File không hợp lệ', 'error');
+    return;
+  }
+
+  setVocabImportStatus('Đang đọc file...', 'loading');
+  try {
+    let rows;
+    if (isCsv) {
+      const text = (await file.text()).replace(/^\uFEFF/, '');
+      rows = parseVocabCsvText(text);
+    } else {
+      const XLSX = await ensureXlsxLoaded();
+      const buffer = await file.arrayBuffer();
+      const wb = XLSX.read(new Uint8Array(buffer), { type: 'array' });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '', raw: false })
+        .filter(r => Array.isArray(r) && r.some(cell => String(cell).trim() !== ''));
+    }
+
+    if (!rows || rows.length < 2) {
+      setVocabImportStatus('File không có dữ liệu (cần dòng tiêu đề + ít nhất 1 dòng dữ liệu).', 'error');
+      toast('File trống', 'error');
+      return;
+    }
+
+    const fieldIndex = mapVocabHeaders(rows[0]);
+    if (fieldIndex.word == null || fieldIndex.definition == null) {
+      setVocabImportStatus('Không tìm thấy cột "word" và/hoặc "definition" ở dòng tiêu đề.', 'error');
+      toast('Thiếu cột bắt buộc: word, definition', 'error');
+      return;
+    }
+
+    const newItems = [];
+    let skipped = 0;
+    for (let i = 1; i < rows.length; i++) {
+      const r = rows[i] || [];
+      const word = String(r[fieldIndex.word] ?? '').trim();
+      const definition = String(r[fieldIndex.definition] ?? '').trim();
+      if (!word || !definition) { skipped++; continue; }
+      const item = { word, definition };
+      for (const optField of ['pronunciation', 'collocation', 'example']) {
+        const idx = fieldIndex[optField];
+        if (idx == null) continue;
+        const v = String(r[idx] ?? '').trim();
+        if (v) item[optField] = v;
+      }
+      newItems.push(item);
+    }
+
+    if (newItems.length === 0) {
+      setVocabImportStatus('Không có dòng dữ liệu hợp lệ (cần đủ word + definition).', 'error');
+      toast('Không import được dòng nào', 'error');
+      return;
+    }
+
+    _vocabItems.push(...newItems);
+    renderVocabList();
+    scheduleQuestionDraftSave();
+
+    const skippedMsg = skipped > 0 ? `, bỏ qua ${skipped} dòng thiếu dữ liệu` : '';
+    setVocabImportStatus(`Đã import ${newItems.length} từ vựng từ "${file.name}"${skippedMsg}.`, 'success');
+    toast(`Đã import ${newItems.length} từ vựng`);
+  } catch (e) {
+    console.error('Vocab import failed:', e);
+    const msg = e?.message || 'Không thể đọc file này.';
+    setVocabImportStatus(msg, 'error');
+    toast(msg, 'error');
+  }
 }
 
 function showQuestionForm() {

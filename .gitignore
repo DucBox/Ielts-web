@@ -38,3 +38,8 @@ tests/_*.js
 *.mp4
 *.wav
 *.m4a
+
+# Spreadsheet test/sample files
+*.csv
+*.xlsx
+*.xls

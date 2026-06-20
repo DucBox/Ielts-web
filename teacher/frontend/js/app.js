@@ -1207,7 +1207,7 @@ function buildInboxRows(items) {
         <td><strong>${escapeHtml(it.student_name)}</strong></td>
         <td>
           ${escapeHtml(it.assignment_title)}
-          ${(it.attempt_number || 1) > 1 ? `<span class="inbox-rewrite-badge">BÀI VIẾT LẠI · Lần ${it.attempt_number}</span>` : ''}
+          ${(it.attempt_number || 1) > 1 ? `<span class="inbox-rewrite-badge">BÀI LÀM LẠI · Lần ${it.attempt_number}</span>` : ''}
         </td>
         <td><span class="inbox-class">${escapeHtml(it.class_name)}</span></td>
         <td style="font-size:12px;color:var(--gray-400)">${formatDateTime(it.submitted_at)}</td>
@@ -1333,9 +1333,9 @@ function inboxGradedHtml() {
 function buildGradedRows(items) {
   return items.map(it => {
     const attemptBadge = (it.attempt_number || 1) > 1
-      ? `<span class="inbox-rewrite-badge">BÀI VIẾT LẠI · Lần ${it.attempt_number}</span>` : '';
+      ? `<span class="inbox-rewrite-badge">BÀI LÀM LẠI · Lần ${it.attempt_number}</span>` : '';
     const requestedBadge = it.rewrite_status === 'requested'
-      ? `<span class="inbox-rewrite-pending-badge">✏️ Đã yêu cầu viết lại</span>` : '';
+      ? `<span class="inbox-rewrite-pending-badge">✏️ Đã yêu cầu làm lại</span>` : '';
     return `
     <tr>
       <td>${skillBadge(it.skill)}</td>
@@ -3533,7 +3533,7 @@ function renderGradingPage(sub) {
       <div>
         <div class="page-title">
           ${titleSkill}
-          ${isRewrite ? `<span class="rewrite-badge-title">BÀI VIẾT LẠI · Lần ${sub.attempt_number}</span>` : ''}
+          ${isRewrite ? `<span class="rewrite-badge-title">BÀI LÀM LẠI · Lần ${sub.attempt_number}</span>` : ''}
         </div>
         <div class="page-subtitle">
           ${escapeHtml(sub.student_name || '')}
@@ -3588,7 +3588,7 @@ function renderGradingPage(sub) {
 
         <div class="grading-action-buttons">
           <button class="btn btn-primary" style="flex:1" onclick="saveGrading(this, 'complete')">✅ Hoàn thành</button>
-          ${sub.skill === 'writing' ? `<button class="btn btn-outline grading-rewrite-btn" onclick="saveGrading(this, 'request_rewrite')">✏️ Yêu cầu viết lại</button>` : ''}
+          ${(sub.skill === 'writing' || sub.skill === 'speaking') ? `<button class="btn btn-outline grading-rewrite-btn" onclick="saveGrading(this, 'request_rewrite')">✏️ Yêu cầu làm lại</button>` : ''}
         </div>
 
         ${prevAttempts.length > 0 ? `
@@ -3935,7 +3935,7 @@ async function saveGrading(btn, action = 'complete') {
       overall_score: score,
       action,
     });
-    const msg = action === 'request_rewrite' ? 'Đã yêu cầu học sinh viết lại! ✓' : 'Đã hoàn thành chấm bài! ✓';
+    const msg = action === 'request_rewrite' ? 'Đã yêu cầu học sinh làm lại! ✓' : 'Đã hoàn thành chấm bài! ✓';
     toast(msg);
     setTimeout(() => navigate('/inbox'), 800);
   } catch (e) {

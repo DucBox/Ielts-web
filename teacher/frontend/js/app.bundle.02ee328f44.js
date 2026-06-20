@@ -86,7 +86,7 @@ const API_BASE="https://ielts-teacher-api.quangducngo0811.workers.dev",API_CACHE
         <td><strong>${escapeHtml(e.student_name)}</strong></td>
         <td>
           ${escapeHtml(e.assignment_title)}
-          ${(e.attempt_number||1)>1?`<span class="inbox-rewrite-badge">B\xC0I VI\u1EBET L\u1EA0I \xB7 L\u1EA7n ${e.attempt_number}</span>`:""}
+          ${(e.attempt_number||1)>1?`<span class="inbox-rewrite-badge">B\xC0I L\xC0M L\u1EA0I \xB7 L\u1EA7n ${e.attempt_number}</span>`:""}
         </td>
         <td><span class="inbox-class">${escapeHtml(e.class_name)}</span></td>
         <td style="font-size:12px;color:var(--gray-400)">${formatDateTime(e.submitted_at)}</td>
@@ -143,7 +143,7 @@ const API_BASE="https://ielts-teacher-api.quangducngo0811.workers.dev",API_CACHE
         </tr></thead>
         <tbody id="inbox-graded-body">${buildGradedRows(sortedGradedItems())}</tbody>
       </table>
-    </div>`}function buildGradedRows(t){return t.map(e=>{const n=(e.attempt_number||1)>1?`<span class="inbox-rewrite-badge">B\xC0I VI\u1EBET L\u1EA0I \xB7 L\u1EA7n ${e.attempt_number}</span>`:"",i=e.rewrite_status==="requested"?'<span class="inbox-rewrite-pending-badge">\u270F\uFE0F \u0110\xE3 y\xEAu c\u1EA7u vi\u1EBFt l\u1EA1i</span>':"";return`
+    </div>`}function buildGradedRows(t){return t.map(e=>{const n=(e.attempt_number||1)>1?`<span class="inbox-rewrite-badge">B\xC0I L\xC0M L\u1EA0I \xB7 L\u1EA7n ${e.attempt_number}</span>`:"",i=e.rewrite_status==="requested"?'<span class="inbox-rewrite-pending-badge">\u270F\uFE0F \u0110\xE3 y\xEAu c\u1EA7u l\xE0m l\u1EA1i</span>':"";return`
     <tr>
       <td>${skillBadge(e.skill)}</td>
       <td><strong>${escapeHtml(e.student_name)}</strong></td>
@@ -841,7 +841,7 @@ const API_BASE="https://ielts-teacher-api.quangducngo0811.workers.dev",API_CACHE
       <div>
         <div class="page-title">
           ${s}
-          ${o?`<span class="rewrite-badge-title">B\xC0I VI\u1EBET L\u1EA0I \xB7 L\u1EA7n ${t.attempt_number}</span>`:""}
+          ${o?`<span class="rewrite-badge-title">B\xC0I L\xC0M L\u1EA0I \xB7 L\u1EA7n ${t.attempt_number}</span>`:""}
         </div>
         <div class="page-subtitle">
           ${escapeHtml(t.student_name||"")}
@@ -896,7 +896,7 @@ const API_BASE="https://ielts-teacher-api.quangducngo0811.workers.dev",API_CACHE
 
         <div class="grading-action-buttons">
           <button class="btn btn-primary" style="flex:1" onclick="saveGrading(this, 'complete')">\u2705 Ho\xE0n th\xE0nh</button>
-          ${t.skill==="writing"?`<button class="btn btn-outline grading-rewrite-btn" onclick="saveGrading(this, 'request_rewrite')">\u270F\uFE0F Y\xEAu c\u1EA7u vi\u1EBFt l\u1EA1i</button>`:""}
+          ${t.skill==="writing"||t.skill==="speaking"?`<button class="btn btn-outline grading-rewrite-btn" onclick="saveGrading(this, 'request_rewrite')">\u270F\uFE0F Y\xEAu c\u1EA7u l\xE0m l\u1EA1i</button>`:""}
         </div>
 
         ${a.length>0?`
@@ -952,7 +952,7 @@ const API_BASE="https://ielts-teacher-api.quangducngo0811.workers.dev",API_CACHE
     <div class="annotation-edit-actions">
       <button class="annotation-save-btn" onclick="saveAnnotation('${t}')">L\u01B0u</button>
       <button class="annotation-cancel-btn" onclick="refreshAnnotationsList()">Hu\u1EF7</button>
-    </div>`;const i=n.querySelector("textarea");i.value=e.comment,i.focus()}function saveAnnotation(t){const e=document.getElementById(`ann-comment-${t}`)?.querySelector("textarea");if(!e)return;const n=e.value.trim();if(!n){toast("Vui l\xF2ng nh\u1EADp nh\u1EADn x\xE9t","error");return}const i=_gradingAnnotations.find(s=>s.id===t);i&&(i.comment=n),refreshWritingDisplay(),refreshAnnotationsList()}function scrollToAnnotation(t){document.getElementById(`ann-card-${t}`)?.scrollIntoView({behavior:"smooth",block:"nearest"})}async function saveGrading(t,e="complete"){const n=document.getElementById("overall-feedback")?.value.trim()||"",i=document.getElementById("grading-score")?.value,s=i!==""&&i!=null?parseFloat(i):null;if(s===null||i===""){toast("Vui l\xF2ng nh\u1EADp Band Score tr\u01B0\u1EDBc khi ho\xE0n th\xE0nh","error"),document.getElementById("grading-score")?.focus();return}if(isNaN(s)||s<0||s>9){toast("\u0110i\u1EC3m Band ph\u1EA3i t\u1EEB 0 \u0111\u1EBFn 9","error");return}btnLoading(t);try{await api.patch(`/submissions/${_gradingSubmissionId}`,{teacher_feedback:{annotations:_gradingAnnotations,overall:n,score:s},overall_score:s,action:e}),toast(e==="request_rewrite"?"\u0110\xE3 y\xEAu c\u1EA7u h\u1ECDc sinh vi\u1EBFt l\u1EA1i! \u2713":"\u0110\xE3 ho\xE0n th\xE0nh ch\u1EA5m b\xE0i! \u2713"),setTimeout(()=>navigate("/inbox"),800)}catch(o){btnReset(t),toast("L\u1ED7i l\u01B0u: "+(o.error||o.message),"error")}}function toggleAiFeedback(t){const e=document.getElementById("ai-feedback-display"),n=t.querySelector(".ai-toggle-icon"),i=document.getElementById("ai-feedback-btn");if(!e)return;const s=e.style.display!=="none";e.style.display=s?"none":"",i&&(i.style.display=s?"none":""),n&&(n.textContent=s?"\u25BC":"\u25B2")}function refreshAiFeedbackDisplay(){const t=document.getElementById("ai-feedback-display");if(!t)return;if(!_gradingAiFeedback){t.innerHTML=`<div class="ai-feedback-empty">
+    </div>`;const i=n.querySelector("textarea");i.value=e.comment,i.focus()}function saveAnnotation(t){const e=document.getElementById(`ann-comment-${t}`)?.querySelector("textarea");if(!e)return;const n=e.value.trim();if(!n){toast("Vui l\xF2ng nh\u1EADp nh\u1EADn x\xE9t","error");return}const i=_gradingAnnotations.find(s=>s.id===t);i&&(i.comment=n),refreshWritingDisplay(),refreshAnnotationsList()}function scrollToAnnotation(t){document.getElementById(`ann-card-${t}`)?.scrollIntoView({behavior:"smooth",block:"nearest"})}async function saveGrading(t,e="complete"){const n=document.getElementById("overall-feedback")?.value.trim()||"",i=document.getElementById("grading-score")?.value,s=i!==""&&i!=null?parseFloat(i):null;if(s===null||i===""){toast("Vui l\xF2ng nh\u1EADp Band Score tr\u01B0\u1EDBc khi ho\xE0n th\xE0nh","error"),document.getElementById("grading-score")?.focus();return}if(isNaN(s)||s<0||s>9){toast("\u0110i\u1EC3m Band ph\u1EA3i t\u1EEB 0 \u0111\u1EBFn 9","error");return}btnLoading(t);try{await api.patch(`/submissions/${_gradingSubmissionId}`,{teacher_feedback:{annotations:_gradingAnnotations,overall:n,score:s},overall_score:s,action:e}),toast(e==="request_rewrite"?"\u0110\xE3 y\xEAu c\u1EA7u h\u1ECDc sinh l\xE0m l\u1EA1i! \u2713":"\u0110\xE3 ho\xE0n th\xE0nh ch\u1EA5m b\xE0i! \u2713"),setTimeout(()=>navigate("/inbox"),800)}catch(o){btnReset(t),toast("L\u1ED7i l\u01B0u: "+(o.error||o.message),"error")}}function toggleAiFeedback(t){const e=document.getElementById("ai-feedback-display"),n=t.querySelector(".ai-toggle-icon"),i=document.getElementById("ai-feedback-btn");if(!e)return;const s=e.style.display!=="none";e.style.display=s?"none":"",i&&(i.style.display=s?"none":""),n&&(n.textContent=s?"\u25BC":"\u25B2")}function refreshAiFeedbackDisplay(){const t=document.getElementById("ai-feedback-display");if(!t)return;if(!_gradingAiFeedback){t.innerHTML=`<div class="ai-feedback-empty">
       Nh\u1EA5n "\u2728 Ph\xE2n t\xEDch AI" \u0111\u1EC3 nh\u1EADn g\u1EE3i \xFD t\u1EEB AI v\u1EC1 t\u1EEB v\u1EF1ng v\xE0 ng\u1EEF ph\xE1p.
     </div>`;return}const e=_gradingAiFeedback,n=getAiCriterionForDisplay(e,"lr"),i=getAiCriterionForDisplay(e,"gra"),s=e.generated_at?`<span class="ai-feedback-time">T\u1EA1o l\xFAc ${formatDateTime(e.generated_at)}</span>`:"";t.innerHTML=`
     <div class="ai-feedback-head">

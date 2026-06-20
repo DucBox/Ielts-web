@@ -4099,7 +4099,7 @@ function renderAssignments(assignments) {
       const hasScore = a.overall_score !== null && a.overall_score !== undefined;
       const needsRewrite = a.rewrite_status === 'requested';
       if (needsRewrite) {
-        statusBadge = `<span class="badge badge-rewrite">✏️ YÊU CẦU VIẾT LẠI</span>`;
+        statusBadge = `<span class="badge badge-rewrite">✏️ YÊU CẦU LÀM LẠI</span>`;
         rightContent = hasScore
           ? `<div class="score-band rewrite-score">${a.overall_score}</div><div class="score-label">Band</div>`
           : `<div class="score-pending-icon">✏️</div>`;
@@ -5184,9 +5184,9 @@ async function showResult({ id }) {
       `/submissions?assignment_id=${id}&student_id=${_student.id}`
     );
     if (routeChanged(_t)) return;
-    // Fetch all versions for writing (version selector)
+    // Fetch all versions for writing/speaking (version selector)
     let allVersions = null;
-    if (sub.skill === 'writing') {
+    if (sub.skill === 'writing' || sub.skill === 'speaking') {
       try { allVersions = await api.get(`/assignments/${id}/my-submissions`); } catch {}
       if (routeChanged(_t)) return;
     }
@@ -5202,7 +5202,7 @@ function renderResult(sub, allVersions = null) {
   const skill = sub.skill;
   if (skill === 'reading' || skill === 'listening') renderGradedResult(sub);
   else if (skill === 'writing')  renderWritingResult(sub, allVersions);
-  else if (skill === 'speaking') renderSpeakingResult(sub);
+  else if (skill === 'speaking') renderSpeakingResult(sub, allVersions);
 }
 
 function renderGradedResult(sub) {
@@ -5749,14 +5749,14 @@ function scrollToFeedbackMark(i) {
   setTimeout(() => mark.classList.remove('ann-flash'), 1500);
 }
 
-function renderSpeakingResult(sub) {
+function renderSpeakingResult(sub, allVersions = null) {
   const feedback = sub.teacher_feedback;
   const isGraded = sub.overall_score != null
     || (feedback?.annotations?.length > 0)
     || feedback?.overall;
 
   if (isGraded) {
-    renderSpeakingFeedback(sub);
+    renderSpeakingFeedback(sub, allVersions);
   } else {
     renderSpeakingPending(sub);
   }
@@ -5797,11 +5797,18 @@ function renderSpeakingPending(sub) {
     </div>`;
 }
 
-function renderSpeakingFeedback(sub) {
+function renderSpeakingFeedback(sub, allVersions = null) {
   const feedback    = sub.teacher_feedback || {};
   const annotations = (feedback.annotations || []).sort((a, b) => a.start - b.start);
   const overall     = feedback.overall || '';
   const score       = sub.overall_score ?? feedback.score;
+  // Always check latest version's rewrite status, regardless of which version is being viewed
+  const sortedVersions = allVersions
+    ? [...allVersions].sort((a, b) => (b.attempt_number || 1) - (a.attempt_number || 1))
+    : null;
+  const latestVersion = sortedVersions ? sortedVersions[0] : sub;
+  const needsRewrite = latestVersion.rewrite_status === 'requested';
+  const hasMultiVersions = allVersions && allVersions.length > 1;
 
   const overallBlock = overall ? `
     <div class="section-label">Nhận xét tổng thể</div>
@@ -5810,16 +5817,37 @@ function renderSpeakingFeedback(sub) {
   const _annColors = _annColorMap(annotations);
   const annSidebar = _buildAnnSidebar(annotations, _annColors);
 
+  const versionSelector = hasMultiVersions ? `
+    <div class="version-selector">
+      <span class="version-selector-label">Xem kết quả:</span>
+      ${[...allVersions].sort((a, b) => (a.attempt_number || 1) - (b.attempt_number || 1)).map(v => `
+        <button class="version-btn${v.id === sub.id ? ' active' : ''}"
+          onclick="switchSpeakingVersion('${v.id}','${sub.assignment_id}')">
+          Lần ${v.attempt_number}${v.overall_score != null ? ` · ${v.overall_score}` : ''}
+        </button>`).join('')}
+    </div>` : '';
+
+  const rewriteBar = needsRewrite ? `
+    <div class="rewrite-request-bar">
+      <div class="rewrite-request-text">
+        <span class="rewrite-request-icon">✏️</span>
+        <span>Giáo viên yêu cầu bạn làm lại bài này</span>
+      </div>
+      <button class="btn btn-danger" onclick="navigate('/assignment/${sub.assignment_id}')">Bắt đầu làm lại</button>
+    </div>` : '';
+
   $('#app').innerHTML = `
     <div class="assignment-page">
       <div class="assignment-toolbar">
         <button class="btn-back" onclick="navigate('${getResultBackHref()}')">${getResultBackLabel()}</button>
         <div class="assignment-toolbar-title">${skillBadge(sub.skill)} ${escapeHtml(sub.assignment_title || '')}</div>
-        <div class="score-chip">
+        <div class="score-chip ${needsRewrite ? 'score-chip-rewrite' : ''}">
           <span class="score-chip-val">${score ?? '—'}</span>
           <span class="score-chip-label">/9.0</span>
         </div>
       </div>
+      ${rewriteBar}
+      ${versionSelector}
       <div class="assignment-content">
         <div class="content-pane" id="feedback-content-pane">
           ${overallBlock}
@@ -5846,6 +5874,19 @@ function renderSpeakingFeedback(sub) {
         </div>
       </div>
     </div>`;
+}
+
+async function switchSpeakingVersion(submissionId, assignmentId) {
+  setLoading('Đang tải...');
+  try {
+    const [sub, allVersions] = await Promise.all([
+      api.get(`/submissions/${submissionId}/by-student`),
+      api.get(`/assignments/${assignmentId}/my-submissions`),
+    ]);
+    renderSpeakingFeedback(sub, allVersions);
+  } catch (e) {
+    toast('Lỗi: ' + (e.error || e.message), 'error');
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

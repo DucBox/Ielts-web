@@ -4021,26 +4021,57 @@ async function startVoiceNoteRecording(idx) {
     _gradingVoiceNotes[idx].status = 'idle';
     _voiceNoteRecordIdx = -1;
     renderVoiceNotesList();
-    if (e.name === 'NotAllowedError' || e.name === 'SecurityError') {
-      showMicPermissionDeniedModal(idx);
-    } else if (e.name === 'NotFoundError') {
-      toast('Không tìm thấy microphone trên máy này', 'error');
-    } else {
-      toast('Không thể truy cập microphone: ' + e.message, 'error');
-    }
+    showMicErrorModal(idx, e);
   }
 }
 window.startVoiceNoteRecording = startVoiceNoteRecording;
 
-function showMicPermissionDeniedModal(idx) {
+async function showMicErrorModal(idx, err) {
+  const name = err?.name || 'Error';
+  const message = err?.message || String(err || '');
+
+  // Enumerate audio inputs to distinguish "no mic hardware / remote session"
+  // from a genuine permission block.
+  let micCount = -1;
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    micCount = devices.filter(d => d.kind === 'audioinput').length;
+  } catch { micCount = -1; }
+
+  let diagnosis = '';
+  if (name === 'NotAllowedError' || name === 'SecurityError') {
+    diagnosis = `
+      <p>Trình duyệt báo <strong>từ chối quyền micro</strong>. Nếu mọi toggle quyền (trang web + macOS) đều đã bật xanh mà vẫn lỗi, thử theo thứ tự:</p>
+      <ol style="padding-left:20px;margin:0">
+        <li>Bấm <strong>Tải lại trang</strong> — tab đang mở có thể giữ trạng thái quyền cũ, reload mới nhận quyền mới.</li>
+        <li>Nếu bạn đang <strong>điều khiển máy này từ xa</strong> (Jump Desktop / TeamViewer / Screen Sharing...): micro thường <strong>không đi qua được phiên remote</strong> — phải ghi âm trực tiếp trên máy có mic, không qua remote.</li>
+        <li>Đảm bảo không có app/tab nào khác đang chiếm micro (Zoom, Meet, Teams...) rồi reload.</li>
+      </ol>`;
+  } else if (name === 'NotFoundError' || name === 'OverconstrainedError' || micCount === 0) {
+    diagnosis = `
+      <p><strong>Không tìm thấy thiết bị microphone nào</strong> mà trình duyệt dùng được${micCount === 0 ? ' (0 mic được phát hiện)' : ''}.</p>
+      <ul style="padding-left:20px;margin:0">
+        <li>Nếu đang <strong>remote desktop</strong> (Jump Desktop...): mic của máy bạn ngồi không truyền sang máy được điều khiển — hãy ghi âm trực tiếp trên máy có mic.</li>
+        <li>Cắm/bật một micro rồi thử lại.</li>
+      </ul>`;
+  } else if (name === 'NotReadableError' || name === 'AbortError') {
+    diagnosis = `
+      <p>Micro <strong>đang bị một ứng dụng khác chiếm</strong> hoặc lỗi phần cứng (${escapeHtml(name)}).</p>
+      <ul style="padding-left:20px;margin:0">
+        <li>Đóng các app đang dùng mic (Zoom, Meet, Teams, QuickTime...) rồi bấm Thử lại.</li>
+      </ul>`;
+  } else {
+    diagnosis = `<p>Không truy cập được micro. Hãy thử tải lại trang hoặc dùng nút "Chọn file" để upload audio có sẵn thay vì ghi âm.</p>`;
+  }
+
   openModal('🎙️ Không thể truy cập microphone', `
     <div style="display:flex;flex-direction:column;gap:12px;line-height:1.6;color:var(--text)">
-      <p>Trình duyệt báo <strong>từ chối quyền micro</strong> cho trang này. Có 2 khả năng:</p>
-      <ol style="padding-left:20px;margin:0">
-        <li>Quyền micro của trang vừa được đổi sang "Allow" nhưng <strong>tab này chưa load lại</strong> nên chưa nhận quyền mới — bấm <strong>Tải lại trang</strong> bên dưới rồi bấm "Ghi âm" lại.</li>
-        <li>Nếu reload vẫn lỗi: máy đang chặn ở cấp <strong>hệ điều hành</strong> — vào System Settings (macOS) hoặc Settings (Windows) → Privacy &amp; Security → Microphone → cấp quyền cho trình duyệt bạn đang dùng (Chrome/Edge/Safari...), rồi tải lại trang.</li>
-      </ol>
-      <div class="modal-footer" style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">
+      ${diagnosis}
+      <div style="font-size:12px;color:var(--gray-500);background:var(--gray-50);border-radius:6px;padding:8px 10px;font-family:monospace">
+        Lỗi kỹ thuật: ${escapeHtml(name)}${message ? ' — ' + escapeHtml(message) : ''}${micCount >= 0 ? ` · mic phát hiện: ${micCount}` : ''}
+      </div>
+      <p style="margin:0;font-size:13px;color:var(--gray-600)">💡 Hoặc bấm <strong>🎵 Chọn file</strong> để upload một file audio có sẵn thay vì ghi âm trực tiếp.</p>
+      <div class="modal-footer" style="display:flex;justify-content:flex-end;gap:8px;margin-top:4px">
         <button class="btn btn-outline" onclick="closeModal()">Đóng</button>
         <button class="btn btn-outline" onclick="confirmReloadForMicPermission()">🔄 Tải lại trang</button>
         <button class="btn btn-primary" onclick="closeModal();startVoiceNoteRecording(${idx})">Thử lại</button>
@@ -4048,7 +4079,7 @@ function showMicPermissionDeniedModal(idx) {
     </div>
   `);
 }
-window.showMicPermissionDeniedModal = showMicPermissionDeniedModal;
+window.showMicErrorModal = showMicErrorModal;
 
 async function confirmReloadForMicPermission() {
   closeModal();

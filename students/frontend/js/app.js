@@ -5690,7 +5690,7 @@ function _annColorMap(annotations) {
 function buildVoiceNotesHtml(voiceNotes) {
   if (!Array.isArray(voiceNotes) || voiceNotes.length === 0) return '';
   return `
-    <div class="section-label" style="margin-top:20px">🎙️ Nhận xét bằng giọng nói</div>
+    <div class="section-label" style="margin-top:20px">🎙️ Nhận xét</div>
     <div class="voice-notes-list">
       ${voiceNotes.map((v, i) => `
         <div class="voice-note-item">

@@ -1497,7 +1497,7 @@ const API_BASE="https://ielts-teacher-api.quangducngo0811.workers.dev",API_CACHE
         </div>
         <div class="feedback-ann-comment">${escapeHtml(s.comment)}</div>
       </div>`}).join("")}</div>`}function _annColorMap(t){if(!t||!t.length)return new Map;const e=t.filter(s=>(s.type||"highlight")==="highlight");if(!e.length)return new Map;const n=new Map(e.map(s=>[s.id,0])),i=[...e].sort((s,a)=>s.end-s.start-(a.end-a.start));for(const s of i)for(const a of e)a!==s&&a.start<=s.start&&a.end>=s.end&&n.set(a.id,Math.max(n.get(a.id),n.get(s.id)+1));return new Map(e.map(s=>[s.id,Math.min(n.get(s.id),ANN_COLORS.length-1)]))}function buildVoiceNotesHtml(t){return!Array.isArray(t)||t.length===0?"":`
-    <div class="section-label" style="margin-top:20px">\u{1F399}\uFE0F Nh\u1EADn x\xE9t b\u1EB1ng gi\u1ECDng n\xF3i</div>
+    <div class="section-label" style="margin-top:20px">\u{1F399}\uFE0F Nh\u1EADn x\xE9t</div>
     <div class="voice-notes-list">
       ${t.map((e,n)=>`
         <div class="voice-note-item">

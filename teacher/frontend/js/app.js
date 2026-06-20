@@ -4035,21 +4035,32 @@ window.startVoiceNoteRecording = startVoiceNoteRecording;
 function showMicPermissionDeniedModal(idx) {
   openModal('🎙️ Không thể truy cập microphone', `
     <div style="display:flex;flex-direction:column;gap:12px;line-height:1.6;color:var(--text)">
-      <p>Trình duyệt đã <strong>từ chối quyền micro</strong> cho trang này trước đó, nên không tự bật lại popup xin quyền được nữa.</p>
-      <p style="margin-bottom:0">Cách cấp lại quyền:</p>
+      <p>Trình duyệt báo <strong>từ chối quyền micro</strong> cho trang này. Có 2 khả năng:</p>
       <ol style="padding-left:20px;margin:0">
-        <li>Bấm vào biểu tượng 🔒 (hoặc ⓘ) bên trái thanh địa chỉ URL của trình duyệt</li>
-        <li>Tìm mục <strong>Microphone</strong> và chọn <strong>Allow / Cho phép</strong></li>
-        <li>Tải lại trang rồi bấm "Ghi âm" lại</li>
+        <li>Quyền micro của trang vừa được đổi sang "Allow" nhưng <strong>tab này chưa load lại</strong> nên chưa nhận quyền mới — bấm <strong>Tải lại trang</strong> bên dưới rồi bấm "Ghi âm" lại.</li>
+        <li>Nếu reload vẫn lỗi: máy đang chặn ở cấp <strong>hệ điều hành</strong> — vào System Settings (macOS) hoặc Settings (Windows) → Privacy &amp; Security → Microphone → cấp quyền cho trình duyệt bạn đang dùng (Chrome/Edge/Safari...), rồi tải lại trang.</li>
       </ol>
       <div class="modal-footer" style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">
         <button class="btn btn-outline" onclick="closeModal()">Đóng</button>
+        <button class="btn btn-outline" onclick="confirmReloadForMicPermission()">🔄 Tải lại trang</button>
         <button class="btn btn-primary" onclick="closeModal();startVoiceNoteRecording(${idx})">Thử lại</button>
       </div>
     </div>
   `);
 }
 window.showMicPermissionDeniedModal = showMicPermissionDeniedModal;
+
+async function confirmReloadForMicPermission() {
+  closeModal();
+  const ok = await confirmAction({
+    title: 'Tải lại trang?',
+    message: 'Nhận xét/điểm chưa lưu trên trang chấm bài sẽ bị mất. Các bản ghi âm đã upload xong (trạng thái ✓) thì vẫn an toàn.',
+    confirmText: 'Tải lại trang',
+    danger: true,
+  });
+  if (ok) location.reload();
+}
+window.confirmReloadForMicPermission = confirmReloadForMicPermission;
 
 function stopVoiceNoteRecording() {
   clearInterval(_voiceNoteRecordTimer);

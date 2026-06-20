@@ -4021,10 +4021,35 @@ async function startVoiceNoteRecording(idx) {
     _gradingVoiceNotes[idx].status = 'idle';
     _voiceNoteRecordIdx = -1;
     renderVoiceNotesList();
-    toast('Không thể truy cập microphone: ' + e.message, 'error');
+    if (e.name === 'NotAllowedError' || e.name === 'SecurityError') {
+      showMicPermissionDeniedModal(idx);
+    } else if (e.name === 'NotFoundError') {
+      toast('Không tìm thấy microphone trên máy này', 'error');
+    } else {
+      toast('Không thể truy cập microphone: ' + e.message, 'error');
+    }
   }
 }
 window.startVoiceNoteRecording = startVoiceNoteRecording;
+
+function showMicPermissionDeniedModal(idx) {
+  openModal('🎙️ Không thể truy cập microphone', `
+    <div style="display:flex;flex-direction:column;gap:12px;line-height:1.6;color:var(--text)">
+      <p>Trình duyệt đã <strong>từ chối quyền micro</strong> cho trang này trước đó, nên không tự bật lại popup xin quyền được nữa.</p>
+      <p style="margin-bottom:0">Cách cấp lại quyền:</p>
+      <ol style="padding-left:20px;margin:0">
+        <li>Bấm vào biểu tượng 🔒 (hoặc ⓘ) bên trái thanh địa chỉ URL của trình duyệt</li>
+        <li>Tìm mục <strong>Microphone</strong> và chọn <strong>Allow / Cho phép</strong></li>
+        <li>Tải lại trang rồi bấm "Ghi âm" lại</li>
+      </ol>
+      <div class="modal-footer" style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">
+        <button class="btn btn-outline" onclick="closeModal()">Đóng</button>
+        <button class="btn btn-primary" onclick="closeModal();startVoiceNoteRecording(${idx})">Thử lại</button>
+      </div>
+    </div>
+  `);
+}
+window.showMicPermissionDeniedModal = showMicPermissionDeniedModal;
 
 function stopVoiceNoteRecording() {
   clearInterval(_voiceNoteRecordTimer);

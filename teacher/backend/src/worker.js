@@ -4548,6 +4548,9 @@ export default {
         if (body.ref_type === 'assignment') {
           const [row] = await sql`
             SELECT a.time_limit_minutes,
+              (SELECT sub.attempt_number FROM submissions sub
+               WHERE sub.assignment_id = a.id AND sub.student_id = ${studentId}
+               ORDER BY sub.attempt_number DESC LIMIT 1) AS latest_attempt_number,
               (SELECT sub.rewrite_status FROM submissions sub
                WHERE sub.assignment_id = a.id AND sub.student_id = ${studentId}
                ORDER BY sub.attempt_number DESC LIMIT 1) AS latest_rewrite_status
@@ -4557,25 +4560,29 @@ export default {
           `;
           if (!row) return err('Không tìm thấy bài tập', 404);
 
-          // F1b: Reset timer when student opens a rewrite AND previous timer has expired.
-          // Timer starts when student OPENS (not when teacher requests rewrite).
-          let resetForRewrite = false;
-          if (row.time_limit_minutes && row.latest_rewrite_status === 'requested') {
+          // F1b: Timer starts when student OPENS a given attempt, and must reset exactly once
+          // per NEW attempt — identified by attempt_number, not by whether the previous timer
+          // happened to fully expire (a student who submits attempt 1 early, with time left,
+          // must still get a full fresh clock on attempt 2, not the leftover seconds).
+          // Re-opening/refreshing the SAME attempt must NOT reset the clock (no time extension).
+          const currentAttemptNumber = row.latest_rewrite_status === 'requested'
+            ? (row.latest_attempt_number || 0) + 1
+            : 1;
+          let resetSession = false;
+          if (row.time_limit_minutes) {
             const [es] = await sql`
-              SELECT started_at FROM exam_sessions
+              SELECT attempt_number FROM exam_sessions
               WHERE student_id = ${studentId} AND ref_type = 'assignment' AND ref_id = ${body.ref_id}
             `;
-            if (es) {
-              const elapsedSec = (Date.now() - new Date(es.started_at).getTime()) / 1000;
-              resetForRewrite = elapsedSec > row.time_limit_minutes * 60;
-            }
+            resetSession = !es || es.attempt_number !== currentAttemptNumber;
           }
 
           const [sessionRow] = await sql`
-            INSERT INTO exam_sessions (student_id, ref_type, ref_id, started_at)
-            VALUES (${studentId}, ${body.ref_type}, ${body.ref_id}, NOW())
+            INSERT INTO exam_sessions (student_id, ref_type, ref_id, started_at, attempt_number)
+            VALUES (${studentId}, ${body.ref_type}, ${body.ref_id}, NOW(), ${currentAttemptNumber})
             ON CONFLICT (student_id, ref_type, ref_id) DO UPDATE
-              SET started_at = CASE WHEN ${resetForRewrite} THEN NOW() ELSE exam_sessions.started_at END
+              SET started_at = CASE WHEN ${resetSession} THEN NOW() ELSE exam_sessions.started_at END,
+                  attempt_number = ${currentAttemptNumber}
             RETURNING started_at
           `;
           return json({ started_at: sessionRow.started_at });

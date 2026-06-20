@@ -1,0 +1,2 @@
+ALTER TABLE exam_sessions
+  ADD COLUMN IF NOT EXISTS attempt_number INTEGER NOT NULL DEFAULT 1;

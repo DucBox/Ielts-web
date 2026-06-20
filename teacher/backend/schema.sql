@@ -333,10 +333,11 @@ CREATE INDEX IF NOT EXISTS idx_question_pool_folder
 
 -- ── Exam sessions (migration 018) ────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS exam_sessions (
-  student_id  UUID        NOT NULL REFERENCES students(id) ON DELETE CASCADE,
-  ref_type    TEXT        NOT NULL CHECK (ref_type IN ('assignment', 'shared_pool', 'composite_section')),
-  ref_id      UUID        NOT NULL,
-  started_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  student_id     UUID        NOT NULL REFERENCES students(id) ON DELETE CASCADE,
+  ref_type       TEXT        NOT NULL CHECK (ref_type IN ('assignment', 'shared_pool', 'composite_section')),
+  ref_id         UUID        NOT NULL,
+  started_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  attempt_number INTEGER     NOT NULL DEFAULT 1,
   PRIMARY KEY (student_id, ref_type, ref_id)
 );
 

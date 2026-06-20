@@ -326,6 +326,20 @@ function isExpectedCompositeSpeakingKey(key, compositeQuestionId, studentId) {
   return String(key || '').startsWith(`speaking/${compositeQuestionId}/${studentId}-`);
 }
 
+function buildTeacherFeedbackVoiceKey(submissionId, fileName) {
+  return `teacher-feedback/${submissionId}/${crypto.randomUUID()}-${sanitizeFileName(fileName, 'audio')}`;
+}
+
+function isExpectedTeacherFeedbackKey(key, submissionId) {
+  return String(key || '').startsWith(`teacher-feedback/${submissionId}/`);
+}
+
+function collectVoiceNoteKeys(teacherFeedback) {
+  const notes = teacherFeedback?.voice_notes;
+  if (!Array.isArray(notes)) return [];
+  return notes.map(n => n?.key).filter(Boolean);
+}
+
 async function r2RefIncrement(sql, key) {
   if (!key) return;
   await sql`
@@ -373,6 +387,25 @@ async function deleteSharedAttemptAudio(env, rows) {
 async function deleteCompositeSectionAudio(env, rows) {
   for (const row of rows) {
     if (row.audio_key) await env.R2.delete(row.audio_key).catch(() => {});
+    for (const key of collectVoiceNoteKeys(row.teacher_feedback)) {
+      await env.R2.delete(key).catch(() => {});
+    }
+  }
+}
+
+// Deletes submission speaking audio + teacher voice-feedback audio for a batch of `submissions` rows.
+async function deleteSubmissionAudio(env, rows) {
+  for (const sub of rows) {
+    const entries = Array.isArray(sub.speaking_audio_urls) && sub.speaking_audio_urls.length > 0
+      ? sub.speaking_audio_urls
+      : (sub.speaking_audio_url ? [{ url: sub.speaking_audio_url }] : []);
+    for (const e of entries) {
+      const key = e.key || extractR2Key(e.url, env.R2_PUBLIC_URL);
+      if (key) await env.R2.delete(key).catch(() => {});
+    }
+    for (const key of collectVoiceNoteKeys(sub.teacher_feedback)) {
+      await env.R2.delete(key).catch(() => {});
+    }
   }
 }
 
@@ -2696,27 +2729,19 @@ export default {
         }
         if (method === 'DELETE') {
           const [subAudios, compositeAudios, sharedAudios] = await Promise.all([
-            sql`SELECT sub.speaking_audio_url, sub.speaking_audio_urls
+            sql`SELECT sub.speaking_audio_url, sub.speaking_audio_urls, sub.teacher_feedback
                 FROM submissions sub JOIN assignments a ON a.id = sub.assignment_id
                 WHERE a.class_id = ${p.id}`,
-            sql`SELECT css.audio_key
+            sql`SELECT css.audio_key, css.teacher_feedback
                 FROM composite_section_submissions css JOIN assignments a ON a.id = css.assignment_id
-                WHERE a.class_id = ${p.id} AND css.audio_key IS NOT NULL`,
+                WHERE a.class_id = ${p.id} AND (css.audio_key IS NOT NULL OR css.teacher_feedback IS NOT NULL)`,
             sql`SELECT sa.speaking_audio_urls
                 FROM shared_attempts sa
                 JOIN student_classes sc ON sc.student_id = sa.student_id
                 WHERE sc.class_id = ${p.id}`,
           ]);
           await sql`DELETE FROM classes WHERE id = ${p.id}`;
-          for (const sub of subAudios) {
-            const entries = Array.isArray(sub.speaking_audio_urls) && sub.speaking_audio_urls.length > 0
-              ? sub.speaking_audio_urls
-              : (sub.speaking_audio_url ? [{ url: sub.speaking_audio_url }] : []);
-            for (const e of entries) {
-              const key = e.key || extractR2Key(e.url, env.R2_PUBLIC_URL);
-              if (key) await env.R2.delete(key).catch(() => {});
-            }
-          }
+          await deleteSubmissionAudio(env, subAudios);
           await deleteCompositeSectionAudio(env, compositeAudios);
           await deleteSharedAttemptAudio(env, sharedAudios);
           return json({ ok: true });
@@ -2828,20 +2853,12 @@ export default {
         if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
         if (method === 'DELETE') {
           const [subAudios, compositeAudios, sharedAudios] = await Promise.all([
-            sql`SELECT speaking_audio_url, speaking_audio_urls FROM submissions WHERE student_id = ${p.id}`,
-            sql`SELECT audio_key FROM composite_section_submissions WHERE student_id = ${p.id} AND audio_key IS NOT NULL`,
+            sql`SELECT speaking_audio_url, speaking_audio_urls, teacher_feedback FROM submissions WHERE student_id = ${p.id}`,
+            sql`SELECT audio_key, teacher_feedback FROM composite_section_submissions WHERE student_id = ${p.id} AND (audio_key IS NOT NULL OR teacher_feedback IS NOT NULL)`,
             sql`SELECT speaking_audio_urls FROM shared_attempts WHERE student_id = ${p.id}`,
           ]);
           await sql`DELETE FROM students WHERE id = ${p.id}`;
-          for (const sub of subAudios) {
-            const entries = Array.isArray(sub.speaking_audio_urls) && sub.speaking_audio_urls.length > 0
-              ? sub.speaking_audio_urls
-              : (sub.speaking_audio_url ? [{ url: sub.speaking_audio_url }] : []);
-            for (const e of entries) {
-              const key = e.key || extractR2Key(e.url, env.R2_PUBLIC_URL);
-              if (key) await env.R2.delete(key).catch(() => {});
-            }
-          }
+          await deleteSubmissionAudio(env, subAudios);
           await deleteCompositeSectionAudio(env, compositeAudios);
           await deleteSharedAttemptAudio(env, sharedAudios);
           return json({ ok: true });
@@ -3001,6 +3018,12 @@ export default {
           if (!pool) return err('Không tìm thấy đề luyện tập', 404);
           maxBytes = 25 * 1024 * 1024;
           key = buildSharedSpeakingKey(poolId, studentId, fileName);
+        } else if (scope === 'teacher-feedback') {
+          if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
+          const submissionId = String(body?.submission_id || '').trim();
+          if (!submissionId) return err('submission_id là bắt buộc', 400);
+          maxBytes = 25 * 1024 * 1024;
+          key = buildTeacherFeedbackVoiceKey(submissionId, fileName);
         } else {
           return err('Upload scope không hợp lệ', 400);
         }
@@ -3980,19 +4003,11 @@ export default {
         }
         if (method === 'DELETE') {
           const [subAudios, compositeAudios] = await Promise.all([
-            sql`SELECT speaking_audio_url, speaking_audio_urls FROM submissions WHERE assignment_id = ${p.id}`,
-            sql`SELECT audio_key FROM composite_section_submissions WHERE assignment_id = ${p.id} AND audio_key IS NOT NULL`,
+            sql`SELECT speaking_audio_url, speaking_audio_urls, teacher_feedback FROM submissions WHERE assignment_id = ${p.id}`,
+            sql`SELECT audio_key, teacher_feedback FROM composite_section_submissions WHERE assignment_id = ${p.id} AND (audio_key IS NOT NULL OR teacher_feedback IS NOT NULL)`,
           ]);
           await sql`DELETE FROM assignments WHERE id = ${p.id}`;
-          for (const sub of subAudios) {
-            const entries = Array.isArray(sub.speaking_audio_urls) && sub.speaking_audio_urls.length > 0
-              ? sub.speaking_audio_urls
-              : (sub.speaking_audio_url ? [{ url: sub.speaking_audio_url }] : []);
-            for (const e of entries) {
-              const key = e.key || extractR2Key(e.url, env.R2_PUBLIC_URL);
-              if (key) await env.R2.delete(key).catch(err => console.error('R2 speaking cleanup failed:', err));
-            }
-          }
+          await deleteSubmissionAudio(env, subAudios);
           await deleteCompositeSectionAudio(env, compositeAudios);
           return json({ ok: true });
         }
@@ -4232,7 +4247,7 @@ export default {
           const body = await request.json();
           // Capture previous score + scoring_scale to detect first-time grading and validate bound
           const [prev] = await sql`
-            SELECT sub.overall_score, a.scoring_scale
+            SELECT sub.overall_score, sub.teacher_feedback, a.scoring_scale
             FROM submissions sub
             JOIN assignments a ON a.id = sub.assignment_id
             WHERE sub.id = ${p.id}
@@ -4248,13 +4263,19 @@ export default {
           const wasUnscored = prev && prev.overall_score == null;
           if (!prev) {
             const [prevComposite] = await sql`
-              SELECT css.score AS overall_score
+              SELECT css.score AS overall_score, css.teacher_feedback
               FROM composite_section_submissions css
               WHERE css.id = ${p.id}
             `;
             if (!prevComposite) return err('Không tìm thấy bài nộp', 404);
             const compositeWasUnscored = prevComposite.overall_score == null;
             const teacherFeedbackJson = body.teacher_feedback != null ? JSON.stringify(body.teacher_feedback) : null;
+            // Voice-feedback audio is unique per submission (not shared) — delete any key the teacher removed.
+            if (body.teacher_feedback != null) {
+              const oldKeys = new Set(collectVoiceNoteKeys(prevComposite.teacher_feedback));
+              const newKeys = new Set(collectVoiceNoteKeys(body.teacher_feedback));
+              for (const key of oldKeys) if (!newKeys.has(key)) await env.R2.delete(key).catch(() => {});
+            }
             const [updatedComposite] = await sql`
               UPDATE composite_section_submissions
               SET teacher_feedback = ${teacherFeedbackJson}::jsonb,
@@ -4295,6 +4316,12 @@ export default {
               }
             }
             return json(updatedComposite);
+          }
+          // Voice-feedback audio is unique per submission (not shared) — delete any key the teacher removed.
+          if (body.teacher_feedback != null) {
+            const oldKeys = new Set(collectVoiceNoteKeys(prev.teacher_feedback));
+            const newKeys = new Set(collectVoiceNoteKeys(body.teacher_feedback));
+            for (const key of oldKeys) if (!newKeys.has(key)) await env.R2.delete(key).catch(() => {});
           }
           // "Hoàn thành" clears any pending rewrite → "Đã làm". "Yêu cầu viết lại" sets 'requested'.
           // CASE WHEN prevents accidentally clearing 'rewritten' on old attempts if action is absent.

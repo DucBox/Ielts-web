@@ -3421,6 +3421,12 @@ let _gradingSubmissionId  = null;
 let _gradingText          = '';
 let _gradingSkill         = '';
 let _gradingAiFeedback    = null;
+let _gradingVoiceNotes    = [];
+let _voiceNoteMediaRecorder = null;
+let _voiceNoteChunks      = [];
+let _voiceNoteRecordIdx   = -1;
+let _voiceNoteRecordSeconds = 0;
+let _voiceNoteRecordTimer = null;
 
 // B4.7 — global grading keyboard shortcuts
 let _gradingKeyHandler = null;
@@ -3488,6 +3494,10 @@ function renderGradingPage(sub) {
   const existing       = sub.teacher_feedback || {};
   _gradingAnnotations  = existing.annotations || [];
   _gradingAiFeedback   = sub.ai_feedback || null;
+  _gradingVoiceNotes   = (existing.voice_notes || []).map(v => ({
+    displayName: v.name || '', file: null, name: v.name || '', size: 0,
+    status: 'done', url: v.url || null, key: v.key || null, pct: 100, eta: null, localUrl: null,
+  }));
   const submissionsHref = sub.submission_kind === 'composite_section'
     ? `/composite/${sub.assignment_id}`
     : `/assignment/${sub.assignment_id}`;
@@ -3577,6 +3587,12 @@ function renderGradingPage(sub) {
             placeholder="Nhận xét chung về bài viết...">${escapeHtml(existing.overall || '')}</textarea>
         </div>
 
+        <div class="grading-sidebar-section">
+          <label class="form-label">🎙️ Nhận xét bằng giọng nói <span style="font-size:11px;font-weight:400;color:var(--gray-400)">(tuỳ chọn — có thể ghi nhiều bản)</span></label>
+          <div id="voice-notes-list"></div>
+          <button type="button" class="btn btn-outline btn-sm" style="margin-top:8px" onclick="addVoiceNoteSlot()">+ Thêm bản ghi</button>
+        </div>
+
         <div class="grading-sidebar-section" style="display:flex;align-items:center;gap:10px">
           <label class="form-label" style="margin:0;white-space:nowrap">Band Score</label>
           <input id="grading-score" type="number" min="0" max="9" step="0.5"
@@ -3627,6 +3643,7 @@ function renderGradingPage(sub) {
   refreshWritingDisplay();
   refreshAnnotationsList();
   refreshAiFeedbackDisplay();
+  renderVoiceNotesList();
 
   // Attach selection listener AFTER rendering
   document.getElementById('writing-display').addEventListener('mouseup', handleTextSelection);
@@ -3913,6 +3930,163 @@ function scrollToAnnotation(id) {
     ?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
+function _newVoiceNoteSlot() {
+  return { displayName: '', file: null, name: '', size: 0, status: 'idle', url: null, key: null, pct: 0, eta: null, localUrl: null };
+}
+
+function addVoiceNoteSlot() {
+  _gradingVoiceNotes.push(_newVoiceNoteSlot());
+  renderVoiceNotesList();
+}
+window.addVoiceNoteSlot = addVoiceNoteSlot;
+
+function removeVoiceNoteSlot(idx) {
+  if (_gradingVoiceNotes[idx]?.status === 'recording') return;
+  _gradingVoiceNotes.splice(idx, 1);
+  renderVoiceNotesList();
+}
+window.removeVoiceNoteSlot = removeVoiceNoteSlot;
+
+function renderVoiceNotesList() {
+  const el = $('#voice-notes-list');
+  if (!el) return;
+  if (_gradingVoiceNotes.length === 0) {
+    el.innerHTML = '<div style="color:var(--gray-400);font-size:12px;padding:4px 0">Chưa có bản ghi nào.</div>';
+    return;
+  }
+  el.innerHTML = _gradingVoiceNotes.map((s, i) => {
+    let body = '';
+    if (s.status === 'idle' || s.status === 'error') {
+      const errLabel = s.status === 'error' ? `<span style="color:var(--danger);font-size:12px">✗ Lỗi upload — thử lại:</span> ` : '';
+      body = `${errLabel}
+        <input id="vn-file-input-${i}" type="file" accept="audio/*" style="display:none" onchange="onVoiceNoteFileSelected(this,${i})" />
+        <button type="button" class="audio-pick-btn" onclick="startVoiceNoteRecording(${i})">🎙️ Ghi âm</button>
+        <button type="button" class="audio-pick-btn" onclick="document.getElementById('vn-file-input-${i}').click()">🎵 Chọn file</button>`;
+    } else if (s.status === 'recording') {
+      body = `<span style="font-size:13px;color:#dc2626;font-weight:600">● Đang ghi âm... <span id="vn-record-timer">0:00</span></span>
+        <button type="button" class="btn btn-sm btn-danger" onclick="stopVoiceNoteRecording()">⏹ Dừng</button>`;
+    } else if (s.status === 'uploading') {
+      const etaStr = s.pct < 100 && s.eta != null ? ` · ETA ${_fmtEta(s.eta)}` : '';
+      body = `<div class="upload-progress-row" style="width:100%">
+          <div class="upload-progress-bar-wrap"><div class="upload-progress-bar" style="width:${s.pct}%"></div></div>
+          <span class="upload-progress-label">${s.pct}%${etaStr}</span>
+        </div>`;
+    } else if (s.status === 'done') {
+      body = `<div class="audio-slot-done" style="width:100%">
+          <span class="audio-upload-done">✓</span>
+          <audio controls src="${escapeHtml(s.localUrl || s.url || '')}" style="height:32px;flex:1;min-width:0;border-radius:6px"></audio>
+        </div>`;
+    }
+    return `<div class="audio-slot" id="vn-slot-${i}">
+      <div class="audio-slot-num">${i + 1}</div>
+      <div class="audio-slot-content">
+        <input type="text" class="form-input audio-slot-name" placeholder="part_${i + 1}"
+               value="${escapeHtml(s.displayName)}" onchange="_gradingVoiceNotes[${i}].displayName=this.value" />
+        <div class="audio-slot-file">${body}</div>
+      </div>
+      ${s.status !== 'recording' ? `<button type="button" class="remove-audio-slot" onclick="removeVoiceNoteSlot(${i})" title="Xoá" aria-label="Xoá">×</button>` : ''}
+    </div>`;
+  }).join('');
+}
+window.renderVoiceNotesList = renderVoiceNotesList;
+
+async function startVoiceNoteRecording(idx) {
+  if (_voiceNoteRecordIdx >= 0) { toast('Đang ghi âm bản khác, hãy dừng trước', 'warning'); return; }
+  if (!_gradingVoiceNotes[idx]) return;
+  _voiceNoteRecordIdx = idx;
+  _gradingVoiceNotes[idx].status = 'recording';
+  renderVoiceNotesList();
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    _voiceNoteChunks = [];
+    const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/ogg';
+    _voiceNoteMediaRecorder = new MediaRecorder(stream, { mimeType });
+    _voiceNoteMediaRecorder.ondataavailable = e => { if (e.data.size > 0) _voiceNoteChunks.push(e.data); };
+    _voiceNoteMediaRecorder.onstop = () => {
+      stream.getTracks().forEach(t => t.stop());
+      const rawMime = _voiceNoteMediaRecorder.mimeType || 'audio/webm';
+      const blob = new Blob(_voiceNoteChunks, { type: rawMime });
+      _onVoiceNoteRecordingDone(_voiceNoteRecordIdx, blob, rawMime);
+    };
+    _voiceNoteMediaRecorder.start(250);
+    _voiceNoteRecordSeconds = 0;
+    clearInterval(_voiceNoteRecordTimer);
+    _voiceNoteRecordTimer = setInterval(() => {
+      _voiceNoteRecordSeconds++;
+      const m = Math.floor(_voiceNoteRecordSeconds / 60), s = _voiceNoteRecordSeconds % 60;
+      const el = document.getElementById('vn-record-timer');
+      if (el) el.textContent = `${m}:${s.toString().padStart(2, '0')}`;
+    }, 1000);
+  } catch (e) {
+    _gradingVoiceNotes[idx].status = 'idle';
+    _voiceNoteRecordIdx = -1;
+    renderVoiceNotesList();
+    toast('Không thể truy cập microphone: ' + e.message, 'error');
+  }
+}
+window.startVoiceNoteRecording = startVoiceNoteRecording;
+
+function stopVoiceNoteRecording() {
+  clearInterval(_voiceNoteRecordTimer);
+  _voiceNoteMediaRecorder?.stop();
+}
+window.stopVoiceNoteRecording = stopVoiceNoteRecording;
+
+function _onVoiceNoteRecordingDone(idx, blob, mimeType) {
+  const slot = _gradingVoiceNotes[idx];
+  _voiceNoteRecordIdx = -1;
+  if (!slot) return;
+  const cleanMime = String(mimeType || 'audio/webm').split(';')[0].trim();
+  const ext = cleanMime.includes('webm') ? 'webm' : cleanMime.includes('ogg') ? 'ogg' : 'webm';
+  const file = new File([blob], `voice-note-${idx + 1}.${ext}`, { type: cleanMime });
+  slot.file = file;
+  slot.name = file.name;
+  slot.size = blob.size;
+  slot.localUrl = URL.createObjectURL(blob);
+  slot.status = 'uploading';
+  slot.pct = 0;
+  renderVoiceNotesList();
+  _uploadVoiceNoteSlot(idx);
+}
+
+async function onVoiceNoteFileSelected(input, idx) {
+  const file = input.files?.[0];
+  if (!file || !_gradingVoiceNotes[idx]) return;
+  input.value = '';
+  const ext = (file.name.split('.').pop() || '').toLowerCase();
+  if (!SUPPORTED_AUDIO_EXTS.has(ext)) { toast('File audio không hỗ trợ: .' + ext, 'error'); return; }
+  _gradingVoiceNotes[idx].file = file;
+  _gradingVoiceNotes[idx].name = file.name;
+  _gradingVoiceNotes[idx].size = file.size;
+  _gradingVoiceNotes[idx].localUrl = URL.createObjectURL(file);
+  _gradingVoiceNotes[idx].status = 'uploading';
+  _gradingVoiceNotes[idx].pct = 0;
+  renderVoiceNotesList();
+  _uploadVoiceNoteSlot(idx);
+}
+window.onVoiceNoteFileSelected = onVoiceNoteFileSelected;
+
+async function _uploadVoiceNoteSlot(idx) {
+  const slot = _gradingVoiceNotes[idx];
+  if (!slot) return;
+  try {
+    const uploadTarget = await requestDirectAudioUpload(slot.file, 'teacher-feedback', { submission_id: _gradingSubmissionId });
+    await putDirectAudioXHR(uploadTarget.upload_url, slot.file, uploadTarget.headers?.['Content-Type'] || slot.file.type, (pct, eta) => {
+      if (_gradingVoiceNotes[idx]) { _gradingVoiceNotes[idx].pct = pct; _gradingVoiceNotes[idx].eta = eta; }
+      renderVoiceNotesList();
+    });
+    if (!_gradingVoiceNotes[idx]) return; // slot removed while uploading
+    _gradingVoiceNotes[idx].status = 'done';
+    _gradingVoiceNotes[idx].url    = uploadTarget.public_url;
+    _gradingVoiceNotes[idx].key    = uploadTarget.key;
+    renderVoiceNotesList();
+  } catch (e) {
+    if (_gradingVoiceNotes[idx]) _gradingVoiceNotes[idx].status = 'error';
+    renderVoiceNotesList();
+    toast('Lỗi upload bản ghi: ' + (e.message || 'Unknown error'), 'error');
+  }
+}
+
 async function saveGrading(btn, action = 'complete') {
   const overall = document.getElementById('overall-feedback')?.value.trim() || '';
   const scoreRaw = document.getElementById('grading-score')?.value;
@@ -3927,11 +4101,19 @@ async function saveGrading(btn, action = 'complete') {
     toast('Điểm Band phải từ 0 đến 9', 'error');
     return;
   }
+  if (_gradingVoiceNotes.some(s => s.status === 'recording' || s.status === 'uploading')) {
+    toast('Đang xử lý bản ghi âm, vui lòng đợi xong rồi lưu', 'warning');
+    return;
+  }
+
+  const voiceNotes = _gradingVoiceNotes
+    .filter(s => s.status === 'done' && s.url)
+    .map((s, i) => ({ url: s.url, key: s.key, name: (s.displayName || '').trim() || `part_${i + 1}` }));
 
   btnLoading(btn);
   try {
     await api.patch(`/submissions/${_gradingSubmissionId}`, {
-      teacher_feedback: { annotations: _gradingAnnotations, overall, score },
+      teacher_feedback: { annotations: _gradingAnnotations, overall, score, voice_notes: voiceNotes },
       overall_score: score,
       action,
     });

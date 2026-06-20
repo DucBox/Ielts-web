@@ -5579,6 +5579,7 @@ function renderWritingFeedback(sub, allVersions = null) {
   const overallBlock = overall ? `
     <div class="section-label">Nhận xét tổng thể</div>
     <div class="feedback-overall">${escapeHtml(overall)}</div>` : '';
+  const voiceNotesBlock = buildVoiceNotesHtml(feedback.voice_notes);
 
   const _annColors = _annColorMap(annotations);
   const annSidebar = _buildAnnSidebar(annotations, _annColors);
@@ -5617,6 +5618,7 @@ function renderWritingFeedback(sub, allVersions = null) {
       <div class="assignment-content">
         <div class="content-pane" id="feedback-content-pane">
           ${overallBlock}
+          ${voiceNotesBlock}
           <div class="section-label"${overall ? ' style="margin-top:20px"' : ''}>Bài làm của bạn
             ${annotations.length > 0 ? '<span class="feedback-hint">Màu highlight = nhận xét · Bấm số để xem</span>' : ''}
           </div>
@@ -5683,6 +5685,19 @@ function _annColorMap(annotations) {
     }
   }
   return new Map(highlights.map(a => [a.id, Math.min(depths.get(a.id), ANN_COLORS.length - 1)]));
+}
+
+function buildVoiceNotesHtml(voiceNotes) {
+  if (!Array.isArray(voiceNotes) || voiceNotes.length === 0) return '';
+  return `
+    <div class="section-label" style="margin-top:20px">🎙️ Nhận xét bằng giọng nói</div>
+    <div class="voice-notes-list">
+      ${voiceNotes.map((v, i) => `
+        <div class="voice-note-item">
+          <div class="voice-note-name">${escapeHtml(v.name || `part_${i + 1}`)}</div>
+          <audio controls src="${escapeHtml(v.url || '')}" style="width:100%;height:36px;outline:none"></audio>
+        </div>`).join('')}
+    </div>`;
 }
 
 function buildAnnotatedHtml(text, annotations) {
@@ -5813,6 +5828,7 @@ function renderSpeakingFeedback(sub, allVersions = null) {
   const overallBlock = overall ? `
     <div class="section-label">Nhận xét tổng thể</div>
     <div class="feedback-overall">${escapeHtml(overall)}</div>` : '';
+  const voiceNotesBlock = buildVoiceNotesHtml(feedback.voice_notes);
 
   const _annColors = _annColorMap(annotations);
   const annSidebar = _buildAnnSidebar(annotations, _annColors);
@@ -5851,6 +5867,7 @@ function renderSpeakingFeedback(sub, allVersions = null) {
       <div class="assignment-content">
         <div class="content-pane" id="feedback-content-pane">
           ${overallBlock}
+          ${voiceNotesBlock}
           ${(() => {
             const urls = Array.isArray(sub.speaking_audio_urls) && sub.speaking_audio_urls.length > 0
               ? sub.speaking_audio_urls

@@ -1983,6 +1983,26 @@ body {
   margin-bottom: 4px;
 }
 
+.voice-notes-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+.voice-note-item {
+  background: #fff;
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 12px 16px;
+  border-left: 4px solid var(--primary);
+}
+.voice-note-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--gray-500);
+  margin-bottom: 6px;
+}
+
 /* Per-annotation cards */
 .feedback-annotations {
   display: flex;
@@ -4930,6 +4950,7 @@ select.pi-input { height: 42px; cursor: pointer; }
 [data-theme="dark"] .submitted-content,
 [data-theme="dark"] .feedback-overall,
 [data-theme="dark"] .feedback-ann-card,
+[data-theme="dark"] .voice-note-item,
 [data-theme="dark"] .submit-confirm-modal {
   background: var(--card-bg);
   border-color: var(--border);

@@ -3965,6 +3965,8 @@ function renderVoiceNotesList() {
     } else if (s.status === 'recording') {
       body = `<span style="font-size:13px;color:#dc2626;font-weight:600">● Đang ghi âm... <span id="vn-record-timer">0:00</span></span>
         <button type="button" class="btn btn-sm btn-danger" onclick="stopVoiceNoteRecording()">⏹ Dừng</button>`;
+    } else if (s.status === 'checking') {
+      body = `<span style="font-size:13px;color:var(--gray-500)">⏳ Đang kiểm tra file...</span>`;
     } else if (s.status === 'uploading') {
       const etaStr = s.pct < 100 && s.eta != null ? ` · ETA ${_fmtEta(s.eta)}` : '';
       body = `<div class="upload-progress-row" style="width:100%">
@@ -4116,12 +4118,55 @@ function _onVoiceNoteRecordingDone(idx, blob, mimeType) {
   _uploadVoiceNoteSlot(idx);
 }
 
+// Voice feedback only needs to PLAY in the student's <audio> tag (no STT), so the
+// constraint is "browser-playable", not "Whisper-transcribable". This drops aiff/aif
+// (accepted by Whisper but not playable in Chrome) from the general audio allowlist.
+const BROWSER_PLAYABLE_AUDIO_EXTS = new Set(['mp3','mpeg','mpga','mp4','m4a','aac','wav','wave','ogg','oga','webm','flac']);
+
+// Probe whether THIS browser can actually decode/play the file by loading it into a
+// detached <audio> element. Resolves true on loadedmetadata, false on error/timeout.
+// Catches mislabelled extensions, corrupt files, and formats the browser can't play.
+function probeAudioPlayable(file) {
+  return new Promise(resolve => {
+    const url = URL.createObjectURL(file);
+    const audio = new Audio();
+    let settled = false;
+    const done = ok => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      audio.removeAttribute('src');
+      URL.revokeObjectURL(url);
+      resolve(ok);
+    };
+    const timer = setTimeout(() => done(false), 8000);
+    audio.preload = 'metadata';
+    audio.onloadedmetadata = () => done(isFinite(audio.duration) && audio.duration > 0);
+    audio.onerror = () => done(false);
+    audio.src = url;
+  });
+}
+
 async function onVoiceNoteFileSelected(input, idx) {
   const file = input.files?.[0];
   if (!file || !_gradingVoiceNotes[idx]) return;
   input.value = '';
   const ext = (file.name.split('.').pop() || '').toLowerCase();
-  if (!SUPPORTED_AUDIO_EXTS.has(ext)) { toast('File audio không hỗ trợ: .' + ext, 'error'); return; }
+  if (!BROWSER_PLAYABLE_AUDIO_EXTS.has(ext)) {
+    showFeedbackAudioUnsupported(file.name, ext);
+    return;
+  }
+  // Layer 2: actually verify the file plays before committing to upload.
+  _gradingVoiceNotes[idx].status = 'checking';
+  renderVoiceNotesList();
+  const playable = await probeAudioPlayable(file);
+  if (!_gradingVoiceNotes[idx]) return; // slot removed while checking
+  if (!playable) {
+    _gradingVoiceNotes[idx].status = 'idle';
+    renderVoiceNotesList();
+    showFeedbackAudioUnsupported(file.name, ext, true);
+    return;
+  }
   _gradingVoiceNotes[idx].file = file;
   _gradingVoiceNotes[idx].name = file.name;
   _gradingVoiceNotes[idx].size = file.size;
@@ -4132,6 +4177,21 @@ async function onVoiceNoteFileSelected(input, idx) {
   _uploadVoiceNoteSlot(idx);
 }
 window.onVoiceNoteFileSelected = onVoiceNoteFileSelected;
+
+function showFeedbackAudioUnsupported(fileName, ext, failedProbe = false) {
+  openModal('⚠️ File audio không phát được', `
+    <div style="line-height:1.7;color:var(--text)">
+      ${failedProbe
+        ? `<p>File <strong>${escapeHtml(fileName)}</strong> không mở/phát được trong trình duyệt — học sinh sẽ không nghe được nếu vẫn dùng. File có thể bị hỏng, đặt sai đuôi, hoặc dùng codec trình duyệt không hỗ trợ.</p>`
+        : `<p>File <strong>${escapeHtml(fileName)}</strong> có định dạng <strong>.${escapeHtml(ext)}</strong> không phát được trên trình duyệt (học sinh sẽ không nghe được bản nhận xét).</p>`}
+      <p style="margin-top:8px">Định dạng nên dùng: <strong>mp3, m4a, wav, ogg, webm</strong>.</p>
+      <p style="margin-top:8px;font-size:13px;color:var(--gray-600)">💡 Hoặc bấm <strong>🎙️ Ghi âm</strong> để thu trực tiếp — bản ghi luôn phát được.</p>
+    </div>
+    <div style="margin-top:20px;text-align:right">
+      <button class="btn btn-primary" onclick="closeModal()">Đã hiểu</button>
+    </div>`);
+}
+window.showFeedbackAudioUnsupported = showFeedbackAudioUnsupported;
 
 async function _uploadVoiceNoteSlot(idx) {
   const slot = _gradingVoiceNotes[idx];
@@ -4168,7 +4228,7 @@ async function saveGrading(btn, action = 'complete') {
     toast('Điểm Band phải từ 0 đến 9', 'error');
     return;
   }
-  if (_gradingVoiceNotes.some(s => s.status === 'recording' || s.status === 'uploading')) {
+  if (_gradingVoiceNotes.some(s => s.status === 'recording' || s.status === 'uploading' || s.status === 'checking')) {
     toast('Đang xử lý bản ghi âm, vui lòng đợi xong rồi lưu', 'warning');
     return;
   }

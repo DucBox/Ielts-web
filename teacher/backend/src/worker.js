@@ -4161,7 +4161,8 @@ export default {
           if (sub) {
             const prevAttempts = sub.attempt_number > 1
               ? await sql`
-                  SELECT id, attempt_number, overall_score, teacher_feedback, submitted_at, rewrite_status
+                  SELECT id, attempt_number, overall_score, teacher_feedback, submitted_at, rewrite_status,
+                         writing_content, word_count, speaking_script, speaking_audio_url, speaking_audio_urls
                   FROM submissions
                   WHERE assignment_id = ${sub.assignment_id}
                     AND student_id = ${sub.student_id}

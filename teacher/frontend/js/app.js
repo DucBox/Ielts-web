@@ -3487,6 +3487,42 @@ window.addEventListener('hashchange', () => {
   if (!window.location.hash.includes('/grading/')) unbindGradingShortcuts();
 });
 
+// Collapsible dropdowns (one per earlier attempt) showing what the student
+// submitted in previous rounds — rendered under "Đề bài" when grading a rewrite.
+function prevAttemptsDropdownHtml(prevAttempts, skill) {
+  if (!Array.isArray(prevAttempts) || prevAttempts.length === 0) return '';
+  return prevAttempts.map(a => {
+    let inner = '';
+    if (skill === 'speaking') {
+      const urls = Array.isArray(a.speaking_audio_urls) && a.speaking_audio_urls.length
+        ? a.speaking_audio_urls
+        : (a.speaking_audio_url ? [{ url: a.speaking_audio_url, name: '' }] : []);
+      const audios = urls.map((t, i) => `
+        <div style="margin-bottom:8px">
+          ${urls.length > 1 ? `<div style="font-size:12px;color:var(--gray-500);margin-bottom:4px">${escapeHtml(t.name || ('Phần ' + (i + 1)))}</div>` : ''}
+          <audio controls src="${escapeHtml(t.url || '')}" style="width:100%;height:34px"></audio>
+        </div>`).join('');
+      inner = `${audios}
+        ${a.speaking_script
+          ? `<div style="white-space:pre-wrap;font-size:14px;line-height:1.7;margin-top:6px">${escapeHtml(a.speaking_script)}</div>`
+          : '<div style="color:var(--gray-400);font-size:13px">Không có transcript</div>'}`;
+    } else {
+      inner = a.writing_content
+        ? `<div style="white-space:pre-wrap;font-size:14px;line-height:1.8">${escapeHtml(a.writing_content)}</div>`
+        : '<div style="color:var(--gray-400);font-size:13px">Không có nội dung</div>';
+    }
+    const scoreStr = a.overall_score != null ? ` · ${a.overall_score} Band` : '';
+    const wcStr = skill !== 'speaking' && a.word_count != null ? ` · ${a.word_count} từ` : '';
+    return `
+      <details class="grading-question-details">
+        <summary class="grading-panel-label grading-question-summary">
+          📄 Bài làm lần ${a.attempt_number}${scoreStr}${wcStr} <span class="grading-select-hint">Nhấn để mở/thu gọn</span>
+        </summary>
+        <div class="grading-question-body">${inner}</div>
+      </details>`;
+  }).join('');
+}
+
 function renderGradingPage(sub) {
   _gradingSubmissionId = sub.id;
   _gradingSkill        = sub.skill;
@@ -3567,6 +3603,7 @@ function renderGradingPage(sub) {
             ${renderRichQuestionContentHTML(sub.content_blocks, sub.content_text || '')}
           </div>
         </details>` : ''}
+        ${prevAttemptsDropdownHtml(prevAttempts, sub.skill)}
         ${mediaHtml}
         <div class="grading-panel-label">
           📝 ${sub.skill === 'speaking' ? 'Transcript AI' : 'Bài làm'}

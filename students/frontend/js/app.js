@@ -4831,6 +4831,27 @@ function _renderSpeakingSlots() {
   }).join('');
 }
 
+// Safari's MediaRecorder only supports audio/mp4 (NOT webm/ogg), so probe a
+// candidate ladder and let the browser default kick in if none match.
+function pickAudioRecorderMime() {
+  const cands = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg'];
+  for (const c of cands) {
+    try { if (window.MediaRecorder && MediaRecorder.isTypeSupported(c)) return c; } catch {}
+  }
+  return '';
+}
+
+function extFromAudioMime(mime) {
+  const m = String(mime || '').split(';')[0].trim().toLowerCase();
+  if (m.includes('webm')) return 'webm';
+  if (m.includes('ogg')) return 'ogg';
+  if (m.includes('mp4') || m.includes('m4a') || m.includes('aac')) return 'm4a';
+  if (m.includes('mpeg') || m.includes('mp3')) return 'mp3';
+  if (m.includes('wav')) return 'wav';
+  if (m.includes('flac')) return 'flac';
+  return 'webm';
+}
+
 async function startSlotRecording(idx) {
   if (_speakingRecordIdx >= 0) { toast('Đang ghi âm phần khác, hãy dừng trước', 'warning'); return; }
   _speakingRecordIdx = idx;
@@ -4839,17 +4860,19 @@ async function startSlotRecording(idx) {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     _audioChunks = [];
-    const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/ogg';
-    _mediaRecorder = new MediaRecorder(stream, { mimeType });
+    const recMime = pickAudioRecorderMime();
+    _mediaRecorder = recMime ? new MediaRecorder(stream, { mimeType: recMime }) : new MediaRecorder(stream);
     _mediaRecorder.ondataavailable = e => { if (e.data.size > 0) _audioChunks.push(e.data); };
     _mediaRecorder.onstop = () => {
       stream.getTracks().forEach(t => t.stop());
       stopWaveform();
-      const rawMime = _mediaRecorder.mimeType || 'audio/webm';
+      const rawMime = (_mediaRecorder.mimeType || recMime || 'audio/webm').split(';')[0];
       const blob = new Blob(_audioChunks, { type: rawMime });
       _onSlotRecordingDone(_speakingRecordIdx, blob, rawMime);
     };
-    _mediaRecorder.start(250);
+    // No timeslice: a single complete blob on stop avoids Safari's broken
+    // fragmented-MP4 output that Whisper rejects as "corrupted".
+    _mediaRecorder.start();
     const ind = $('#recording-indicator'); if (ind) ind.style.display = '';
     startWaveform(stream);
     _recordSeconds = 0;
@@ -4914,14 +4937,20 @@ async function _silenceCheckThenUpload(idx, file) {
 async function _onSlotRecordingDone(idx, blob, mimeType) {
   const slot = _speakingSlots[idx];
   if (!slot) { _speakingRecordIdx = -1; return; }
+  _speakingRecordIdx = -1;
+  if (!blob || blob.size === 0) {
+    slot.status = 'idle';
+    _renderSpeakingSlots();
+    toast('Bản ghi rỗng — vui lòng thử thu âm lại', 'error');
+    return;
+  }
   const cleanMime = String(mimeType || 'audio/webm').split(';')[0].trim();
-  const ext = cleanMime.includes('webm') ? 'webm' : cleanMime.includes('ogg') ? 'ogg' : 'webm';
+  const ext = extFromAudioMime(cleanMime);
   const file = new File([blob], `speaking-part${idx + 1}.${ext}`, { type: cleanMime });
   slot.name = file.name;
   slot.size = blob.size;
   slot.localUrl = URL.createObjectURL(blob);
   slot.pct = 0;
-  _speakingRecordIdx = -1;
   _silenceCheckThenUpload(idx, file);
 }
 

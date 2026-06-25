@@ -4038,16 +4038,17 @@ async function startVoiceNoteRecording(idx) {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     _voiceNoteChunks = [];
-    const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/ogg';
-    _voiceNoteMediaRecorder = new MediaRecorder(stream, { mimeType });
+    const recMime = pickAudioRecorderMime();
+    _voiceNoteMediaRecorder = recMime ? new MediaRecorder(stream, { mimeType: recMime }) : new MediaRecorder(stream);
     _voiceNoteMediaRecorder.ondataavailable = e => { if (e.data.size > 0) _voiceNoteChunks.push(e.data); };
     _voiceNoteMediaRecorder.onstop = () => {
       stream.getTracks().forEach(t => t.stop());
-      const rawMime = _voiceNoteMediaRecorder.mimeType || 'audio/webm';
+      const rawMime = (_voiceNoteMediaRecorder.mimeType || recMime || 'audio/webm').split(';')[0];
       const blob = new Blob(_voiceNoteChunks, { type: rawMime });
       _onVoiceNoteRecordingDone(_voiceNoteRecordIdx, blob, rawMime);
     };
-    _voiceNoteMediaRecorder.start(250);
+    // No timeslice → single complete blob (Safari fragmented-MP4 safe).
+    _voiceNoteMediaRecorder.start();
     _voiceNoteRecordSeconds = 0;
     clearInterval(_voiceNoteRecordTimer);
     _voiceNoteRecordTimer = setInterval(() => {
@@ -4142,8 +4143,14 @@ function _onVoiceNoteRecordingDone(idx, blob, mimeType) {
   const slot = _gradingVoiceNotes[idx];
   _voiceNoteRecordIdx = -1;
   if (!slot) return;
+  if (!blob || blob.size === 0) {
+    slot.status = 'idle';
+    renderVoiceNotesList();
+    toast('Bản ghi rỗng — vui lòng thử ghi âm lại', 'error');
+    return;
+  }
   const cleanMime = String(mimeType || 'audio/webm').split(';')[0].trim();
-  const ext = cleanMime.includes('webm') ? 'webm' : cleanMime.includes('ogg') ? 'ogg' : 'webm';
+  const ext = extFromAudioMime(cleanMime);
   const file = new File([blob], `voice-note-${idx + 1}.${ext}`, { type: cleanMime });
   slot.file = file;
   slot.name = file.name;
@@ -4153,6 +4160,27 @@ function _onVoiceNoteRecordingDone(idx, blob, mimeType) {
   slot.pct = 0;
   renderVoiceNotesList();
   _uploadVoiceNoteSlot(idx);
+}
+
+// Safari's MediaRecorder only supports audio/mp4 (not webm/ogg); probe a ladder
+// and fall back to the browser default.
+function pickAudioRecorderMime() {
+  const cands = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg'];
+  for (const c of cands) {
+    try { if (window.MediaRecorder && MediaRecorder.isTypeSupported(c)) return c; } catch {}
+  }
+  return '';
+}
+
+function extFromAudioMime(mime) {
+  const m = String(mime || '').split(';')[0].trim().toLowerCase();
+  if (m.includes('webm')) return 'webm';
+  if (m.includes('ogg')) return 'ogg';
+  if (m.includes('mp4') || m.includes('m4a') || m.includes('aac')) return 'm4a';
+  if (m.includes('mpeg') || m.includes('mp3')) return 'mp3';
+  if (m.includes('wav')) return 'wav';
+  if (m.includes('flac')) return 'flac';
+  return 'webm';
 }
 
 // Voice feedback only needs to PLAY in the student's <audio> tag (no STT), so the

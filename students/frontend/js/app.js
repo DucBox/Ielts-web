@@ -5910,10 +5910,14 @@ function renderSpeakingFeedback(sub, allVersions = null) {
                 `).join('')}
               </div>`;
           })()}
+          ${isSttFailedScript(sub.speaking_script)
+            ? `<div class="section-label">Transcript</div>
+               <div class="submitted-content" style="color:var(--gray-400)">🎙️ Không tạo được transcript tự động cho lần nộp này — giáo viên sẽ chấm trực tiếp từ audio.</div>`
+            : `
           <div class="section-label">Transcript (AI Generated)
             ${annotations.length > 0 ? '<span class="feedback-hint">Màu highlight = nhận xét · Bấm số để xem</span>' : ''}
           </div>
-          <div class="submitted-content feedback-essay">${buildAnnotatedHtml(sub.speaking_script || '', annotations)}</div>
+          <div class="submitted-content feedback-essay">${buildAnnotatedHtml(sub.speaking_script || '', annotations)}</div>`}
         </div>
         <div class="answer-pane">
           ${annSidebar}
@@ -7913,8 +7917,12 @@ function _renderSharedSpeakingResult(sub) {
       <div class="assignment-content">
         <div class="content-pane">
           ${audioHtml ? `<div class="section-label">Bài thu âm của bạn</div><div style="margin-bottom:16px">${audioHtml}</div>` : ''}
+          ${isSttFailedScript(sub.speaking_script)
+            ? `<div class="section-label">Transcript</div>
+               <div class="submitted-content" style="color:var(--gray-400)">🎙️ Không tạo được transcript tự động cho lần nộp này — giáo viên sẽ chấm trực tiếp từ audio.</div>`
+            : `
           <div class="section-label">Transcript (AI Generated)</div>
-          <div class="submitted-content">${escapeHtml(sub.speaking_script || '')}</div>
+          <div class="submitted-content">${escapeHtml(sub.speaking_script || '')}</div>`}
         </div>
         <div class="answer-pane">
           <div class="ai-overall-card" style="--chip-color:${overallColor}">

@@ -3248,7 +3248,9 @@ function renderSubmissionModal(sub, skill) {
            <div style="white-space:pre-wrap;font-size:13px;line-height:1.7;padding:12px;
                        background:var(--gray-50,#f9fafb);border-radius:8px;
                        border:1px solid var(--gray-200);max-height:240px;overflow-y:auto">
-             ${escapeHtml(sub.speaking_script)}
+             ${isSttFailedScript(sub.speaking_script)
+               ? '⚠️ Không tự động trích xuất được transcript — vui lòng nghe audio trực tiếp để chấm.'
+               : escapeHtml(sub.speaking_script)}
            </div>
          </div>`
       : '';
@@ -3503,9 +3505,11 @@ function prevAttemptsDropdownHtml(prevAttempts, skill) {
           <audio controls src="${escapeHtml(t.url || '')}" style="width:100%;height:34px"></audio>
         </div>`).join('');
       inner = `${audios}
-        ${a.speaking_script
-          ? `<div style="white-space:pre-wrap;font-size:14px;line-height:1.7;margin-top:6px">${escapeHtml(a.speaking_script)}</div>`
-          : '<div style="color:var(--gray-400);font-size:13px">Không có transcript</div>'}`;
+        ${isSttFailedScript(a.speaking_script)
+          ? '<div style="color:var(--gray-400);font-size:13px;margin-top:6px">⚠️ Không tự động trích xuất được transcript — nghe audio trực tiếp.</div>'
+          : a.speaking_script
+            ? `<div style="white-space:pre-wrap;font-size:14px;line-height:1.7;margin-top:6px">${escapeHtml(a.speaking_script)}</div>`
+            : '<div style="color:var(--gray-400);font-size:13px">Không có transcript</div>'}`;
     } else {
       inner = a.writing_content
         ? `<div style="white-space:pre-wrap;font-size:14px;line-height:1.8">${escapeHtml(a.writing_content)}</div>`
@@ -3704,7 +3708,9 @@ function renderGradingPage(sub) {
 function refreshWritingDisplay() {
   const el = document.getElementById('writing-display');
   if (!el) return;
-  el.innerHTML = buildAnnotatedHtml(_gradingText, _gradingAnnotations);
+  el.innerHTML = isSttFailedScript(_gradingText)
+    ? '<div style="color:var(--gray-400)">⚠️ Không tự động trích xuất được transcript — vui lòng nghe audio trực tiếp để chấm.</div>'
+    : buildAnnotatedHtml(_gradingText, _gradingAnnotations);
 }
 
 function refreshAnnotationsList() {

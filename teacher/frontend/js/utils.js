@@ -8,6 +8,12 @@ function escapeHtml(str) {
     .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+// Marks a speaking_script as a server-side STT-failure placeholder (see worker.js
+// STT_FAILED_SCRIPT) so the UI can render a friendly notice instead of raw text.
+function isSttFailedScript(text) {
+  return String(text || '').includes('[STT_FAILED]');
+}
+
 function renderMarkdownInline(text) {
   return escapeHtml(text)
     .replace(/`([^`]+)`/g, '<code>$1</code>')

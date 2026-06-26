@@ -151,6 +151,13 @@ function normalizeAudioMime(raw) {
   return base;
 }
 
+// STT is best-effort for speaking submissions: the script is informational for the
+// teacher only (not used for auto-grading), so a transcription failure must never
+// block the student's submission. When STT fails, this marker is stored in
+// speaking_script instead, and the frontend renders it as a friendly notice.
+const STT_FAILED_SCRIPT = '[STT_FAILED] Không thể tự động trích xuất transcript — vui lòng nghe audio trực tiếp để chấm.';
+const isSttFailedScript = text => String(text || '').includes('[STT_FAILED]');
+
 // All formats OpenAI Whisper accepts, mapped both ways.
 // ext→mime: use the canonical MIME for that extension
 // mime→ext: covers every browser/OS variant that maps to the same container
@@ -3820,35 +3827,41 @@ export default {
           if (!isAudioContentType(audioFile.type)) return err('Chỉ chấp nhận file âm thanh', 415);
           if (!env.OPENAI_API_KEY) return err('Chưa cấu hình OPENAI_API_KEY trên server', 500);
 
-          const openaiForm = new FormData();
-          openaiForm.append('file', audioFile, audioFile.name || 'audio.webm');
-          openaiForm.append('model', 'gpt-4o-mini-transcribe');
-          openaiForm.append('response_format', 'json');
-
-          const sttUrl = getOpenAIEndpoint(env, '/v1/audio/transcriptions', 'stt');
-          const sttAuthToken = getOpenAIAuthToken(env, sttUrl, 'stt');
-          // G5: 120s timeout for legacy multipart STT
-          const sttAbort = new AbortController();
-          const sttAbortTimer = setTimeout(() => sttAbort.abort(), 120_000);
-          const aiRes = await fetch(sttUrl, {
-            method: 'POST',
-            signal: sttAbort.signal,
-            headers: { 'Authorization': `Bearer ${sttAuthToken}` },
-            body: openaiForm,
-          }).finally(() => clearTimeout(sttAbortTimer));
-
-          if (!aiRes.ok) {
-            const aiText = await aiRes.text();
-            console.error('OpenAI STT error:', JSON.stringify({ endpoint: sttUrl, colo: request.cf?.colo || null, error: parseOpenAIError(aiText), raw: aiText }));
-            if (isUnsupportedRegionOpenAIError(aiText)) return err('Dịch vụ nhận diện giọng nói đang bị chặn theo vùng từ hạ tầng hiện tại. Nếu app đang chạy qua Cloudflare Worker, hãy route STT qua một server/proxy khác rồi thử lại.', 502);
-            return err('Không thể nhận diện giọng nói (STT Failed). Nộp bài thất bại.', 500);
-          }
-          const transcriptData = await aiRes.json();
-          speakingScript = transcriptData.text || '';
           uploadedR2Key = buildStudentSpeakingKey(p.id, studentId, audioFile.name || 'audio.webm');
           await env.R2.put(uploadedR2Key, audioFile.stream(), { httpMetadata: { contentType: audioFile.type } });
           speakingAudioUrl = buildR2PublicUrl(env, uploadedR2Key);
           speakingAudioUrls = [{ url: speakingAudioUrl, key: uploadedR2Key, name: '' }];
+
+          try {
+            const openaiForm = new FormData();
+            openaiForm.append('file', audioFile, audioFile.name || 'audio.webm');
+            openaiForm.append('model', 'gpt-4o-mini-transcribe');
+            openaiForm.append('response_format', 'json');
+
+            const sttUrl = getOpenAIEndpoint(env, '/v1/audio/transcriptions', 'stt');
+            const sttAuthToken = getOpenAIAuthToken(env, sttUrl, 'stt');
+            // G5: 120s timeout for legacy multipart STT
+            const sttAbort = new AbortController();
+            const sttAbortTimer = setTimeout(() => sttAbort.abort(), 120_000);
+            const aiRes = await fetch(sttUrl, {
+              method: 'POST',
+              signal: sttAbort.signal,
+              headers: { 'Authorization': `Bearer ${sttAuthToken}` },
+              body: openaiForm,
+            }).finally(() => clearTimeout(sttAbortTimer));
+
+            if (!aiRes.ok) {
+              const aiText = await aiRes.text();
+              console.error('OpenAI STT error (non-blocking, submission proceeds):', JSON.stringify({ endpoint: sttUrl, colo: request.cf?.colo || null, error: parseOpenAIError(aiText), raw: aiText }));
+              speakingScript = STT_FAILED_SCRIPT;
+            } else {
+              const transcriptData = await aiRes.json();
+              speakingScript = transcriptData.text || '';
+            }
+          } catch (sttErr) {
+            console.error('STT threw (non-blocking, submission proceeds):', sttErr.message);
+            speakingScript = STT_FAILED_SCRIPT;
+          }
 
         } else if (audioUploadKeys) {
           // Multi-file presigned upload path
@@ -3871,18 +3884,16 @@ export default {
             }
           }
           const parts = [];
-          const processedKeys = [];
-          try {
-            for (const item of validKeys) {
+          for (const item of validKeys) {
+            const label = item.name || item.key.split('/').pop();
+            try {
               const transcriptData = await transcribeR2Audio(env, item.key);
-              const label = item.name || item.key.split('/').pop();
               parts.push(`--- Transcript: ${label} ---\n${transcriptData.text || ''}`);
-              speakingAudioUrls.push({ url: buildR2PublicUrl(env, item.key), key: item.key, name: item.name || '' });
-              processedKeys.push(item.key);
+            } catch (sttErr) {
+              console.error('STT failed for', item.key, '(non-blocking, submission proceeds):', sttErr.message);
+              parts.push(`--- Transcript: ${label} ---\n${STT_FAILED_SCRIPT}`);
             }
-          } catch (sttErr) {
-            for (const k of validKeys) await env.R2.delete(k.key).catch(() => {});
-            return err(sttErr.message || 'Không thể nhận diện giọng nói (STT Failed). Nộp bài thất bại.', sttErr.statusCode || 500);
+            speakingAudioUrls.push({ url: buildR2PublicUrl(env, item.key), key: item.key, name: item.name || '' });
           }
           speakingScript = parts.join('\n\n\n');
           speakingAudioUrl = speakingAudioUrls[0]?.url || null;
@@ -3906,14 +3917,14 @@ export default {
             return err('Chỉ chấp nhận file âm thanh', 415);
           }
           uploadedR2Key = directUploadKey;
+          speakingAudioUrl = buildR2PublicUrl(env, directUploadKey);
+          speakingAudioUrls = [{ url: speakingAudioUrl, key: directUploadKey, name: '' }];
           try {
             const transcriptData = await transcribeR2Audio(env, directUploadKey);
             speakingScript = transcriptData.text || '';
-            speakingAudioUrl = buildR2PublicUrl(env, directUploadKey);
-            speakingAudioUrls = [{ url: speakingAudioUrl, key: directUploadKey, name: '' }];
           } catch (sttErr) {
-            await env.R2.delete(directUploadKey).catch(() => {});
-            return err(sttErr.message || 'Không thể nhận diện giọng nói (STT Failed). Nộp bài thất bại.', sttErr.statusCode || 500);
+            console.error('STT failed for', directUploadKey, '(non-blocking, submission proceeds):', sttErr.message);
+            speakingScript = STT_FAILED_SCRIPT;
           }
         }
 
@@ -4078,6 +4089,7 @@ export default {
 
         const studentText = sub.skill === 'writing' ? sub.writing_content : sub.speaking_script;
         if (!studentText?.trim()) return err('Bài làm trống, không thể phân tích', 400);
+        if (isSttFailedScript(studentText)) return err('Không có transcript (lỗi STT) — không thể chấm AI cho lần nộp này, vui lòng nghe audio trực tiếp', 400);
 
         const prompt = sub.skill === 'writing'
           ? buildWritingPrompt(sub.content_text, studentText)
@@ -5078,6 +5090,7 @@ export default {
         if (!env.OPENAI_API_KEY) return err('Chưa cấu hình AI', 500);
         const studentContent = sa.skill === 'writing' ? sa.writing_content : sa.speaking_script;
         if (!studentContent?.trim()) return err('Bài làm trống', 400);
+        if (isSttFailedScript(studentContent)) return err('Không có transcript (lỗi STT) — không thể chấm AI cho lần nộp này', 400);
         await sql`UPDATE shared_attempts SET ai_feedback = NULL WHERE id = ${sa.id}`;
         ctx.waitUntil(
           callAiFeedback(sa.skill, sa.content_text || '', studentContent, env)
@@ -5244,15 +5257,15 @@ export default {
           }
           const parts = [];
           for (const item of validKeys) {
+            const label = item.name || item.key.split('/').pop();
             try {
               const transcriptData = await transcribeR2Audio(env, item.key);
-              const label = item.name || item.key.split('/').pop();
               parts.push(`--- Transcript: ${label} ---\n${transcriptData.text || ''}`);
-              speakingAudioUrls.push({ url: buildR2PublicUrl(env, item.key), key: item.key, name: item.name || '' });
             } catch (sttErr) {
-              for (const k of validKeys) await env.R2.delete(k.key).catch(() => {});
-              return err(sttErr.message || 'Không thể nhận diện giọng nói', sttErr.statusCode || 500);
+              console.error('STT failed for', item.key, '(non-blocking, submission proceeds):', sttErr.message);
+              parts.push(`--- Transcript: ${label} ---\n${STT_FAILED_SCRIPT}`);
             }
+            speakingAudioUrls.push({ url: buildR2PublicUrl(env, item.key), key: item.key, name: item.name || '' });
           }
           speakingScript = parts.join('\n\n\n');
         }
@@ -5308,7 +5321,7 @@ export default {
           const studentContent = poolQ.skill === 'writing' ? writingContent : speakingScript;
           const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
           const aiOverLimit = await checkRateLimit(env.KV, `shared-ai:${ip}`, 20, 60);
-          if (studentContent?.trim() && !aiOverLimit) {
+          if (studentContent?.trim() && !isSttFailedScript(studentContent) && !aiOverLimit) {
             ctx.waitUntil(
               callAiFeedback(poolQ.skill, poolQ.content_text || '', studentContent, env)
                 .then(aiFeedback => sql`
@@ -5373,6 +5386,7 @@ export default {
         if (!env.OPENAI_API_KEY) return err('Chưa cấu hình AI', 500);
         const studentContent = sa.skill === 'writing' ? sa.writing_content : sa.speaking_script;
         if (!studentContent?.trim()) return err('Bài làm trống', 400);
+        if (isSttFailedScript(studentContent)) return err('Không có transcript (lỗi STT) — không thể chấm AI cho lần nộp này', 400);
         // Synchronous: call AI and return full updated attempt (no polling needed)
         let aiFeedback;
         try {
@@ -5661,12 +5675,17 @@ export default {
           // G5: 120s timeout for composite multipart STT
           const cSttAbort = new AbortController();
           const cSttTimer = setTimeout(() => cSttAbort.abort(), 120_000);
-          const aiRes = await fetch(sttUrl, { method: 'POST', signal: cSttAbort.signal, headers: { 'Authorization': `Bearer ${getOpenAIAuthToken(env, sttUrl, 'stt')}` }, body: openaiForm }).finally(() => clearTimeout(cSttTimer));
-          if (!aiRes.ok) { const t = await aiRes.text(); if (isUnsupportedRegionOpenAIError(t)) return err('Dịch vụ nhận diện giọng nói đang bị chặn', 502); return err('Không thể nhận diện giọng nói', 500); }
-          content = (await aiRes.json()).text || '';
           audioKey = `speaking/${section.composite_question_id}/${studentId}-${crypto.randomUUID()}-${sanitizeFileName(pendingAudioFile.name)}`;
           await env.R2.put(audioKey, pendingAudioFile.stream(), { httpMetadata: { contentType: pendingAudioFile.type } });
           audioUrl = buildR2PublicUrl(env, audioKey);
+          const aiRes = await fetch(sttUrl, { method: 'POST', signal: cSttAbort.signal, headers: { 'Authorization': `Bearer ${getOpenAIAuthToken(env, sttUrl, 'stt')}` }, body: openaiForm }).finally(() => clearTimeout(cSttTimer));
+          if (!aiRes.ok) {
+            const t = await aiRes.text();
+            console.error('STT failed for composite section (non-blocking, submission proceeds):', t);
+            content = STT_FAILED_SCRIPT;
+          } else {
+            content = (await aiRes.json()).text || '';
+          }
         }
 
         // Handle R2 pre-uploaded audio for speaking
@@ -5675,25 +5694,28 @@ export default {
           if (directUploadKey) {
             if (!isExpectedCompositeSpeakingKey(directUploadKey, compositeQId, studentId))
               return err('audio_upload_key không hợp lệ', 400);
+            audioUrl = buildR2PublicUrl(env, directUploadKey);
+            audioKey = directUploadKey;
             try {
-              content  = (await transcribeR2Audio(env, directUploadKey)).text || '';
-              audioUrl = buildR2PublicUrl(env, directUploadKey);
-              audioKey = directUploadKey;
+              content = (await transcribeR2Audio(env, directUploadKey)).text || '';
             } catch (sttErr) {
-              return err(sttErr.message || 'Không thể nhận diện giọng nói', sttErr.statusCode || 500);
+              console.error('STT failed for', directUploadKey, '(non-blocking, submission proceeds):', sttErr.message);
+              content = STT_FAILED_SCRIPT;
             }
           } else if (audioUploadKeys) {
             const validKeys = audioUploadKeys.filter(item => item.key && isExpectedCompositeSpeakingKey(item.key, compositeQId, studentId));
             if (validKeys.length === 0) return err('audio_upload_keys không hợp lệ', 400);
             const parts = [];
-            try {
-              for (const item of validKeys) {
+            for (const item of validKeys) {
+              const label = item.name || item.key.split('/').pop();
+              try {
                 const transcriptData = await transcribeR2Audio(env, item.key);
-                parts.push(`--- Transcript: ${item.name || item.key.split('/').pop()} ---\n${transcriptData.text || ''}`);
-                if (!audioUrl) { audioUrl = buildR2PublicUrl(env, item.key); audioKey = item.key; }
+                parts.push(`--- Transcript: ${label} ---\n${transcriptData.text || ''}`);
+              } catch (sttErr) {
+                console.error('STT failed for', item.key, '(non-blocking, submission proceeds):', sttErr.message);
+                parts.push(`--- Transcript: ${label} ---\n${STT_FAILED_SCRIPT}`);
               }
-            } catch (sttErr) {
-              return err(sttErr.message || 'Không thể nhận diện giọng nói', sttErr.statusCode || 500);
+              if (!audioUrl) { audioUrl = buildR2PublicUrl(env, item.key); audioKey = item.key; }
             }
             content = parts.join('\n\n\n');
           }

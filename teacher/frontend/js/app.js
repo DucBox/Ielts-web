@@ -6615,61 +6615,121 @@ function injectTableResizeHandles(table) {
   });
 }
 
+// Insert a new grid row so it lands at `gridRowIndex` (0-based, existing rows
+// at/after that index shift down). Any cell whose rowSpan already straddles
+// that boundary gets widened by 1 instead of a same-index DOM row being
+// blindly spliced in (which drifts out of alignment as soon as the table has
+// any merged cell).
+function _tableInsertRowAt(table, gridRowIndex) {
+  const { rows, grid } = getTableGridMap(table);
+  const colCount = Math.max(0, ...grid.map(r => r.length), 0);
+  const aboveRow = grid[gridRowIndex - 1] || [];
+  const atRow = grid[gridRowIndex] || [];
+  const extended = new Set();
+  const newRow = document.createElement('tr');
+  for (let c = 0; c < colCount; c++) {
+    const spanning = aboveRow[c] && aboveRow[c] === atRow[c] ? aboveRow[c] : null;
+    if (spanning) {
+      if (!extended.has(spanning)) {
+        spanning.rowSpan = Math.max(1, spanning.rowSpan || 1) + 1;
+        extended.add(spanning);
+      }
+      continue;
+    }
+    const td = document.createElement('td');
+    td.innerHTML = '<br>';
+    newRow.appendChild(td);
+  }
+  const refRow = rows[gridRowIndex] || null;
+  if (refRow) refRow.parentNode.insertBefore(newRow, refRow);
+  else if (rows.length) rows[rows.length - 1].parentNode.appendChild(newRow);
+  else table.appendChild(newRow);
+}
+
 function tableAddRowAbove() {
   if (!_activeTableCell) return;
-  const row = _activeTableCell.closest('tr');
-  if (!row) return;
-  const table = row.closest('table');
-  const colCount = getTableColCount(table);
-  const newRow = document.createElement('tr');
-  for (let i = 0; i < colCount; i++) { const td = document.createElement('td'); td.innerHTML = '<br>'; newRow.appendChild(td); }
-  row.parentNode.insertBefore(newRow, row);
+  const table = _activeTableCell.closest('table');
+  if (!table) return;
+  const pos = getTableCellGridPos(table, _activeTableCell);
+  if (pos.row < 0) return;
+  _tableInsertRowAt(table, pos.row);
   syncContentBlocksFromEditor();
   injectTableResizeHandles(table);
 }
 
 function tableAddRowBelow() {
   if (!_activeTableCell) return;
-  const row = _activeTableCell.closest('tr');
-  if (!row) return;
-  const table = row.closest('table');
-  const colCount = getTableColCount(table);
-  const newRow = document.createElement('tr');
-  for (let i = 0; i < colCount; i++) { const td = document.createElement('td'); td.innerHTML = '<br>'; newRow.appendChild(td); }
-  row.parentNode.insertBefore(newRow, row.nextSibling);
+  const table = _activeTableCell.closest('table');
+  if (!table) return;
+  const pos = getTableCellGridPos(table, _activeTableCell);
+  if (pos.row < 0) return;
+  const rowSpan = Math.max(1, _activeTableCell.rowSpan || 1);
+  _tableInsertRowAt(table, pos.row + rowSpan);
   syncContentBlocksFromEditor();
   injectTableResizeHandles(table);
 }
 
 function tableDeleteRow() {
   if (!_activeTableCell) return;
-  const row = _activeTableCell.closest('tr');
-  if (!row) return;
-  const table = row.closest('table');
+  const table = _activeTableCell.closest('table');
+  if (!table) return;
+  const { rows, grid } = getTableGridMap(table);
+  const rowIdx = rows.indexOf(_activeTableCell.closest('tr'));
+  if (rowIdx < 0) return;
+  const row = rows[rowIdx];
+  const gridRow = grid[rowIdx] || [];
+  const shrunk = new Set();
+  gridRow.forEach(cell => {
+    if (!cell || shrunk.has(cell)) return;
+    const span = Math.max(1, cell.rowSpan || 1);
+    if (span > 1 && cell.parentElement !== row) {
+      cell.rowSpan = span - 1;
+      shrunk.add(cell);
+    }
+  });
   row.remove();
-  if (table && !table.querySelectorAll('tr').length) { table.remove(); }
-  else if (table) injectTableResizeHandles(table);
+  if (!table.querySelectorAll('tr').length) { table.remove(); }
+  else injectTableResizeHandles(table);
   _activeTableCell = null;
   hideTableFloatToolbar();
   syncContentBlocksFromEditor();
+}
+
+// Insert a new grid column at `gridColIndex` (0-based), correctly widening any
+// existing cell whose colSpan already straddles that boundary instead of
+// blindly inserting a same-index DOM cell per row (which drifts out of
+// alignment as soon as the table has any merged cell).
+function _tableInsertColAt(table, gridColIndex) {
+  const { rows, grid } = getTableGridMap(table);
+  const extended = new Set();
+  rows.forEach((tr, r) => {
+    const gridRow = grid[r] || [];
+    const leftCell = gridColIndex > 0 ? gridRow[gridColIndex - 1] : null;
+    const rightCell = gridRow[gridColIndex] || null;
+    if (leftCell && leftCell === rightCell) {
+      if (!extended.has(leftCell)) {
+        leftCell.colSpan = Math.max(1, leftCell.colSpan || 1) + 1;
+        extended.add(leftCell);
+      }
+      return;
+    }
+    const cells = Array.from(tr.querySelectorAll('td,th'));
+    const insertBefore = cells.find(c => gridRow.indexOf(c) >= gridColIndex) || null;
+    const newCell = document.createElement('td');
+    newCell.innerHTML = '<br>';
+    tr.insertBefore(newCell, insertBefore);
+  });
 }
 
 function tableAddColLeft() {
   if (!_activeTableCell) return;
   const table = _activeTableCell.closest('table');
   if (!table) return;
-  const currentRow = _activeTableCell.closest('tr');
-  const colIndex = Array.from(currentRow.querySelectorAll('td,th')).indexOf(_activeTableCell);
-  table.querySelectorAll('tr').forEach(tr => {
-    const cells = tr.querySelectorAll('td,th');
-    const ref = cells[colIndex];
-    if (!ref) return;
-    const newCell = document.createElement('td');
-    newCell.innerHTML = '<br>';
-    tr.insertBefore(newCell, ref);
-  });
+  const colIndex = getTableCellGridPos(table, _activeTableCell).col;
+  if (colIndex < 0) return;
+  _tableInsertColAt(table, colIndex);
   const cg = table.querySelector('colgroup');
-  if (cg) { const col = document.createElement('col'); col.style.width = '10%'; cg.insertBefore(col, cg.children[colIndex]); redistributeColWidths(cg); }
+  if (cg) { const col = document.createElement('col'); cg.insertBefore(col, cg.children[colIndex] || null); equalizeColWidths(cg); }
   syncContentBlocksFromEditor();
   injectTableResizeHandles(table);
 }
@@ -6678,18 +6738,13 @@ function tableAddColRight() {
   if (!_activeTableCell) return;
   const table = _activeTableCell.closest('table');
   if (!table) return;
-  const currentRow = _activeTableCell.closest('tr');
-  const colIndex = Array.from(currentRow.querySelectorAll('td,th')).indexOf(_activeTableCell);
-  table.querySelectorAll('tr').forEach(tr => {
-    const cells = tr.querySelectorAll('td,th');
-    const ref = cells[colIndex];
-    if (!ref) return;
-    const newCell = document.createElement('td');
-    newCell.innerHTML = '<br>';
-    tr.insertBefore(newCell, ref.nextSibling);
-  });
+  const pos = getTableCellGridPos(table, _activeTableCell);
+  if (pos.col < 0) return;
+  const colSpan = Math.max(1, _activeTableCell.colSpan || 1);
+  const colIndex = pos.col + colSpan;
+  _tableInsertColAt(table, colIndex);
   const cg = table.querySelector('colgroup');
-  if (cg) { const col = document.createElement('col'); col.style.width = '10%'; cg.insertBefore(col, cg.children[colIndex + 1] || null); redistributeColWidths(cg); }
+  if (cg) { const col = document.createElement('col'); cg.insertBefore(col, cg.children[colIndex] || null); equalizeColWidths(cg); }
   syncContentBlocksFromEditor();
   injectTableResizeHandles(table);
 }
@@ -6698,11 +6753,19 @@ function tableDeleteCol() {
   if (!_activeTableCell) return;
   const table = _activeTableCell.closest('table');
   if (!table) return;
-  const currentRow = _activeTableCell.closest('tr');
-  const colIndex = Array.from(currentRow.querySelectorAll('td,th')).indexOf(_activeTableCell);
-  table.querySelectorAll('tr').forEach(tr => {
-    const cells = tr.querySelectorAll('td,th');
-    if (cells[colIndex]) cells[colIndex].remove();
+  const { rows, grid } = getTableGridMap(table);
+  const colIndex = getTableCellGridPos(table, _activeTableCell).col;
+  if (colIndex < 0) return;
+  const shrunk = new Set();
+  rows.forEach((tr, r) => {
+    const cell = (grid[r] || [])[colIndex];
+    if (!cell) return;
+    const span = Math.max(1, cell.colSpan || 1);
+    if (span > 1) {
+      if (!shrunk.has(cell)) { cell.colSpan = span - 1; shrunk.add(cell); }
+    } else {
+      cell.remove();
+    }
   });
   const cg = table.querySelector('colgroup');
   if (cg && cg.children[colIndex]) { cg.children[colIndex].remove(); redistributeColWidths(cg); }
@@ -6720,6 +6783,41 @@ function redistributeColWidths(cg) {
   cols.forEach(c => { c.style.width = ((parseFloat(c.style.width) || 0) * scale).toFixed(2) + '%'; });
 }
 
+function equalizeColWidths(cg) {
+  const cols = Array.from(cg.querySelectorAll('col'));
+  if (!cols.length) return;
+  const width = (100 / cols.length).toFixed(2) + '%';
+  cols.forEach(c => { c.style.width = width; });
+}
+
+// ── TABLE GRID MODEL ──────────────────────────────────────────────────────────
+function getTableGridMap(table) {
+  const rows = Array.from(table.querySelectorAll('tr'));
+  const grid = [];
+  rows.forEach((row, r) => {
+    grid[r] = grid[r] || [];
+    let c = 0;
+    Array.from(row.querySelectorAll('td,th')).forEach(cell => {
+      while (grid[r][c]) c++;
+      const colSpan = Math.max(1, cell.colSpan || 1);
+      const rowSpan = Math.max(1, cell.rowSpan || 1);
+      for (let rr = r; rr < r + rowSpan; rr++) {
+        grid[rr] = grid[rr] || [];
+        for (let cc = c; cc < c + colSpan; cc++) grid[rr][cc] = cell;
+      }
+      c += colSpan;
+    });
+  });
+  return { rows, grid };
+}
+
+function getTableCellGridPos(table, cell) {
+  const { rows, grid } = getTableGridMap(table);
+  const rowIdx = rows.indexOf(cell.parentElement);
+  const col = rowIdx >= 0 ? (grid[rowIdx] || []).indexOf(cell) : -1;
+  return { row: rowIdx, col };
+}
+
 // ── CELL RANGE SELECTION ─────────────────────────────────────────────────────
 function clearTableCellSelection() {
   _selectedTableCells.forEach(c => c.classList.remove('is-td-selected'));
@@ -6727,12 +6825,11 @@ function clearTableCellSelection() {
 }
 
 function selectTableCellRange(table, startCell, endCell) {
-  const rows = Array.from(table.querySelectorAll('tr'));
+  const { rows, grid } = getTableGridMap(table);
   function getCellPos(cell) {
-    const row = cell.parentElement;
-    const rowIdx = rows.indexOf(row);
-    const cells = Array.from(row.querySelectorAll('td,th'));
-    return { row: rowIdx, col: cells.indexOf(cell) };
+    const rowIdx = rows.indexOf(cell.parentElement);
+    const col = rowIdx >= 0 ? (grid[rowIdx] || []).indexOf(cell) : -1;
+    return { row: rowIdx, col };
   }
   const sp = getCellPos(startCell);
   const ep = getCellPos(endCell);
@@ -6741,10 +6838,15 @@ function selectTableCellRange(table, startCell, endCell) {
   const minCol = Math.min(sp.col, ep.col), maxCol = Math.max(sp.col, ep.col);
   document.querySelectorAll('.editor-table .is-td-selected').forEach(c => c.classList.remove('is-td-selected'));
   _selectedTableCells = [];
+  const seen = new Set();
   for (let r = minRow; r <= maxRow; r++) {
-    const rowCells = Array.from(rows[r].querySelectorAll('td,th'));
     for (let c = minCol; c <= maxCol; c++) {
-      if (rowCells[c]) { rowCells[c].classList.add('is-td-selected'); _selectedTableCells.push(rowCells[c]); }
+      const cell = (grid[r] || [])[c];
+      if (cell && !seen.has(cell)) {
+        seen.add(cell);
+        cell.classList.add('is-td-selected');
+        _selectedTableCells.push(cell);
+      }
     }
   }
 }
@@ -6754,11 +6856,10 @@ function tableMergeCells() {
   if (_selectedTableCells.length < 2) return;
   const table = _selectedTableCells[0].closest('table');
   if (!table) return;
-  const rows = Array.from(table.querySelectorAll('tr'));
+  const { rows, grid } = getTableGridMap(table);
   const positions = _selectedTableCells.map(cell => {
-    const row = cell.parentElement;
-    const rowIdx = rows.indexOf(row);
-    const colIdx = Array.from(row.querySelectorAll('td,th')).indexOf(cell);
+    const rowIdx = rows.indexOf(cell.parentElement);
+    const colIdx = rowIdx >= 0 ? (grid[rowIdx] || []).indexOf(cell) : -1;
     return { cell, rowIdx, colIdx };
   });
   const minRow = Math.min(...positions.map(p => p.rowIdx));
@@ -6766,7 +6867,7 @@ function tableMergeCells() {
   const minCol = Math.min(...positions.map(p => p.colIdx));
   const maxCol = Math.max(...positions.map(p => p.colIdx));
 
-  const firstCell = Array.from(rows[minRow].querySelectorAll('td,th'))[minCol];
+  const firstCell = (grid[minRow] || [])[minCol];
   if (!firstCell) return;
 
   const contents = _selectedTableCells
@@ -6793,10 +6894,10 @@ function tableSplitCell() {
   const rowSpan = cell.rowSpan || 1;
   if (colSpan === 1 && rowSpan === 1) return;
   const table = cell.closest('table');
-  const rows = Array.from(table.querySelectorAll('tr'));
+  const { rows, grid } = getTableGridMap(table);
   const row = cell.parentElement;
   const rowIdx = rows.indexOf(row);
-  const colIdx = Array.from(row.querySelectorAll('td,th')).indexOf(cell);
+  const colIdx = rowIdx >= 0 ? (grid[rowIdx] || []).indexOf(cell) : -1;
   const borderStyle = cell.style.border || '';
 
   cell.colSpan = 1;
@@ -6809,16 +6910,19 @@ function tableSplitCell() {
     row.insertBefore(newCell, cell.nextSibling);
   }
 
-  for (let r = 1; r < rowSpan; r++) {
-    const targetRow = rows[rowIdx + r];
-    if (!targetRow) continue;
-    const targetCells = Array.from(targetRow.querySelectorAll('td,th'));
-    const insertBefore = targetCells[colIdx] || null;
-    for (let c = 0; c < colSpan; c++) {
-      const newCell = document.createElement('td');
-      newCell.innerHTML = '<br>';
-      if (borderStyle) newCell.style.border = borderStyle;
-      targetRow.insertBefore(newCell, insertBefore);
+  if (colIdx >= 0) {
+    for (let r = 1; r < rowSpan; r++) {
+      const targetRow = rows[rowIdx + r];
+      if (!targetRow) continue;
+      const targetGridRow = grid[rowIdx + r] || [];
+      const targetCells = Array.from(targetRow.querySelectorAll('td,th'));
+      const insertBefore = targetCells.find(tc => targetGridRow.indexOf(tc) >= colIdx + colSpan) || null;
+      for (let c = 0; c < colSpan; c++) {
+        const newCell = document.createElement('td');
+        newCell.innerHTML = '<br>';
+        if (borderStyle) newCell.style.border = borderStyle;
+        targetRow.insertBefore(newCell, insertBefore);
+      }
     }
   }
 

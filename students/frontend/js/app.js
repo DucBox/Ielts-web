@@ -5978,7 +5978,7 @@ function buildVocabTeacherHtml(withVocab) {
       )
     : withVocab;
 
-  const SKILL_ORDER = ['reading', 'listening', 'writing', 'speaking'];
+  const SKILL_ORDER = ['reading', 'listening', 'writing', 'speaking', 'composite'];
   const grouped = {};
   for (const sk of SKILL_ORDER) grouped[sk] = [];
   for (const a of filtered) {

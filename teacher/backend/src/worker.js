@@ -1011,6 +1011,7 @@ async function loadStudentAssignmentAccess(sql, assignmentId, studentId) {
       a.id,
       a.class_id,
       a.title,
+      a.title AS assignment_title,
       a.deadline,
       a.is_active,
       a.mode,
@@ -1023,7 +1024,11 @@ async function loadStudentAssignmentAccess(sql, assignmentId, studentId) {
       q.content_url,
       q.content_urls,
       q.questions_data,
-      q.vocabulary,
+      CASE WHEN q.skill = 'composite' THEN (
+        SELECT COALESCE(jsonb_agg(elem), '[]'::jsonb)
+        FROM composite_question_sections cqs, jsonb_array_elements(COALESCE(cqs.vocabulary, '[]'::jsonb)) elem
+        WHERE cqs.composite_id = q.id
+      ) ELSE q.vocabulary END AS vocabulary,
       jsonb_array_length(COALESCE(q.questions_data, '[]'::jsonb)) AS question_count
     FROM assignments a
     JOIN question_pool q ON q.id = a.question_id
@@ -4530,7 +4535,10 @@ export default {
         const rows = await sql`
           SELECT a.id, a.question_id, a.title, a.deadline, a.is_active, a.created_at, a.mode, a.time_limit_minutes, a.scoring_scale,
             q.skill, q.title AS question_title, q.content_text, q.content_blocks, q.content_url,
-            jsonb_array_length(COALESCE(q.vocabulary, '[]'::jsonb)) AS vocab_count,
+            CASE WHEN q.skill = 'composite' THEN (
+              SELECT COALESCE(SUM(jsonb_array_length(COALESCE(cqs.vocabulary, '[]'::jsonb))), 0)
+              FROM composite_question_sections cqs WHERE cqs.composite_id = q.id
+            ) ELSE jsonb_array_length(COALESCE(q.vocabulary, '[]'::jsonb)) END AS vocab_count,
             sub.id AS submission_id, sub.overall_score, sub.status AS submission_status,
             sub.submitted_at, sub.rewrite_status, sub.attempt_number,
             CASE WHEN q.skill = 'composite' THEN (

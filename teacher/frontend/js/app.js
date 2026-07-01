@@ -259,6 +259,7 @@ function snapshotCurrentQuestionDraft() {
   const titleInput = $('#q-title');
   if (!titleInput) return null;
   const skill = $('#q-skill')?.value || _questionDraftContext?.skill || '';
+  syncContentBlocksFromEditor();
   const contentBlocks = normalizeContentBlocksForEditor(_contentBlocks);
   const snapshot = {
     mode: _questionDraftContext?.mode || 'new',
@@ -395,6 +396,7 @@ function snapshotCurrentSpDraft() {
   const titleInput = $('#sp-title');
   if (!titleInput) return null;
   const skill = $('#sp-skill')?.value || _spDraftContext?.skill || '';
+  syncContentBlocksFromEditor();
   const contentBlocks = normalizeContentBlocksForEditor(_contentBlocks);
   return {
     mode: _spDraftContext?.mode || 'new',
@@ -676,6 +678,14 @@ document.addEventListener('keydown', e => {
     }
   }
 });
+
+// Shared "delimited text → trimmed, non-empty array" parser, used anywhere a
+// teacher pastes a list of items separated by newlines or |/; (answer-grid
+// CSV import, profile-field select options) — previously each call site had
+// its own copy-pasted split/trim/filter, silently free to drift apart.
+function splitDelimitedList(text, delimiterPattern = /\n/) {
+  return String(text || '').split(delimiterPattern).map(s => s.trim()).filter(Boolean);
+}
 
 function csvEscape(value) {
   return `"${String(value ?? '').replace(/"/g, '""')}"`;
@@ -5936,7 +5946,7 @@ function syncContentBlocksFromEditor() {
       else wrap.remove();
     });
     clone.querySelectorAll('.editor-table-resize-handle, .tbl-col-resize-handle, .tbl-row-resize-handle').forEach(el => el.remove());
-    const html = clone.innerHTML.replace(/^(<br\s*\/?>)+|(<br\s*\/?>)+$/gi, '').trim();
+    const html = sanitizeBlockHtml(clone.innerHTML).replace(/^(<br\s*\/?>)+|(<br\s*\/?>)+$/gi, '').trim();
     if (html) blocks.push({ id: nextContentBlockId(), type: 'text', html });
     tmpDiv = document.createElement('div');
   }
@@ -6720,6 +6730,39 @@ function redistributeColWidths(cg) {
   cols.forEach(c => { c.style.width = ((parseFloat(c.style.width) || 0) * scale).toFixed(2) + '%'; });
 }
 
+// ── TABLE GRID MODEL ──────────────────────────────────────────────────────────
+// Raw `row.querySelectorAll('td,th')` DOM order ignores colSpan/rowSpan from
+// this or earlier rows, so a plain DOM-order index drifts out of alignment
+// with the visual grid as soon as any cell in the table has been merged.
+// This builds the true visual grid so range-select/merge/split address cells
+// by actual (row, col) grid position instead of DOM-order index.
+function getTableGridMap(table) {
+  const rows = Array.from(table.querySelectorAll('tr'));
+  const grid = [];
+  rows.forEach((row, r) => {
+    grid[r] = grid[r] || [];
+    let c = 0;
+    Array.from(row.querySelectorAll('td,th')).forEach(cell => {
+      while (grid[r][c]) c++;
+      const colSpan = Math.max(1, cell.colSpan || 1);
+      const rowSpan = Math.max(1, cell.rowSpan || 1);
+      for (let rr = r; rr < r + rowSpan; rr++) {
+        grid[rr] = grid[rr] || [];
+        for (let cc = c; cc < c + colSpan; cc++) grid[rr][cc] = cell;
+      }
+      c += colSpan;
+    });
+  });
+  return { rows, grid };
+}
+
+function getTableCellGridPos(table, cell) {
+  const { rows, grid } = getTableGridMap(table);
+  const rowIdx = rows.indexOf(cell.parentElement);
+  const col = rowIdx >= 0 ? (grid[rowIdx] || []).indexOf(cell) : -1;
+  return { row: rowIdx, col };
+}
+
 // ── CELL RANGE SELECTION ─────────────────────────────────────────────────────
 function clearTableCellSelection() {
   _selectedTableCells.forEach(c => c.classList.remove('is-td-selected'));
@@ -6727,12 +6770,11 @@ function clearTableCellSelection() {
 }
 
 function selectTableCellRange(table, startCell, endCell) {
-  const rows = Array.from(table.querySelectorAll('tr'));
+  const { rows, grid } = getTableGridMap(table);
   function getCellPos(cell) {
-    const row = cell.parentElement;
-    const rowIdx = rows.indexOf(row);
-    const cells = Array.from(row.querySelectorAll('td,th'));
-    return { row: rowIdx, col: cells.indexOf(cell) };
+    const rowIdx = rows.indexOf(cell.parentElement);
+    const col = rowIdx >= 0 ? (grid[rowIdx] || []).indexOf(cell) : -1;
+    return { row: rowIdx, col };
   }
   const sp = getCellPos(startCell);
   const ep = getCellPos(endCell);
@@ -6741,10 +6783,15 @@ function selectTableCellRange(table, startCell, endCell) {
   const minCol = Math.min(sp.col, ep.col), maxCol = Math.max(sp.col, ep.col);
   document.querySelectorAll('.editor-table .is-td-selected').forEach(c => c.classList.remove('is-td-selected'));
   _selectedTableCells = [];
+  const seen = new Set();
   for (let r = minRow; r <= maxRow; r++) {
-    const rowCells = Array.from(rows[r].querySelectorAll('td,th'));
     for (let c = minCol; c <= maxCol; c++) {
-      if (rowCells[c]) { rowCells[c].classList.add('is-td-selected'); _selectedTableCells.push(rowCells[c]); }
+      const cell = (grid[r] || [])[c];
+      if (cell && !seen.has(cell)) {
+        seen.add(cell);
+        cell.classList.add('is-td-selected');
+        _selectedTableCells.push(cell);
+      }
     }
   }
 }
@@ -6754,11 +6801,10 @@ function tableMergeCells() {
   if (_selectedTableCells.length < 2) return;
   const table = _selectedTableCells[0].closest('table');
   if (!table) return;
-  const rows = Array.from(table.querySelectorAll('tr'));
+  const { rows, grid } = getTableGridMap(table);
   const positions = _selectedTableCells.map(cell => {
-    const row = cell.parentElement;
-    const rowIdx = rows.indexOf(row);
-    const colIdx = Array.from(row.querySelectorAll('td,th')).indexOf(cell);
+    const rowIdx = rows.indexOf(cell.parentElement);
+    const colIdx = rowIdx >= 0 ? (grid[rowIdx] || []).indexOf(cell) : -1;
     return { cell, rowIdx, colIdx };
   });
   const minRow = Math.min(...positions.map(p => p.rowIdx));
@@ -6766,7 +6812,7 @@ function tableMergeCells() {
   const minCol = Math.min(...positions.map(p => p.colIdx));
   const maxCol = Math.max(...positions.map(p => p.colIdx));
 
-  const firstCell = Array.from(rows[minRow].querySelectorAll('td,th'))[minCol];
+  const firstCell = (grid[minRow] || [])[minCol];
   if (!firstCell) return;
 
   const contents = _selectedTableCells
@@ -6793,10 +6839,10 @@ function tableSplitCell() {
   const rowSpan = cell.rowSpan || 1;
   if (colSpan === 1 && rowSpan === 1) return;
   const table = cell.closest('table');
-  const rows = Array.from(table.querySelectorAll('tr'));
+  const { rows, grid } = getTableGridMap(table);
   const row = cell.parentElement;
   const rowIdx = rows.indexOf(row);
-  const colIdx = Array.from(row.querySelectorAll('td,th')).indexOf(cell);
+  const colIdx = rowIdx >= 0 ? (grid[rowIdx] || []).indexOf(cell) : -1;
   const borderStyle = cell.style.border || '';
 
   cell.colSpan = 1;
@@ -6809,16 +6855,20 @@ function tableSplitCell() {
     row.insertBefore(newCell, cell.nextSibling);
   }
 
-  for (let r = 1; r < rowSpan; r++) {
-    const targetRow = rows[rowIdx + r];
-    if (!targetRow) continue;
-    const targetCells = Array.from(targetRow.querySelectorAll('td,th'));
-    const insertBefore = targetCells[colIdx] || null;
-    for (let c = 0; c < colSpan; c++) {
-      const newCell = document.createElement('td');
-      newCell.innerHTML = '<br>';
-      if (borderStyle) newCell.style.border = borderStyle;
-      targetRow.insertBefore(newCell, insertBefore);
+  if (colIdx >= 0) {
+    for (let r = 1; r < rowSpan; r++) {
+      const targetRow = rows[rowIdx + r];
+      if (!targetRow) continue;
+      const targetGridRow = grid[rowIdx + r] || [];
+      const targetCells = Array.from(targetRow.querySelectorAll('td,th'));
+      // First real cell in this row whose grid start column is past our split range.
+      const insertBefore = targetCells.find(tc => targetGridRow.indexOf(tc) >= colIdx + colSpan) || null;
+      for (let c = 0; c < colSpan; c++) {
+        const newCell = document.createElement('td');
+        newCell.innerHTML = '<br>';
+        if (borderStyle) newCell.style.border = borderStyle;
+        targetRow.insertBefore(newCell, insertBefore);
+      }
     }
   }
 
@@ -6996,19 +7046,35 @@ async function handleComposerPaste(e) {
     await onComposerImageSelected({ target: { files, value: '' } });
     return;
   }
+  const html = e.clipboardData?.getData('text/html');
   const text = e.clipboardData?.getData('text/plain');
-  if (!text) return;
+  if (!html && !text) return;
   e.preventDefault();
   const sel = window.getSelection();
   if (!sel?.rangeCount) return;
   const range = sel.getRangeAt(0);
   range.deleteContents();
-  const lines = text.replace(/\r/g, '').split('\n');
-  const frag = document.createDocumentFragment();
-  lines.forEach((line, i) => {
-    if (i > 0) frag.appendChild(document.createElement('br'));
-    if (line) frag.appendChild(document.createTextNode(line));
-  });
+
+  let frag;
+  if (html) {
+    const tmp = document.createElement('div');
+    tmp.innerHTML = sanitizeBlockHtml(html);
+    // Strip editor-only chrome so pasted markup (e.g. copied from another
+    // question's composer) can't smuggle in stale ids or dead UI controls.
+    tmp.querySelectorAll('[contenteditable]').forEach(el => el.removeAttribute('contenteditable'));
+    tmp.querySelectorAll('.document-editor-image-remove, .document-editor-image-resize, .editor-table-resize-handle, .tbl-col-resize-handle, .tbl-row-resize-handle').forEach(el => el.remove());
+    tmp.querySelectorAll('.document-editor-image-token[data-block-id]').forEach(el => el.removeAttribute('data-block-id'));
+    tmp.querySelectorAll('.editor-table-wrap').forEach(el => el.replaceWith(...el.childNodes));
+    frag = document.createDocumentFragment();
+    while (tmp.firstChild) frag.appendChild(tmp.firstChild);
+  } else {
+    frag = document.createDocumentFragment();
+    const lines = text.replace(/\r/g, '').split('\n');
+    lines.forEach((line, i) => {
+      if (i > 0) frag.appendChild(document.createElement('br'));
+      if (line) frag.appendChild(document.createTextNode(line));
+    });
+  }
   range.insertNode(frag);
   range.collapse(false);
   sel.removeAllRanges();
@@ -7037,6 +7103,64 @@ async function showQuestionDetail({ id }) {
   }
 }
 
+// Single source of truth for "which building blocks does each skill's
+// authoring form get" (composer, answer grid, vocab, audio, script...).
+// Previously this mapping was hand-copied at 4 call sites, which is how
+// vocab silently went missing from the Composite section editor.
+function skillEditorHtml(skill, opts = {}) {
+  const {
+    composerHints = {},
+    writingHintBox = '',
+    speakingHintBox = '',
+    audioExtraHint = '',
+    scriptValue = '',
+    scriptPlaceholder = '',
+    scriptRows = 8,
+    scriptLabelExtra = '',
+    scriptTrailingHint = '',
+    includeSttSelector = true,
+    includeScriptLoading = true,
+    includeSpeakerRename = true,
+    includeLocationHint = true,
+  } = opts;
+
+  if (skill === 'reading') {
+    return `
+      ${contentComposerHtml('Nội dung đề (Bài đọc + Câu hỏi)', composerHints.reading)}
+      ${includeLocationHint ? `<div id="location-pick-hint" class="location-pick-hint hidden"></div>` : ''}
+      ${answerGridHtml()}
+      ${vocabSectionHtml()}`;
+  }
+  if (skill === 'listening') {
+    return `
+      <div class="form-group">
+        <label class="form-label">File Audio <span style="color:var(--danger)">*</span></label>
+        ${audioUploadHtml()}
+        ${audioExtraHint}
+      </div>
+      <div class="form-group" id="script-section">
+        <label class="form-label">Script Listening${scriptLabelExtra}</label>
+        ${includeSttSelector ? sttSelectorHtml() : ''}
+        ${includeScriptLoading ? `<div id="script-loading" class="script-loading hidden"><span class="btn-spinner btn-spinner--dark"></span> <span id="script-loading-msg">Đang trích xuất script...</span></div>` : ''}
+        <textarea id="listening-script" class="form-textarea listening-script-editor" rows="${scriptRows}"
+          placeholder="${escapeHtml(scriptPlaceholder)}">${escapeHtml(scriptValue)}</textarea>
+        ${includeSpeakerRename ? speakerRenameSectionHtml() : ''}
+        ${scriptTrailingHint}
+      </div>
+      ${contentComposerHtml('Câu hỏi (text)', composerHints.listeningQuestion)}
+      ${includeLocationHint ? `<div id="location-pick-hint" class="location-pick-hint hidden"></div>` : ''}
+      ${answerGridHtml()}
+      ${vocabSectionHtml()}`;
+  }
+  if (skill === 'writing') {
+    return `${contentComposerHtml('Đề bài Writing', composerHints.writing)}${writingHintBox}`;
+  }
+  if (skill === 'speaking') {
+    return `${contentComposerHtml('Câu hỏi / Cue Card', composerHints.speaking)}${speakingHintBox}`;
+  }
+  return '';
+}
+
 function renderQuestionDetail(q) {
   _audioFile  = null;
   _editingVocabIndex = -1;
@@ -7060,11 +7184,9 @@ function renderQuestionDetail(q) {
     _cqEditingIdx = -1;
     skillSection = `<div id="cq-sections-ui"></div>`;
   } else if (q.skill === 'reading') {
-    skillSection = `
-      ${contentComposerHtml('Nội dung đề (Bài đọc + Câu hỏi)', 'Soạn nội dung dạng text, và chèn ảnh vào giữa khi cần. Location chỉ áp dụng cho phần text.')}
-      <div id="location-pick-hint" class="location-pick-hint hidden"></div>
-      ${answerGridHtml()}
-      ${vocabSectionHtml()}`;
+    skillSection = skillEditorHtml('reading', {
+      composerHints: { reading: 'Soạn nội dung dạng text, và chèn ảnh vào giữa khi cần. Location chỉ áp dụng cho phần text.' },
+    });
   } else if (q.skill === 'listening') {
     const audioTracks = Array.isArray(q.content_urls) && q.content_urls.length > 0
       ? q.content_urls
@@ -7083,35 +7205,23 @@ function renderQuestionDetail(q) {
         }))
       : [_newAudioSlot()];
     _audioFiles = _audioSlots;
-    skillSection = `
-      <div class="form-group">
-        <label class="form-label">File Audio <span style="color:var(--danger)">*</span></label>
-        ${audioUploadHtml()}
-        <div class="form-hint">Bấm “Đổi file” để thay, “×” để xoá bớt, “+ Thêm file audio” để thêm. Đề Listening cần ít nhất 1 file audio.</div>
-      </div>
-      <div class="form-group" id="script-section">
-        <label class="form-label">Script Listening
-          <span style="font-size:12px;font-weight:400;color:var(--gray-400)"> — tự động trích xuất sau khi upload audio, có thể chỉnh sửa</span>
-        </label>
-        ${sttSelectorHtml()}
-        <div id="script-loading" class="script-loading hidden">
-          <span class="btn-spinner btn-spinner--dark"></span> <span id="script-loading-msg">Đang trích xuất script...</span>
-        </div>
-        <textarea id="listening-script" class="form-textarea listening-script-editor" rows="8"
-          placeholder="Script listening...">${escapeHtml(q.script || '')}</textarea>
-        ${speakerRenameSectionHtml()}
-        <div class="form-hint">Học sinh xem script sau khi nộp bài. Bôi chọn text ở đây để set Location cho đáp án.</div>
-      </div>
-      ${contentComposerHtml('Câu hỏi (text)', 'Bạn có thể chèn ảnh minh hoạ hoặc bảng câu hỏi vào giữa các đoạn text.')}
-      <div id="location-pick-hint" class="location-pick-hint hidden"></div>
-      ${answerGridHtml()}
-      ${vocabSectionHtml()}`;
+    skillSection = skillEditorHtml('listening', {
+      composerHints: { listeningQuestion: 'Bạn có thể chèn ảnh minh hoạ hoặc bảng câu hỏi vào giữa các đoạn text.' },
+      audioExtraHint: `<div class="form-hint">Bấm “Đổi file” để thay, “×” để xoá bớt, “+ Thêm file audio” để thêm. Đề Listening cần ít nhất 1 file audio.</div>`,
+      scriptLabelExtra: `<span style="font-size:12px;font-weight:400;color:var(--gray-400)"> — tự động trích xuất sau khi upload audio, có thể chỉnh sửa</span>`,
+      scriptValue: q.script || '',
+      scriptPlaceholder: 'Script listening...',
+      scriptRows: 8,
+      scriptTrailingHint: `<div class="form-hint">Học sinh xem script sau khi nộp bài. Bôi chọn text ở đây để set Location cho đáp án.</div>`,
+    });
   } else if (q.skill === 'writing') {
-    skillSection = `
-      ${contentComposerHtml('Đề bài Writing', 'Dùng text làm nền chính và chèn chart/diagram/image vào đúng vị trí mong muốn.')}`;
+    skillSection = skillEditorHtml('writing', {
+      composerHints: { writing: 'Dùng text làm nền chính và chèn chart/diagram/image vào đúng vị trí mong muốn.' },
+    });
   } else if (q.skill === 'speaking') {
-    skillSection = `
-      ${contentComposerHtml('Câu hỏi / Cue Card', 'Bạn có thể chèn ảnh hoặc cue card visual vào giữa nội dung.')}`;
+    skillSection = skillEditorHtml('speaking', {
+      composerHints: { speaking: 'Bạn có thể chèn ảnh hoặc cue card visual vào giữa nội dung.' },
+    });
   }
 
   $('#app').innerHTML = `
@@ -7253,6 +7363,7 @@ async function submitQuestionEdit(id, btn) {
           content_url: s.content_url || null,
           content_urls: s.content_urls || [],
           script: s.script || null,
+          vocabulary: s.vocabulary || [],
         })),
       });
       toast('Đã lưu thay đổi! ✓');
@@ -7274,6 +7385,7 @@ async function submitQuestionEdit(id, btn) {
     }
   }
 
+  syncContentBlocksFromEditor();
   const contentBlocks = normalizeContentBlocksForEditor(_contentBlocks);
   const content = blocksToPlainText(contentBlocks) || null;
 
@@ -7538,27 +7650,40 @@ function vocabHeaderLevenshtein(a, b) {
   return dp[m][n];
 }
 
-const VOCAB_CANONICAL_FIELDS = ['word', 'definition', 'pronunciation', 'collocation', 'example'];
+// Shared "fuzzy-match CSV header row against known field aliases" matcher —
+// both vocab import and answer-grid import had their own copy-pasted version
+// of this exact loop, differing only in the alias table and the normalizer.
+function mapHeadersByAliases(headerRow, aliasesByField, normalizeFn) {
+  const result = {};
+  for (const field of Object.keys(aliasesByField)) result[field] = null;
+  const used = new Set();
+  headerRow.forEach((raw, idx) => {
+    const norm = normalizeFn(raw);
+    if (!norm) return;
+    let bestField = null, bestDist = Infinity;
+    for (const [field, aliases] of Object.entries(aliasesByField)) {
+      if (used.has(field)) continue;
+      for (const alias of aliases) {
+        const dist = vocabHeaderLevenshtein(norm, alias);
+        if (dist <= 1 && dist < bestDist) { bestDist = dist; bestField = field; }
+      }
+    }
+    if (bestField) { result[bestField] = idx; used.add(bestField); }
+  });
+  return result;
+}
+
+const VOCAB_FIELD_ALIASES = {
+  word: ['word'], definition: ['definition'], pronunciation: ['pronunciation'],
+  collocation: ['collocation'], example: ['example'],
+};
 
 function normalizeVocabHeader(s) {
   return String(s ?? '').toLowerCase().trim().replace(/[^a-z]/g, '');
 }
 
 function mapVocabHeaders(headerRow) {
-  const result = { word: null, definition: null, pronunciation: null, collocation: null, example: null };
-  const used = new Set();
-  headerRow.forEach((raw, idx) => {
-    const norm = normalizeVocabHeader(raw);
-    if (!norm) return;
-    let bestField = null, bestDist = Infinity;
-    for (const field of VOCAB_CANONICAL_FIELDS) {
-      if (used.has(field)) continue;
-      const dist = vocabHeaderLevenshtein(norm, field);
-      if (dist <= 1 && dist < bestDist) { bestDist = dist; bestField = field; }
-    }
-    if (bestField) { result[bestField] = idx; used.add(bestField); }
-  });
-  return result;
+  return mapHeadersByAliases(headerRow, VOCAB_FIELD_ALIASES, normalizeVocabHeader);
 }
 
 function setVocabImportStatus(message, type = '') {
@@ -7732,49 +7857,33 @@ function onSkillChange(skill) {
   let html = '';
 
   if (skill === 'reading') {
-    html = `
-      ${contentComposerHtml('Nội dung đề (Bài đọc + Câu hỏi)', 'Copy/paste text như bình thường. Khi cần bảng hoặc hình, hãy chèn ảnh vào đúng vị trí giữa các đoạn text.')}
-      <div id="location-pick-hint" class="location-pick-hint hidden"></div>
-      ${answerGridHtml()}
-      ${vocabSectionHtml()}`;
+    html = skillEditorHtml('reading', {
+      composerHints: { reading: 'Copy/paste text như bình thường. Khi cần bảng hoặc hình, hãy chèn ảnh vào đúng vị trí giữa các đoạn text.' },
+    });
 
   } else if (skill === 'listening') {
-    html = `
-      <div class="form-group">
-        <label class="form-label">File Audio <span style="color:var(--danger)">*</span></label>
-        ${audioUploadHtml()}
-      </div>
-      <div class="form-group" id="script-section">
-        <label class="form-label">Script Listening
-          <span style="font-size:12px;font-weight:400;color:var(--gray-400)"> — tự động trích xuất sau khi upload audio, có thể chỉnh sửa</span>
-        </label>
-        ${sttSelectorHtml()}
-        <div id="script-loading" class="script-loading hidden">
-          <span class="btn-spinner btn-spinner--dark"></span> <span id="script-loading-msg">Đang trích xuất script...</span>
-        </div>
-        <textarea id="listening-script" class="form-textarea listening-script-editor" rows="8"
-          placeholder="Script sẽ tự động điền sau khi upload audio v2. Bạn cũng có thể nhập thủ công."></textarea>
-        ${speakerRenameSectionHtml()}
-        <div class="form-hint">Học sinh xem script sau khi nộp bài. Bôi chọn text ở đây để set Location cho đáp án.</div>
-      </div>
-      ${contentComposerHtml('Câu hỏi (text)', 'Bạn có thể xen kẽ text và ảnh minh hoạ / bảng câu hỏi trong cùng một nội dung.')}
-      <div id="location-pick-hint" class="location-pick-hint hidden"></div>
-      ${answerGridHtml()}
-      ${vocabSectionHtml()}`;
+    html = skillEditorHtml('listening', {
+      composerHints: { listeningQuestion: 'Bạn có thể xen kẽ text và ảnh minh hoạ / bảng câu hỏi trong cùng một nội dung.' },
+      scriptPlaceholder: 'Script sẽ tự động điền sau khi upload audio v2. Bạn cũng có thể nhập thủ công.',
+      scriptLabelExtra: `<span style="font-size:12px;font-weight:400;color:var(--gray-400)"> — tự động trích xuất sau khi upload audio, có thể chỉnh sửa</span>`,
+      scriptTrailingHint: `<div class="form-hint">Học sinh xem script sau khi nộp bài. Bôi chọn text ở đây để set Location cho đáp án.</div>`,
+    });
 
   } else if (skill === 'writing') {
-    html = `
-      ${contentComposerHtml('Đề bài Writing', 'Nhập đề bài Task 1 hoặc Task 2, và chèn biểu đồ / hình minh hoạ vào đúng vị trí nếu cần.')}
-      <div style="padding:12px 16px;background:var(--primary-lt);border-radius:8px;font-size:13px;color:var(--primary-dk)">
+    html = skillEditorHtml('writing', {
+      composerHints: { writing: 'Nhập đề bài Task 1 hoặc Task 2, và chèn biểu đồ / hình minh hoạ vào đúng vị trí nếu cần.' },
+      writingHintBox: `<div style="padding:12px 16px;background:var(--primary-lt);border-radius:8px;font-size:13px;color:var(--primary-dk)">
         ℹ️ Writing là tự luận — không cần nhập đáp án mẫu.
-      </div>`;
+      </div>`,
+    });
 
   } else if (skill === 'speaking') {
-    html = `
-      ${contentComposerHtml('Câu hỏi / Cue Card', 'Nhập cue card dạng text và chèn thêm image nếu muốn hiển thị visual support cho học sinh.')}
-      <div style="padding:12px 16px;background:var(--primary-lt);border-radius:8px;font-size:13px;color:var(--primary-dk)">
+    html = skillEditorHtml('speaking', {
+      composerHints: { speaking: 'Nhập cue card dạng text và chèn thêm image nếu muốn hiển thị visual support cho học sinh.' },
+      speakingHintBox: `<div style="padding:12px 16px;background:var(--primary-lt);border-radius:8px;font-size:13px;color:var(--primary-dk)">
         ℹ️ Speaking — học sinh sẽ upload file audio của mình. Không cần đáp án mẫu.
-      </div>`;
+      </div>`,
+    });
   }
 
   section.innerHTML = html;
@@ -7833,22 +7942,7 @@ function normalizeAnswerHeader(s) {
 }
 
 function mapAnswerHeaders(headerRow) {
-  const result = { q_no: null, answers: null, explanation: null, location: null };
-  const used = new Set();
-  headerRow.forEach((raw, idx) => {
-    const norm = normalizeAnswerHeader(raw);
-    if (!norm) return;
-    let bestField = null, bestDist = Infinity;
-    for (const [field, aliases] of Object.entries(ANSWER_FIELD_ALIASES)) {
-      if (used.has(field)) continue;
-      for (const alias of aliases) {
-        const dist = vocabHeaderLevenshtein(norm, alias);
-        if (dist <= 1 && dist < bestDist) { bestDist = dist; bestField = field; }
-      }
-    }
-    if (bestField) { result[bestField] = idx; used.add(bestField); }
-  });
-  return result;
+  return mapHeadersByAliases(headerRow, ANSWER_FIELD_ALIASES, normalizeAnswerHeader);
 }
 
 function escapeRegExpChars(s) {
@@ -8018,7 +8112,7 @@ async function handleAnswerFileImport(input) {
       if (!row) { errors.push(`Câu ${qNo}: không tồn tại trong lưới đáp án`); continue; }
 
       const answersRaw = String(r[fieldIndex.answers] ?? '').trim();
-      const answers = answersRaw.split(/[|;]/).map(a => a.trim()).filter(Boolean);
+      const answers = splitDelimitedList(answersRaw, /[|;]/);
       if (!answers.length) { errors.push(`Câu ${qNo}: thiếu đáp án`); continue; }
       setAnswerRowChips(row, answers);
 
@@ -8701,6 +8795,7 @@ async function submitQuestion(btn) {
           content_url: s.content_url || null,
           content_urls: s.content_urls || [],
           script: s.script || '',
+          vocabulary: s.vocabulary || [],
         })),
       });
       stopQuestionDraftAutosave();
@@ -8714,6 +8809,7 @@ async function submitQuestion(btn) {
     return;
   }
 
+  syncContentBlocksFromEditor();
   const contentBlocks = normalizeContentBlocksForEditor(_contentBlocks);
   const content = blocksToPlainText(contentBlocks) || '';
   if (_contentImageUploadCount > 0) { toast('Ảnh đang upload, vui lòng đợi xong rồi lưu', 'warning'); return; }
@@ -9063,7 +9159,7 @@ async function submitAddProfileField(e) {
   const fieldKey = $('#pf-notification-email')?.checked ? 'notification_email' : null;
   const optionsRaw = $('#pf-options')?.value || '';
   const options = !fieldKey && fieldType === 'select'
-    ? optionsRaw.split('\n').map(s => s.trim()).filter(Boolean)
+    ? splitDelimitedList(optionsRaw)
     : null;
   if (!label) { toast('Vui lòng nhập nội dung câu hỏi', 'error'); return; }
   if (!fieldKey && fieldType === 'select' && (!options || options.length < 2)) { toast('Nhập ít nhất 2 lựa chọn', 'error'); return; }
@@ -10120,20 +10216,24 @@ function onSharedSkillChange(skill, q) {
 
   let html = '';
   if (skill === 'reading') {
-    html = `${contentComposerHtml('Nội dung đề')}${answerGridHtml()}${vocabSectionHtml()}`;
+    html = skillEditorHtml('reading', { includeLocationHint: false });
   } else if (skill === 'listening') {
-    html = `
-      <div class="form-group"><label class="form-label">File Audio <span style="color:var(--danger)">*</span></label>${audioUploadHtml()}</div>
-      <div class="form-group" id="script-section">
-        <label class="form-label">Script Listening</label>
-        <textarea id="listening-script" class="form-textarea listening-script-editor" rows="8"
-          placeholder="Script...">${escapeHtml(q?.script || '')}</textarea>
-      </div>
-      ${contentComposerHtml('Câu hỏi (text)')}${answerGridHtml()}${vocabSectionHtml()}`;
+    html = skillEditorHtml('listening', {
+      includeLocationHint: false,
+      includeSttSelector: false,
+      includeScriptLoading: false,
+      includeSpeakerRename: false,
+      scriptValue: q?.script || '',
+      scriptPlaceholder: 'Script...',
+    });
   } else if (skill === 'writing') {
-    html = `${contentComposerHtml('Đề bài Writing')}<div class="form-hint-box">ℹ️ Writing là tự luận — không cần nhập đáp án mẫu.</div>`;
+    html = skillEditorHtml('writing', {
+      writingHintBox: `<div class="form-hint-box">ℹ️ Writing là tự luận — không cần nhập đáp án mẫu.</div>`,
+    });
   } else if (skill === 'speaking') {
-    html = `${contentComposerHtml('Câu hỏi / Cue Card')}<div class="form-hint-box">ℹ️ Speaking — học sinh sẽ upload file audio.</div>`;
+    html = skillEditorHtml('speaking', {
+      speakingHintBox: `<div class="form-hint-box">ℹ️ Speaking — học sinh sẽ upload file audio.</div>`,
+    });
   }
 
   container.innerHTML = html;
@@ -10166,11 +10266,19 @@ async function submitSharedPoolQuestion() {
   if (skill === 'listening' && _audioSlots.filter(s => s.status === 'done').length === 0 && !_sharedEditingId) {
     toast('Vui lòng upload ít nhất 1 file audio', 'error'); return;
   }
+  if (skill === 'reading' || skill === 'listening') {
+    const emptyQnos = checkEmptyAnswers();
+    if (emptyQnos.length > 0) {
+      confirmSaveWithEmptyAnswers(emptyQnos, () => submitSharedPoolQuestion());
+      return;
+    }
+  }
 
   const btn = $('#sp-submit-btn');
   btnLoading(btn);
   try {
     const tags = getChipValues($('#sp-tags-chip'));
+    syncContentBlocksFromEditor();
     const contentBlocks = normalizeContentBlocksForEditor(_contentBlocks);
     const content_text  = blocksToPlainText(contentBlocks) || '';
 
@@ -10258,6 +10366,7 @@ function _saveCQCurrentEditorState() {
   const sec = _cqSections[_cqEditingIdx];
   sec.label = document.getElementById('cq-label')?.value.trim() ?? sec.label;
   sec.time_limit_minutes = (() => { const v = document.getElementById('cq-time')?.value; return v ? Number(v) : null; })();
+  syncContentBlocksFromEditor();
   const blocks = normalizeContentBlocksForEditor(_contentBlocks);
   sec.content_blocks = blocks;
   sec.content_text = blocksToPlainText(blocks) || '';
@@ -10315,26 +10424,17 @@ function renderCQSectionsUI() {
     const sec = _cqSections[_cqEditingIdx];
     let skillContentHtml = '';
     if (sec.skill === 'reading') {
-      skillContentHtml = `${contentComposerHtml('Nội dung đề (Bài đọc + Câu hỏi)')}
-        <div id="location-pick-hint" class="location-pick-hint hidden"></div>
-        ${answerGridHtml()}`;
+      skillContentHtml = skillEditorHtml('reading', {});
     } else if (sec.skill === 'listening') {
-      skillContentHtml = `<div class="form-group"><label class="form-label">File Audio <span style="color:var(--danger)">*</span></label>${audioUploadHtml()}</div>
-        <div class="form-group" id="script-section">
-          <label class="form-label">Script Listening</label>
-          ${sttSelectorHtml()}
-          <div id="script-loading" class="script-loading hidden"><span class="btn-spinner btn-spinner--dark"></span> <span id="script-loading-msg">Đang trích xuất script...</span></div>
-          <textarea id="listening-script" class="form-textarea listening-script-editor" rows="6"
-            placeholder="Script tự động điền sau khi upload audio">${escapeHtml(sec.script||'')}</textarea>
-          ${speakerRenameSectionHtml()}
-        </div>
-        ${contentComposerHtml('Câu hỏi (text)')}
-        <div id="location-pick-hint" class="location-pick-hint hidden"></div>
-        ${answerGridHtml()}`;
+      skillContentHtml = skillEditorHtml('listening', {
+        scriptValue: sec.script || '',
+        scriptPlaceholder: 'Script tự động điền sau khi upload audio',
+        scriptRows: 6,
+      });
     } else if (sec.skill === 'writing') {
-      skillContentHtml = `${contentComposerHtml('Đề bài Writing')}`;
+      skillContentHtml = skillEditorHtml('writing', {});
     } else if (sec.skill === 'speaking') {
-      skillContentHtml = `${contentComposerHtml('Câu hỏi / Cue Card')}`;
+      skillContentHtml = skillEditorHtml('speaking', {});
     }
 
     editorHtml = `
@@ -10430,13 +10530,31 @@ function saveCQSection() {
   if (!labelEl || !labelEl.value.trim()) { toast('Vui lòng đặt tên phần thi', 'error'); return; }
   const skillEl = document.getElementById('cq-skill');
   if (!skillEl?.value) { toast('Vui lòng chọn kỹ năng', 'error'); return; }
-  _cqSections[_cqEditingIdx].skill = skillEl.value;
-  _saveCQCurrentEditorState();
-  _cqEditingIdx = -1;
-  _contentBlocks = [];
-  _vocabItems = [];
-  _audioSlots = [_newAudioSlot()]; _audioFiles = _audioSlots;
-  renderCQSectionsUI();
+  const skill = skillEl.value;
+  if (skill === 'listening') {
+    if (_audioSlots.filter(s => s.status === 'done').length === 0) {
+      toast('Phần Listening cần ít nhất 1 file audio', 'error');
+      return;
+    }
+    if (_audioUploading) { toast('Audio vẫn đang upload, vui lòng đợi xong rồi lưu', 'warning'); return; }
+  }
+  const finalizeSaveCQSection = () => {
+    _cqSections[_cqEditingIdx].skill = skill;
+    _saveCQCurrentEditorState();
+    _cqEditingIdx = -1;
+    _contentBlocks = [];
+    _vocabItems = [];
+    _audioSlots = [_newAudioSlot()]; _audioFiles = _audioSlots;
+    renderCQSectionsUI();
+  };
+  if (skill === 'reading' || skill === 'listening') {
+    const emptyQnos = checkEmptyAnswers();
+    if (emptyQnos.length > 0) {
+      confirmSaveWithEmptyAnswers(emptyQnos, finalizeSaveCQSection);
+      return;
+    }
+  }
+  finalizeSaveCQSection();
 }
 window.saveCQSection = saveCQSection;
 

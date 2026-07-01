@@ -6740,7 +6740,7 @@ function tableAddColLeft() {
   if (colIndex < 0) return;
   _tableInsertColAt(table, colIndex);
   const cg = table.querySelector('colgroup');
-  if (cg) { const col = document.createElement('col'); col.style.width = '10%'; cg.insertBefore(col, cg.children[colIndex] || null); redistributeColWidths(cg); }
+  if (cg) { const col = document.createElement('col'); cg.insertBefore(col, cg.children[colIndex] || null); equalizeColWidths(cg); }
   syncContentBlocksFromEditor();
   injectTableResizeHandles(table);
 }
@@ -6755,7 +6755,7 @@ function tableAddColRight() {
   const colIndex = pos.col + colSpan;
   _tableInsertColAt(table, colIndex);
   const cg = table.querySelector('colgroup');
-  if (cg) { const col = document.createElement('col'); col.style.width = '10%'; cg.insertBefore(col, cg.children[colIndex] || null); redistributeColWidths(cg); }
+  if (cg) { const col = document.createElement('col'); cg.insertBefore(col, cg.children[colIndex] || null); equalizeColWidths(cg); }
   syncContentBlocksFromEditor();
   injectTableResizeHandles(table);
 }
@@ -6793,6 +6793,17 @@ function redistributeColWidths(cg) {
   const total = cols.reduce((s, c) => s + (parseFloat(c.style.width) || 0), 0) || 100;
   const scale = 100 / total;
   cols.forEach(c => { c.style.width = ((parseFloat(c.style.width) || 0) * scale).toFixed(2) + '%'; });
+}
+
+// Used when a column is inserted: scaling the existing proportions plus a
+// fixed 10% share for the new column (redistributeColWidths) leaves the new
+// column much narrower than the rest. Give every column an equal share
+// instead, matching what a teacher expects from "add column".
+function equalizeColWidths(cg) {
+  const cols = Array.from(cg.querySelectorAll('col'));
+  if (!cols.length) return;
+  const width = (100 / cols.length).toFixed(2) + '%';
+  cols.forEach(c => { c.style.width = width; });
 }
 
 // ── TABLE GRID MODEL ──────────────────────────────────────────────────────────

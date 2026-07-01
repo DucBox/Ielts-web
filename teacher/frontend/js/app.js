@@ -7811,7 +7811,247 @@ function answerGridHtml() {
         <button type="button" class="btn-add-row" onclick="addAnswerRow()">+ Thêm câu</button>
       </div>
       <div class="form-hint">Mỗi câu có thể có nhiều đáp án chấp nhận được. Gõ đáp án rồi nhấn Enter.</div>
+      ${answerImportBoxHtml()}
     </div>`;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ANSWER GRID IMPORT (CSV/Excel) — reading & listening
+// ═══════════════════════════════════════════════════════════════════════════
+
+const ANSWER_FIELD_ALIASES = {
+  q_no: ['stt', 'sott', 'qno', 'causo', 'socau', 'so'],
+  answers: ['dapan', 'answer', 'answers', 'dapanmau', 'correctanswer'],
+  explanation: ['giaithich', 'explanation', 'explain'],
+  location: ['location', 'vitri', 'position'],
+};
+
+function normalizeAnswerHeader(s) {
+  return String(s ?? '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase().trim().replace(/[^a-z0-9]/g, '');
+}
+
+function mapAnswerHeaders(headerRow) {
+  const result = { q_no: null, answers: null, explanation: null, location: null };
+  const used = new Set();
+  headerRow.forEach((raw, idx) => {
+    const norm = normalizeAnswerHeader(raw);
+    if (!norm) return;
+    let bestField = null, bestDist = Infinity;
+    for (const [field, aliases] of Object.entries(ANSWER_FIELD_ALIASES)) {
+      if (used.has(field)) continue;
+      for (const alias of aliases) {
+        const dist = vocabHeaderLevenshtein(norm, alias);
+        if (dist <= 1 && dist < bestDist) { bestDist = dist; bestField = field; }
+      }
+    }
+    if (bestField) { result[bestField] = idx; used.add(bestField); }
+  });
+  return result;
+}
+
+function escapeRegExpChars(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Builds a whitespace-tolerant, case-insensitive regex from a quoted location
+// so teacher-typed quotes don't have to match the passage byte-for-byte.
+function buildFuzzyLocationRegex(quote) {
+  const words = String(quote).trim().split(/\s+/).filter(Boolean).map(escapeRegExpChars);
+  if (!words.length) return null;
+  try { return new RegExp(words.join('\\s+'), 'i'); } catch { return null; }
+}
+
+function findReadingLocationMatch(quote) {
+  const regex = buildFuzzyLocationRegex(quote);
+  if (!regex) return null;
+  const blocks = document.querySelectorAll('#content-composer-preview-body .mixed-content-text[data-block-id]');
+  for (const block of blocks) {
+    const match = regex.exec(block.textContent || '');
+    if (match) {
+      const start = match.index;
+      const end = start + match[0].length;
+      return {
+        text: match[0],
+        meta: {
+          type: 'preview_text_range',
+          start_block_id: block.dataset.blockId,
+          end_block_id: block.dataset.blockId,
+          start_offset: start,
+          end_offset: end,
+          text: match[0],
+        },
+      };
+    }
+  }
+  return null;
+}
+
+function findListeningLocationMatch(quote) {
+  const scriptEl = document.getElementById('listening-script');
+  if (!scriptEl) return null;
+  const regex = buildFuzzyLocationRegex(quote);
+  if (!regex) return null;
+  const match = regex.exec(scriptEl.value || '');
+  if (!match) return null;
+  const start = match.index;
+  const end = start + match[0].length;
+  return { text: match[0], meta: { type: 'script_text_range', start, end, text: match[0] } };
+}
+
+function findAnswerLocationMatch(quote) {
+  return document.getElementById('listening-script')
+    ? findListeningLocationMatch(quote)
+    : findReadingLocationMatch(quote);
+}
+
+function setAnswerRowChips(row, answers) {
+  const container = row.querySelector('.chip-container');
+  if (!container) return;
+  container.querySelectorAll('.chip').forEach(chip => chip.remove());
+  const input = container.querySelector('.chip-input');
+  for (const raw of answers) {
+    const val = String(raw).trim();
+    if (!val) continue;
+    const chip = document.createElement('span');
+    chip.className = 'chip';
+    chip.dataset.value = val;
+    chip.innerHTML = `${escapeHtml(val)} <button class="chip-remove" title="Xoá" aria-label="Xoá">×</button>`;
+    chip.querySelector('.chip-remove').onclick = () => chip.remove();
+    container.insertBefore(chip, input);
+  }
+}
+
+function applyAnswerLocationToRow(row, text, meta) {
+  const locInput = row.querySelector('.answer-location');
+  const metaInput = row.querySelector('.answer-location-meta');
+  const disp = row.querySelector('.location-text-display');
+  if (locInput) locInput.value = text;
+  if (metaInput) metaInput.value = JSON.stringify(meta);
+  if (disp) disp.textContent = text;
+  row.querySelector('.btn-clear-location')?.classList.remove('hidden');
+}
+
+function answerImportBoxHtml() {
+  return `
+    <div class="pdf-import-box" style="margin-top:10px">
+      <div class="pdf-import-head">
+        <div>
+          <div class="pdf-import-title">📥 Import đáp án từ Excel/CSV</div>
+          <div class="pdf-import-sub">Cột: STT, Đáp án (nhiều đáp án cách nhau bởi | hoặc ;), Giải thích, Location (trích nguyên văn từ bài — không cần khớp 100% khoảng trắng/hoa-thường). Chỉ áp dụng cho các câu đã có sẵn trong lưới ở trên.</div>
+        </div>
+        <div class="pdf-import-area" role="button" tabindex="0" aria-label="Upload Excel/CSV" onclick="if(event.target.tagName!=='INPUT')$('#answer-file-input').click()">
+          <input id="answer-file-input" type="file" accept=".csv,.xlsx,.xls,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" onchange="handleAnswerFileImport(this)" />
+          <button type="button" class="btn btn-outline btn-sm" onclick="event.stopPropagation();$('#answer-file-input').click()">Chọn file</button>
+          <span class="pdf-import-meta">Excel (.xlsx/.xls) hoặc CSV</span>
+        </div>
+      </div>
+      <div id="answer-import-status" class="pdf-import-status">Chưa có file nào được import.</div>
+    </div>`;
+}
+
+function setAnswerImportStatus(message, type = '') {
+  const status = $('#answer-import-status');
+  if (!status) return;
+  status.className = `pdf-import-status${type ? ` is-${type}` : ''}`;
+  status.textContent = message;
+}
+
+async function handleAnswerFileImport(input) {
+  const file = input?.files?.[0];
+  if (input) input.value = '';
+  if (!file) return;
+
+  const ext = (file.name.split('.').pop() || '').toLowerCase();
+  const isCsv = ext === 'csv' || file.type === 'text/csv';
+  const isExcel = ext === 'xlsx' || ext === 'xls';
+  if (!isCsv && !isExcel) {
+    setAnswerImportStatus('Chỉ hỗ trợ file .csv, .xlsx hoặc .xls.', 'error');
+    toast('File không hợp lệ', 'error');
+    return;
+  }
+
+  const rowEls = document.querySelectorAll('#answer-grid .answer-row');
+  if (!rowEls.length) {
+    setAnswerImportStatus('Chưa có lưới đáp án — nhập Số câu hỏi trước khi import.', 'error');
+    toast('Chưa có lưới đáp án', 'error');
+    return;
+  }
+
+  setAnswerImportStatus('Đang đọc file...', 'loading');
+  try {
+    let rows;
+    if (isCsv) {
+      const text = (await file.text()).replace(/^\uFEFF/, '');
+      rows = parseVocabCsvText(text);
+    } else {
+      const XLSX = await ensureXlsxLoaded();
+      const buffer = await file.arrayBuffer();
+      const wb = XLSX.read(new Uint8Array(buffer), { type: 'array' });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '', raw: false })
+        .filter(r => Array.isArray(r) && r.some(cell => String(cell).trim() !== ''));
+    }
+
+    if (!rows || rows.length < 2) {
+      setAnswerImportStatus('File không có dữ liệu (cần dòng tiêu đề + ít nhất 1 dòng dữ liệu).', 'error');
+      toast('File trống', 'error');
+      return;
+    }
+
+    const fieldIndex = mapAnswerHeaders(rows[0]);
+    if (fieldIndex.q_no == null || fieldIndex.answers == null) {
+      setAnswerImportStatus('Không tìm thấy cột STT và/hoặc Đáp án ở dòng tiêu đề.', 'error');
+      toast('Thiếu cột bắt buộc: STT, Đáp án', 'error');
+      return;
+    }
+
+    let updated = 0;
+    const errors = [];
+    for (let i = 1; i < rows.length; i++) {
+      const r = rows[i] || [];
+      const qNoRaw = String(r[fieldIndex.q_no] ?? '').trim();
+      const qNo = parseInt(qNoRaw, 10);
+      if (!qNo) { errors.push(`Dòng ${i + 1}: STT không hợp lệ ("${qNoRaw}")`); continue; }
+      const row = Array.from(rowEls).find(el => el.querySelector('.q-label')?.textContent === `Q${qNo}`);
+      if (!row) { errors.push(`Câu ${qNo}: không tồn tại trong lưới đáp án`); continue; }
+
+      const answersRaw = String(r[fieldIndex.answers] ?? '').trim();
+      const answers = answersRaw.split(/[|;]/).map(a => a.trim()).filter(Boolean);
+      if (!answers.length) { errors.push(`Câu ${qNo}: thiếu đáp án`); continue; }
+      setAnswerRowChips(row, answers);
+
+      if (fieldIndex.explanation != null) {
+        const explanation = String(r[fieldIndex.explanation] ?? '').trim();
+        const expArea = row.querySelector('.answer-explanation');
+        if (expArea) expArea.value = explanation;
+      }
+
+      if (fieldIndex.location != null) {
+        const quote = String(r[fieldIndex.location] ?? '').trim();
+        if (quote) {
+          const match = findAnswerLocationMatch(quote);
+          if (match) applyAnswerLocationToRow(row, match.text, match.meta);
+          else errors.push(`Câu ${qNo}: không tìm thấy vị trí khớp với "${quote}"`);
+        }
+      }
+
+      updated++;
+    }
+
+    attachChipListeners();
+    scheduleQuestionDraftSave();
+
+    const errMsg = errors.length ? ` — ${errors.length} lỗi: ${errors.join('; ')}` : '';
+    setAnswerImportStatus(`Đã import ${updated} câu từ "${file.name}"${errMsg}`, errors.length ? 'warning' : 'success');
+    toast(errors.length ? `Import xong, ${errors.length} lỗi (xem chi tiết bên dưới)` : `Đã import ${updated} câu`, errors.length ? 'warning' : 'success');
+  } catch (e) {
+    console.error('Answer import failed:', e);
+    const msg = e?.message || 'Không thể đọc file này.';
+    setAnswerImportStatus(msg, 'error');
+    toast(msg, 'error');
+  }
 }
 
 let _pdfJsLoadingPromise = null;

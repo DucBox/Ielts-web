@@ -1730,6 +1730,7 @@ body.resizing-image {
 .pdf-import-status.is-loading { color: var(--primary-dk); }
 .pdf-import-status.is-success { color: #166534; }
 .pdf-import-status.is-error { color: var(--danger); }
+.pdf-import-status.is-warning { color: var(--accent); }
 
 /* ═══ MODAL ══════════════════════════════════════════════════════════════════ */
 .modal-overlay {

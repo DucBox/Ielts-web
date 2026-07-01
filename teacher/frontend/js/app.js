@@ -7253,7 +7253,6 @@ async function submitQuestionEdit(id, btn) {
           content_url: s.content_url || null,
           content_urls: s.content_urls || [],
           script: s.script || null,
-          vocabulary: s.vocabulary || [],
         })),
       });
       toast('Đã lưu thay đổi! ✓');
@@ -8702,7 +8701,6 @@ async function submitQuestion(btn) {
           content_url: s.content_url || null,
           content_urls: s.content_urls || [],
           script: s.script || '',
-          vocabulary: s.vocabulary || [],
         })),
       });
       stopQuestionDraftAutosave();
@@ -10319,8 +10317,7 @@ function renderCQSectionsUI() {
     if (sec.skill === 'reading') {
       skillContentHtml = `${contentComposerHtml('Nội dung đề (Bài đọc + Câu hỏi)')}
         <div id="location-pick-hint" class="location-pick-hint hidden"></div>
-        ${answerGridHtml()}
-        ${vocabSectionHtml()}`;
+        ${answerGridHtml()}`;
     } else if (sec.skill === 'listening') {
       skillContentHtml = `<div class="form-group"><label class="form-label">File Audio <span style="color:var(--danger)">*</span></label>${audioUploadHtml()}</div>
         <div class="form-group" id="script-section">
@@ -10333,8 +10330,7 @@ function renderCQSectionsUI() {
         </div>
         ${contentComposerHtml('Câu hỏi (text)')}
         <div id="location-pick-hint" class="location-pick-hint hidden"></div>
-        ${answerGridHtml()}
-        ${vocabSectionHtml()}`;
+        ${answerGridHtml()}`;
     } else if (sec.skill === 'writing') {
       skillContentHtml = `${contentComposerHtml('Đề bài Writing')}`;
     } else if (sec.skill === 'speaking') {

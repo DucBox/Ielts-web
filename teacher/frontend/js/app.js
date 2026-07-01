@@ -6625,61 +6625,122 @@ function injectTableResizeHandles(table) {
   });
 }
 
+// Insert a new grid row so it lands at `gridRowIndex` (0-based, existing rows
+// at/after that index shift down). Any cell whose rowSpan already straddles
+// that boundary gets widened by 1 instead of a same-index DOM row being
+// blindly spliced in (which drifts out of alignment as soon as the table has
+// any merged cell).
+function _tableInsertRowAt(table, gridRowIndex) {
+  const { rows, grid } = getTableGridMap(table);
+  const colCount = Math.max(0, ...grid.map(r => r.length), 0);
+  const aboveRow = grid[gridRowIndex - 1] || [];
+  const atRow = grid[gridRowIndex] || [];
+  const extended = new Set();
+  const newRow = document.createElement('tr');
+  for (let c = 0; c < colCount; c++) {
+    const spanning = aboveRow[c] && aboveRow[c] === atRow[c] ? aboveRow[c] : null;
+    if (spanning) {
+      if (!extended.has(spanning)) {
+        spanning.rowSpan = Math.max(1, spanning.rowSpan || 1) + 1;
+        extended.add(spanning);
+      }
+      continue;
+    }
+    const td = document.createElement('td');
+    td.innerHTML = '<br>';
+    newRow.appendChild(td);
+  }
+  const refRow = rows[gridRowIndex] || null;
+  if (refRow) refRow.parentNode.insertBefore(newRow, refRow);
+  else if (rows.length) rows[rows.length - 1].parentNode.appendChild(newRow);
+  else table.appendChild(newRow);
+}
+
 function tableAddRowAbove() {
   if (!_activeTableCell) return;
-  const row = _activeTableCell.closest('tr');
-  if (!row) return;
-  const table = row.closest('table');
-  const colCount = getTableColCount(table);
-  const newRow = document.createElement('tr');
-  for (let i = 0; i < colCount; i++) { const td = document.createElement('td'); td.innerHTML = '<br>'; newRow.appendChild(td); }
-  row.parentNode.insertBefore(newRow, row);
+  const table = _activeTableCell.closest('table');
+  if (!table) return;
+  const pos = getTableCellGridPos(table, _activeTableCell);
+  if (pos.row < 0) return;
+  _tableInsertRowAt(table, pos.row);
   syncContentBlocksFromEditor();
   injectTableResizeHandles(table);
 }
 
 function tableAddRowBelow() {
   if (!_activeTableCell) return;
-  const row = _activeTableCell.closest('tr');
-  if (!row) return;
-  const table = row.closest('table');
-  const colCount = getTableColCount(table);
-  const newRow = document.createElement('tr');
-  for (let i = 0; i < colCount; i++) { const td = document.createElement('td'); td.innerHTML = '<br>'; newRow.appendChild(td); }
-  row.parentNode.insertBefore(newRow, row.nextSibling);
+  const table = _activeTableCell.closest('table');
+  if (!table) return;
+  const pos = getTableCellGridPos(table, _activeTableCell);
+  if (pos.row < 0) return;
+  const rowSpan = Math.max(1, _activeTableCell.rowSpan || 1);
+  _tableInsertRowAt(table, pos.row + rowSpan);
   syncContentBlocksFromEditor();
   injectTableResizeHandles(table);
 }
 
 function tableDeleteRow() {
   if (!_activeTableCell) return;
-  const row = _activeTableCell.closest('tr');
-  if (!row) return;
-  const table = row.closest('table');
+  const table = _activeTableCell.closest('table');
+  if (!table) return;
+  const { rows, grid } = getTableGridMap(table);
+  const rowIdx = rows.indexOf(_activeTableCell.closest('tr'));
+  if (rowIdx < 0) return;
+  const row = rows[rowIdx];
+  const gridRow = grid[rowIdx] || [];
+  const shrunk = new Set();
+  gridRow.forEach(cell => {
+    if (!cell || shrunk.has(cell)) return;
+    const span = Math.max(1, cell.rowSpan || 1);
+    if (span > 1 && cell.parentElement !== row) {
+      // Started in an earlier row and spans down into the row being removed.
+      cell.rowSpan = span - 1;
+      shrunk.add(cell);
+    }
+  });
   row.remove();
-  if (table && !table.querySelectorAll('tr').length) { table.remove(); }
-  else if (table) injectTableResizeHandles(table);
+  if (!table.querySelectorAll('tr').length) { table.remove(); }
+  else injectTableResizeHandles(table);
   _activeTableCell = null;
   hideTableFloatToolbar();
   syncContentBlocksFromEditor();
+}
+
+// Insert a new grid column at `gridColIndex` (0-based), correctly widening any
+// existing cell whose colSpan already straddles that boundary instead of
+// blindly inserting a same-index DOM cell per row (which drifts out of
+// alignment as soon as the table has any merged cell).
+function _tableInsertColAt(table, gridColIndex) {
+  const { rows, grid } = getTableGridMap(table);
+  const extended = new Set();
+  rows.forEach((tr, r) => {
+    const gridRow = grid[r] || [];
+    const leftCell = gridColIndex > 0 ? gridRow[gridColIndex - 1] : null;
+    const rightCell = gridRow[gridColIndex] || null;
+    if (leftCell && leftCell === rightCell) {
+      if (!extended.has(leftCell)) {
+        leftCell.colSpan = Math.max(1, leftCell.colSpan || 1) + 1;
+        extended.add(leftCell);
+      }
+      return;
+    }
+    const cells = Array.from(tr.querySelectorAll('td,th'));
+    const insertBefore = cells.find(c => gridRow.indexOf(c) >= gridColIndex) || null;
+    const newCell = document.createElement('td');
+    newCell.innerHTML = '<br>';
+    tr.insertBefore(newCell, insertBefore);
+  });
 }
 
 function tableAddColLeft() {
   if (!_activeTableCell) return;
   const table = _activeTableCell.closest('table');
   if (!table) return;
-  const currentRow = _activeTableCell.closest('tr');
-  const colIndex = Array.from(currentRow.querySelectorAll('td,th')).indexOf(_activeTableCell);
-  table.querySelectorAll('tr').forEach(tr => {
-    const cells = tr.querySelectorAll('td,th');
-    const ref = cells[colIndex];
-    if (!ref) return;
-    const newCell = document.createElement('td');
-    newCell.innerHTML = '<br>';
-    tr.insertBefore(newCell, ref);
-  });
+  const colIndex = getTableCellGridPos(table, _activeTableCell).col;
+  if (colIndex < 0) return;
+  _tableInsertColAt(table, colIndex);
   const cg = table.querySelector('colgroup');
-  if (cg) { const col = document.createElement('col'); col.style.width = '10%'; cg.insertBefore(col, cg.children[colIndex]); redistributeColWidths(cg); }
+  if (cg) { const col = document.createElement('col'); col.style.width = '10%'; cg.insertBefore(col, cg.children[colIndex] || null); redistributeColWidths(cg); }
   syncContentBlocksFromEditor();
   injectTableResizeHandles(table);
 }
@@ -6688,31 +6749,35 @@ function tableAddColRight() {
   if (!_activeTableCell) return;
   const table = _activeTableCell.closest('table');
   if (!table) return;
-  const currentRow = _activeTableCell.closest('tr');
-  const colIndex = Array.from(currentRow.querySelectorAll('td,th')).indexOf(_activeTableCell);
-  table.querySelectorAll('tr').forEach(tr => {
-    const cells = tr.querySelectorAll('td,th');
-    const ref = cells[colIndex];
-    if (!ref) return;
-    const newCell = document.createElement('td');
-    newCell.innerHTML = '<br>';
-    tr.insertBefore(newCell, ref.nextSibling);
-  });
+  const pos = getTableCellGridPos(table, _activeTableCell);
+  if (pos.col < 0) return;
+  const colSpan = Math.max(1, _activeTableCell.colSpan || 1);
+  const colIndex = pos.col + colSpan;
+  _tableInsertColAt(table, colIndex);
   const cg = table.querySelector('colgroup');
-  if (cg) { const col = document.createElement('col'); col.style.width = '10%'; cg.insertBefore(col, cg.children[colIndex + 1] || null); redistributeColWidths(cg); }
+  if (cg) { const col = document.createElement('col'); col.style.width = '10%'; cg.insertBefore(col, cg.children[colIndex] || null); redistributeColWidths(cg); }
   syncContentBlocksFromEditor();
   injectTableResizeHandles(table);
 }
+
 
 function tableDeleteCol() {
   if (!_activeTableCell) return;
   const table = _activeTableCell.closest('table');
   if (!table) return;
-  const currentRow = _activeTableCell.closest('tr');
-  const colIndex = Array.from(currentRow.querySelectorAll('td,th')).indexOf(_activeTableCell);
-  table.querySelectorAll('tr').forEach(tr => {
-    const cells = tr.querySelectorAll('td,th');
-    if (cells[colIndex]) cells[colIndex].remove();
+  const { rows, grid } = getTableGridMap(table);
+  const colIndex = getTableCellGridPos(table, _activeTableCell).col;
+  if (colIndex < 0) return;
+  const shrunk = new Set();
+  rows.forEach((tr, r) => {
+    const cell = (grid[r] || [])[colIndex];
+    if (!cell) return;
+    const span = Math.max(1, cell.colSpan || 1);
+    if (span > 1) {
+      if (!shrunk.has(cell)) { cell.colSpan = span - 1; shrunk.add(cell); }
+    } else {
+      cell.remove();
+    }
   });
   const cg = table.querySelector('colgroup');
   if (cg && cg.children[colIndex]) { cg.children[colIndex].remove(); redistributeColWidths(cg); }
@@ -7038,6 +7103,21 @@ async function onComposerImageSelected(e) {
   }
 }
 
+// Inline styles carried over from an external source (Word, Notion, a chat
+// UI's markdown renderer, etc.) can set a fixed width/nowrap/overflow that
+// blows past the composer's box and gets silently clipped by the preview
+// panel's `overflow:hidden`. Strip only the layout-breaking properties and
+// keep cosmetic ones (color, font-weight...) so paste still looks reasonable.
+const UNSAFE_PASTE_STYLE_PROPS = /^(white-space|width|min-width|max-width|height|min-height|max-height|overflow(-x|-y)?|position|display|float|clear|transform|writing-mode|contain)$/i;
+function stripUnsafePasteStyles(root) {
+  root.querySelectorAll('[style]').forEach(el => {
+    Array.from(el.style).forEach(prop => {
+      if (UNSAFE_PASTE_STYLE_PROPS.test(prop)) el.style.removeProperty(prop);
+    });
+    if (!el.getAttribute('style')) el.removeAttribute('style');
+  });
+}
+
 async function handleComposerPaste(e) {
   const files = Array.from(e.clipboardData?.files || []).filter(f => f.type.startsWith('image/'));
   if (files.length) {
@@ -7065,6 +7145,7 @@ async function handleComposerPaste(e) {
     tmp.querySelectorAll('.document-editor-image-remove, .document-editor-image-resize, .editor-table-resize-handle, .tbl-col-resize-handle, .tbl-row-resize-handle').forEach(el => el.remove());
     tmp.querySelectorAll('.document-editor-image-token[data-block-id]').forEach(el => el.removeAttribute('data-block-id'));
     tmp.querySelectorAll('.editor-table-wrap').forEach(el => el.replaceWith(...el.childNodes));
+    stripUnsafePasteStyles(tmp);
     frag = document.createDocumentFragment();
     while (tmp.firstChild) frag.appendChild(tmp.firstChild);
   } else {

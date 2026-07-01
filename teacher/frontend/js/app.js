@@ -6496,10 +6496,15 @@ function insertTable(rows, cols) {
     sel.addRange(_composerSavedRange);
   }
   const colPct = Math.floor(100 / cols);
-  let html = `<table class="editor-table" style="width:100%"><tbody>`;
+  let html = `<table class="editor-table" style="width:100%"><colgroup>`;
+  for (let c = 0; c < cols; c++) {
+    const width = c === cols - 1 ? 100 - colPct * (cols - 1) : colPct;
+    html += `<col style="width:${width}%">`;
+  }
+  html += `</colgroup><tbody>`;
   for (let r = 0; r < rows; r++) {
     html += '<tr>';
-    for (let c = 0; c < cols; c++) html += `<td style="width:${colPct}%"><br></td>`;
+    for (let c = 0; c < cols; c++) html += `<td><br></td>`;
     html += '</tr>';
   }
   html += '</tbody></table><br>';
@@ -6543,6 +6548,12 @@ function injectTableResizeHandles(table) {
     }
     table.prepend(cg);
   }
+  // Legacy tables were created with inline widths on each cell, which can
+  // keep stretching the first column even after colgroup widths are updated.
+  // Once a colgroup exists, it becomes the single source of truth for widths.
+  table.querySelectorAll('td,th').forEach(cell => {
+    if (cell.style.width) cell.style.width = '';
+  });
   const cols = Array.from(cg.querySelectorAll('col'));
 
   table.querySelectorAll('tr').forEach(row => {

@@ -5638,7 +5638,7 @@ let _contentBlockSeq = 1;
 let _contentImageUploadCount = 0;
 let _composerSavedRange = null;
 let _composerCollapsed = false;
-let _forcePlainTextPaste = false;
+let _keepFormatOnNextPaste = false;
 
 function nextContentBlockId() { return `cb-${_contentBlockSeq++}`; }
 function createTextBlock(html = '') { return { id: nextContentBlockId(), type: 'text', html }; }
@@ -5767,7 +5767,7 @@ function contentComposerHtml(label, hint = '') {
             <option value="32">32</option>
           </select>
           <div class="fmt-sep"></div>
-          <button type="button" class="fmt-btn" id="paste-plain-toggle" onmousedown="event.preventDefault()" onclick="togglePastePlainMode()" title="Dán dạng thuần: bật rồi Ctrl+V (hoặc Ctrl+Shift+V bất cứ lúc nào) — lần dán tiếp theo giữ nguyên văn bản thuần, không giữ định dạng/màu/bảng từ nguồn dán."><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><rect x="2" y="2" width="10" height="11" rx="1" stroke="currentColor" stroke-width="1.3"/><rect x="4.5" y="0.3" width="5" height="2.4" rx="0.5" fill="currentColor"/><text x="3.8" y="10" font-size="6.5" font-family="serif" fill="currentColor">T</text></svg></button>
+          <button type="button" class="fmt-btn" id="paste-keepformat-toggle" onmousedown="event.preventDefault()" onclick="togglePasteKeepFormat()" title="Mặc định dán (Ctrl+V) luôn là văn bản thuần. Bật nút này để lần dán tiếp theo giữ nguyên định dạng/màu/bảng từ nguồn dán."><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><rect x="2" y="2" width="10" height="11" rx="1" stroke="currentColor" stroke-width="1.3"/><rect x="4.5" y="0.3" width="5" height="2.4" rx="0.5" fill="currentColor"/><text x="3.6" y="10" font-size="6.5" font-family="serif" font-weight="700" fill="currentColor">A</text></svg></button>
           <button type="button" class="fmt-btn" id="fmt-clear-format" onmousedown="event.preventDefault()" onclick="clearFormatSelection()" title="Xoá định dạng vùng đã chọn (về lại văn bản thuần)"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><text x="0" y="10.5" font-size="9" font-family="serif" fill="currentColor">T</text><line x1="1" y1="12.5" x2="13" y2="1.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>
           <div class="fmt-sep"></div>
           <div style="position:relative">
@@ -6249,13 +6249,6 @@ function renderContentComposer() {
   host.innerHTML = buildEditorDocumentHtml(_contentBlocks);
   normalizeIndentTokensInElement(host);
   host.onkeydown = (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'v') {
-      // Don't preventDefault — let the browser's normal paste flow continue
-      // and fire the 'paste' event as usual; handleComposerPaste reads this
-      // flag to force the plain-text branch for that one paste.
-      _forcePlainTextPaste = true;
-      return;
-    }
     if (e.key === 'Tab') {
       e.preventDefault();
       if (insertEditorIndentAtSelection(host, 1)) {
@@ -6478,18 +6471,19 @@ function applyFormatFontFamily(family) {
 }
 window.applyFormatFontFamily = applyFormatFontFamily;
 
-// One-shot "paste as plain text" mode: arms a flag that the next paste
-// (Ctrl+V via this button, or Ctrl+Shift+V any time) consumes and clears,
-// so the user doesn't have to remember to turn it back off.
-function togglePastePlainMode() {
-  _forcePlainTextPaste = !_forcePlainTextPaste;
-  const btn = document.getElementById('paste-plain-toggle');
-  if (btn) btn.classList.toggle('is-active', _forcePlainTextPaste);
-  setComposerStatus(_forcePlainTextPaste
-    ? 'Đã bật: lần dán tiếp theo (Ctrl+V) sẽ giữ nguyên văn bản thuần, không giữ định dạng.'
+// Paste (Ctrl+V) is plain-text by default — this arms a one-shot flag that
+// the next paste consumes and clears, so *that* paste keeps the source's
+// formatting/colors/tables instead. The user doesn't have to remember to
+// turn it back off afterward.
+function togglePasteKeepFormat() {
+  _keepFormatOnNextPaste = !_keepFormatOnNextPaste;
+  const btn = document.getElementById('paste-keepformat-toggle');
+  if (btn) btn.classList.toggle('is-active', _keepFormatOnNextPaste);
+  setComposerStatus(_keepFormatOnNextPaste
+    ? 'Đã bật: lần dán tiếp theo (Ctrl+V) sẽ giữ nguyên định dạng từ nguồn dán.'
     : 'Soạn nội dung trong một khung duy nhất. Ảnh sẽ được chèn inline và khi lưu sẽ tự parse thành text/image blocks.');
 }
-window.togglePastePlainMode = togglePastePlainMode;
+window.togglePasteKeepFormat = togglePasteKeepFormat;
 
 const CLEAR_FORMAT_BLOCK_TAGS = new Set(['DIV', 'P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'LI', 'BLOCKQUOTE', 'PRE', 'TR']);
 
@@ -7377,14 +7371,18 @@ function normalizePastedTables(root) {
 }
 
 async function handleComposerPaste(e) {
-  const forcePlainText = _forcePlainTextPaste;
-  if (forcePlainText) {
-    _forcePlainTextPaste = false;
-    const btn = document.getElementById('paste-plain-toggle');
+  // Paste is plain-text by default; togglePasteKeepFormat() arms this flag
+  // for exactly one paste when the user explicitly wants to keep formatting.
+  const forceKeepFormat = _keepFormatOnNextPaste;
+  if (forceKeepFormat) {
+    _keepFormatOnNextPaste = false;
+    const btn = document.getElementById('paste-keepformat-toggle');
     if (btn) btn.classList.remove('is-active');
     setComposerStatus('Soạn nội dung trong một khung duy nhất. Ảnh sẽ được chèn inline và khi lưu sẽ tự parse thành text/image blocks.');
   }
-  const files = forcePlainText ? [] : Array.from(e.clipboardData?.files || []).filter(f => f.type.startsWith('image/'));
+  // Image paste is unaffected by the plain/keep-format toggle — there's no
+  // "plain text" equivalent for an image, it always inserts as an image.
+  const files = Array.from(e.clipboardData?.files || []).filter(f => f.type.startsWith('image/'));
   if (files.length) {
     e.preventDefault();
     saveComposerRange();
@@ -7399,7 +7397,7 @@ async function handleComposerPaste(e) {
   if (!sel?.rangeCount) return;
 
   let insertHtml;
-  if (html && !forcePlainText) {
+  if (html && forceKeepFormat) {
     const tmp = document.createElement('div');
     tmp.innerHTML = sanitizeBlockHtml(html);
     // Strip editor-only chrome so pasted markup (e.g. copied from another
@@ -7412,9 +7410,9 @@ async function handleComposerPaste(e) {
     normalizePastedTables(tmp);
     insertHtml = tmp.innerHTML;
   } else {
-    // forcePlainText with only text/html on the clipboard (no text/plain) falls
-    // here too — strip tags via textContent so it still degrades to plain text
-    // instead of crashing on an undefined `text`.
+    // Default plain-text path. If the clipboard only has text/html (no
+    // text/plain — some sources omit it), strip tags via textContent so it
+    // still degrades to plain text instead of crashing on an undefined `text`.
     const plain = text || (() => {
       const tmp = document.createElement('div');
       tmp.innerHTML = html || '';

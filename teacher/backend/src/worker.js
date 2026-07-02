@@ -562,9 +562,14 @@ async function transcribeR2Audio(env, r2Key, { model = 'mini' } = {}) {
     return { text: formatDiarizedSegments(segments), contentType, size: obj.size, modelUsed, fallback, durationSeconds };
   }
 
-  // Mini: chunk at 600s and join
+  // Mini: chunk at 600s and join. Frame-accurate byte splitting only works for true
+  // MP3 — other containers (m4a/mp4/wav/ogg/webm/aac) have box/chunk structures that
+  // slicing at an arbitrary byte offset irrecoverably corrupts, so send those whole.
+  // (A .mp3-named file can still turn out to be one of these once sniffed — e.g. an
+  // M4A renamed to .mp3 — which is exactly what caused "corrupted or unsupported".)
+  const isRealMp3 = contentType === 'audio/mpeg';
   const STT_CHUNK_BYTES = (mp3Bitrate || 64) * 1000 * 600 / 8;
-  const chunks = arrayBuffer.byteLength > STT_CHUNK_BYTES
+  const chunks = isRealMp3 && arrayBuffer.byteLength > STT_CHUNK_BYTES
     ? splitAudioChunks(arrayBuffer, STT_CHUNK_BYTES)
     : [arrayBuffer];
 
@@ -748,8 +753,43 @@ function parseMp3Duration(bytes) {
   return 0;
 }
 
-// Split an ArrayBuffer into chunks of maxBytes, snapping each split point to the
-// nearest MP3 frame sync (0xFF 0xEx) so chunks don't start on a partial frame.
+const MP3_SPLIT_SR = { 3: [44100,48000,32000], 2: [22050,24000,16000], 0: [11025,12000,8000] };
+const MP3_SPLIT_BR = {
+  3: [0,32,40,48,56,64,80,96,112,128,160,192,224,256,320,0],
+  2: [0,8,16,24,32,40,48,56,64,80,96,112,128,144,160,0],
+  0: [0,8,16,24,32,40,48,56,64,80,96,112,128,144,160,0],
+};
+
+// Returns the frame size in bytes if bytes[i] starts a *verifiable* MP3 frame header,
+// or 0 otherwise. A bare 0xFF + top-3-bits match alone is too weak to trust: that 2-byte
+// pattern turns up by chance roughly every 2KB of arbitrary audio data, so scanning for
+// it alone (as this used to do) reliably locks onto false syncs instead of real frame
+// boundaries. Confirming the header's own frame-size field lands on the *next* sync
+// filters those false positives out.
+function mp3FrameSizeAt(bytes, i) {
+  const len = bytes.length;
+  if (i + 3 >= len) return 0;
+  if (bytes[i] !== 0xFF || (bytes[i + 1] & 0xE0) !== 0xE0) return 0;
+  const b1 = bytes[i + 1], b2 = bytes[i + 2];
+  const ver = (b1 >> 3) & 0x3;
+  const layer = (b1 >> 1) & 0x3;
+  const brIdx = (b2 >> 4) & 0xF;
+  const srIdx = (b2 >> 2) & 0x3;
+  if (layer !== 1 || srIdx === 3 || brIdx === 0 || brIdx === 15) return 0;
+  const sr = MP3_SPLIT_SR[ver]?.[srIdx];
+  const br = MP3_SPLIT_BR[ver]?.[brIdx];
+  if (!sr || !br) return 0;
+  const padding = (b2 >> 1) & 0x1;
+  const frameSize = Math.floor(144 * br * 1000 / sr) + padding;
+  if (frameSize < 4) return 0;
+  const next = i + frameSize;
+  if (next + 1 < len && !(bytes[next] === 0xFF && (bytes[next + 1] & 0xE0) === 0xE0)) return 0;
+  return frameSize;
+}
+
+// Split an ArrayBuffer into chunks of maxBytes, snapping each split point to a
+// *verified* MP3 frame boundary so chunks don't start mid-frame (which OpenAI's
+// STT API rejects as "corrupted or unsupported").
 function splitAudioChunks(buffer, maxBytes) {
   const bytes = new Uint8Array(buffer);
   const chunks = [];
@@ -761,11 +801,11 @@ function splitAudioChunks(buffer, maxBytes) {
       chunks.push(buffer.slice(offset));
       break;
     }
-    // Walk back up to 4KB to find a frame sync so we don't cut mid-frame.
+    // Walk back up to 8KB to find a verified frame sync so we don't cut mid-frame.
     let splitAt = tentativeEnd;
-    const searchFrom = Math.max(offset + 1, tentativeEnd - 4096);
+    const searchFrom = Math.max(offset + 1, tentativeEnd - 8192);
     for (let i = tentativeEnd; i >= searchFrom; i--) {
-      if (bytes[i] === 0xFF && (bytes[i + 1] & 0xE0) === 0xE0) {
+      if (mp3FrameSizeAt(bytes, i) > 0) {
         splitAt = i;
         break;
       }

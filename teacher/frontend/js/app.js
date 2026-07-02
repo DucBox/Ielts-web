@@ -10515,7 +10515,25 @@ function onSharedSkillChange(skill, q) {
 
   if (Array.isArray(q?.vocabulary)) { _vocabItems = [...q.vocabulary]; renderVocabList(); }
 
-  if (skill === 'listening') { attachAudioUpload(); _renderAudioSlots(); }
+  if (skill === 'listening') {
+    const audioTracks = Array.isArray(q?.content_urls) && q.content_urls.length > 0
+      ? q.content_urls
+      : (q?.content_url ? [{ url: q.content_url, name: '', key: null }] : []);
+    _audioSlots = audioTracks.length > 0
+      ? audioTracks.map(t => ({
+          ..._newAudioSlot(),
+          displayName: t.name || '',
+          name: t.filename || t.name || 'audio',
+          url: t.url || null,
+          key: t.key || null,
+          status: 'done',
+          transcript: null,
+        }))
+      : [_newAudioSlot()];
+    _audioFiles = _audioSlots;
+    attachAudioUpload();
+    _renderAudioSlots();
+  }
 }
 window.onSharedSkillChange = onSharedSkillChange;
 

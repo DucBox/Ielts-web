@@ -7598,6 +7598,24 @@ async function handleComposerPaste(e) {
     const lines = plain.replace(/\r/g, '').split('\n');
     insertHtml = lines.map(line => escapeHtml(line)).join('<br>');
   }
+  // Reset the baseline before inserting so pasted content never inherits
+  // ambient bold/heading/font-size/font-family from whatever the caret
+  // happens to be inside or right after — e.g. pasting at the end of a
+  // document that ends in a table or a heading. execCommand('insertHTML')
+  // merges new nodes into that ambient context via normal CSS inheritance
+  // regardless of paste mode or whether the pasted markup carries its own
+  // styling, which is exactly what made plain-text paste (and keep-format
+  // paste, for any of its *unstyled* text) come in bold/huge after existing
+  // content. A <div> wrapper (not <span>) since keep-format content can be
+  // block-level (headings/tables/paragraphs).
+  const normalizeWrap = document.createElement('div');
+  normalizeWrap.style.fontWeight = 'normal';
+  normalizeWrap.style.fontStyle = 'normal';
+  normalizeWrap.style.textDecoration = 'none';
+  normalizeWrap.style.fontSize = '13px';
+  normalizeWrap.style.fontFamily = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+  normalizeWrap.innerHTML = insertHtml;
+  insertHtml = normalizeWrap.outerHTML;
   // execCommand (not a manual range.insertNode) so the paste becomes a normal
   // step in the browser's own undo stack — same reason Tab/Enter elsewhere in
   // this file use execCommand('insertHTML', ...) instead of raw DOM mutation.

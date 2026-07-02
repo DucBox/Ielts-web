@@ -8633,6 +8633,10 @@ function sttSelectorHtml() {
       <input type="radio" name="stt-model" value="mini" ${_sttModel==='mini'?'checked':''} onchange="setSttModel('mini')">
       <span>Mini <span style="color:var(--gray-400);font-size:11px">(nhanh, không giới hạn)</span></span>
     </label>
+    <label style="display:flex;align-items:center;gap:4px;cursor:pointer">
+      <input type="radio" name="stt-model" value="none" ${_sttModel==='none'?'checked':''} onchange="setSttModel('none')">
+      <span>None <span style="color:var(--gray-400);font-size:11px">(không tự trích xuất script)</span></span>
+    </label>
   </div>`;
 }
 
@@ -8845,6 +8849,11 @@ function _maybeTranscribeAll() {
   if (_audioSlots.some(s => s.status === 'uploading')) return;
   // Only transcribe slots that just finished uploading (transcript === undefined)
   const newSlots = _audioSlots.filter(s => s.status === 'done' && s.transcript === undefined);
+  if (_sttModel === 'none') {
+    // Teacher explicitly opted out — leave the script field alone, no API call.
+    newSlots.forEach(slot => { slot.transcript = ''; });
+    return;
+  }
   for (const slot of newSlots) {
     slot.transcript = null; // mark as in-progress so we don't queue it twice
     _transcribeSlot(slot);

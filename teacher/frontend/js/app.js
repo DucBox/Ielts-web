@@ -5734,6 +5734,9 @@ function contentComposerHtml(label, hint = '') {
           <button type="button" class="fmt-btn" id="fmt-align-right"   onmousedown="event.preventDefault()" onclick="applyFormat('justifyRight')"  title="Căn phải"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><line x1="1" y1="3" x2="13" y2="3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="5" y1="6" x2="13" y2="6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="1" y1="9" x2="13" y2="9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="6" y1="12" x2="13" y2="12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
           <button type="button" class="fmt-btn" id="fmt-align-justify" onmousedown="event.preventDefault()" onclick="applyJustify()"   title="Căn đều"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><line x1="1" y1="3" x2="13" y2="3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="1" y1="6" x2="13" y2="6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="1" y1="9" x2="13" y2="9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="1" y1="12" x2="13" y2="12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
           <div class="fmt-sep"></div>
+          <button type="button" class="fmt-btn" id="fmt-list-ul" onmousedown="event.preventDefault()" onclick="applyFormat('insertUnorderedList')" title="Danh sách gạch đầu dòng"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="2" cy="3" r="1.3" fill="currentColor"/><line x1="5.5" y1="3" x2="13" y2="3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="2" cy="7" r="1.3" fill="currentColor"/><line x1="5.5" y1="7" x2="13" y2="7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="2" cy="11" r="1.3" fill="currentColor"/><line x1="5.5" y1="11" x2="13" y2="11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+          <button type="button" class="fmt-btn" id="fmt-list-ol" onmousedown="event.preventDefault()" onclick="applyFormat('insertOrderedList')" title="Danh sách đánh số"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><text x="0" y="4.3" font-size="4" fill="currentColor">1.</text><line x1="5.5" y1="3" x2="13" y2="3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><text x="0" y="8.3" font-size="4" fill="currentColor">2.</text><line x1="5.5" y1="7" x2="13" y2="7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><text x="0" y="12.3" font-size="4" fill="currentColor">3.</text><line x1="5.5" y1="11" x2="13" y2="11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+          <div class="fmt-sep"></div>
           <select class="fmt-select" id="fmt-fontsize" onfocus="saveComposerRange()" onchange="applyFormatFontSize(this.value)" title="Cỡ chữ">
             <option value="">Cỡ chữ (13)</option>
             <option value="11">11</option>
@@ -6316,6 +6319,10 @@ function updateFormatToolbarState() {
   if (btnBold) btnBold.classList.toggle('is-active', document.queryCommandState('bold'));
   if (btnItalic) btnItalic.classList.toggle('is-active', document.queryCommandState('italic'));
   if (btnUnderline) btnUnderline.classList.toggle('is-active', document.queryCommandState('underline'));
+  const btnListUl = document.getElementById('fmt-list-ul');
+  const btnListOl = document.getElementById('fmt-list-ol');
+  if (btnListUl) btnListUl.classList.toggle('is-active', document.queryCommandState('insertUnorderedList'));
+  if (btnListOl) btnListOl.classList.toggle('is-active', document.queryCommandState('insertOrderedList'));
   ['Left','Center','Right'].forEach(dir => {
     const btn = document.getElementById(`fmt-align-${dir.toLowerCase()}`);
     if (btn) btn.classList.toggle('is-active', document.queryCommandState(`justify${dir}`));

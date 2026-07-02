@@ -5638,6 +5638,7 @@ let _contentBlockSeq = 1;
 let _contentImageUploadCount = 0;
 let _composerSavedRange = null;
 let _composerCollapsed = false;
+let _forcePlainTextPaste = false;
 
 function nextContentBlockId() { return `cb-${_contentBlockSeq++}`; }
 function createTextBlock(html = '') { return { id: nextContentBlockId(), type: 'text', html }; }
@@ -5728,6 +5729,7 @@ function contentComposerHtml(label, hint = '') {
         <div class="content-composer-toolbar">
           <button type="button" class="btn btn-outline btn-sm" onclick="openImagePicker()">+ Chèn ảnh</button>
           <button type="button" class="btn btn-outline btn-sm" id="content-composer-toggle" onclick="toggleComposerEditor()">Thu gọn editor</button>
+          <button type="button" class="btn btn-outline btn-sm" id="paste-plain-toggle" onclick="togglePastePlainMode()" title="Bật rồi Ctrl+V (hoặc Ctrl+Shift+V bất cứ lúc nào): lần dán tiếp theo sẽ giữ nguyên văn bản thuần, không giữ định dạng/màu/bảng từ nguồn dán.">Dán dạng thuần</button>
           <span class="content-composer-toolbar-note">Soạn như một tài liệu duy nhất. Có thể paste text bình thường và dán ảnh từ clipboard vào đúng vị trí con trỏ.</span>
         </div>
         <div class="content-composer-format-bar">
@@ -5743,6 +5745,15 @@ function contentComposerHtml(label, hint = '') {
           <button type="button" class="fmt-btn" id="fmt-list-ul" onmousedown="event.preventDefault()" onclick="applyFormat('insertUnorderedList')" title="Danh sách gạch đầu dòng"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="2" cy="3" r="1.3" fill="currentColor"/><line x1="5.5" y1="3" x2="13" y2="3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="2" cy="7" r="1.3" fill="currentColor"/><line x1="5.5" y1="7" x2="13" y2="7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="2" cy="11" r="1.3" fill="currentColor"/><line x1="5.5" y1="11" x2="13" y2="11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
           <button type="button" class="fmt-btn" id="fmt-list-ol" onmousedown="event.preventDefault()" onclick="applyFormat('insertOrderedList')" title="Danh sách đánh số"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><text x="0" y="4.3" font-size="4" fill="currentColor">1.</text><line x1="5.5" y1="3" x2="13" y2="3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><text x="0" y="8.3" font-size="4" fill="currentColor">2.</text><line x1="5.5" y1="7" x2="13" y2="7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><text x="0" y="12.3" font-size="4" fill="currentColor">3.</text><line x1="5.5" y1="11" x2="13" y2="11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
           <div class="fmt-sep"></div>
+          <select class="fmt-select" id="fmt-fontfamily" onfocus="saveComposerRange()" onchange="applyFormatFontFamily(this.value)" title="Phông chữ">
+            <option value="">Phông chữ</option>
+            <option value="Arial, Helvetica, sans-serif">Arial</option>
+            <option value="'Times New Roman', Times, serif">Times New Roman</option>
+            <option value="Georgia, serif">Georgia</option>
+            <option value="Verdana, sans-serif">Verdana</option>
+            <option value="Tahoma, sans-serif">Tahoma</option>
+            <option value="'Courier New', Courier, monospace">Courier New</option>
+          </select>
           <select class="fmt-select" id="fmt-fontsize" onfocus="saveComposerRange()" onchange="applyFormatFontSize(this.value)" title="Cỡ chữ">
             <option value="">Cỡ chữ (13)</option>
             <option value="11">11</option>
@@ -6236,6 +6247,13 @@ function renderContentComposer() {
   host.innerHTML = buildEditorDocumentHtml(_contentBlocks);
   normalizeIndentTokensInElement(host);
   host.onkeydown = (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'v') {
+      // Don't preventDefault — let the browser's normal paste flow continue
+      // and fire the 'paste' event as usual; handleComposerPaste reads this
+      // flag to force the plain-text branch for that one paste.
+      _forcePlainTextPaste = true;
+      return;
+    }
     if (e.key === 'Tab') {
       e.preventDefault();
       if (insertEditorIndentAtSelection(host, 1)) {
@@ -6416,6 +6434,60 @@ function applyFormatFontSize(size) {
   host.focus();
   syncContentBlocksFromEditor();
 }
+
+// Same span-wrapping approach as applyFormatFontSize (rather than
+// execCommand('fontName'), which emits legacy <font face> tags).
+function applyFormatFontFamily(family) {
+  const select = document.getElementById('fmt-fontfamily');
+  if (!family) return;
+  const host = document.getElementById('content-composer-host');
+  if (!host) return;
+  if (_composerSavedRange) {
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(_composerSavedRange);
+  }
+  const sel = window.getSelection();
+  if (!sel?.rangeCount || sel.isCollapsed) {
+    if (select) select.value = '';
+    return;
+  }
+  const range = sel.getRangeAt(0);
+
+  const fragment = range.extractContents();
+  fragment.querySelectorAll('[style]').forEach(el => {
+    el.style.fontFamily = '';
+    if (!el.getAttribute('style').trim()) el.removeAttribute('style');
+  });
+
+  const span = document.createElement('span');
+  span.style.fontFamily = family;
+  span.appendChild(fragment);
+  range.insertNode(span);
+
+  const newRange = document.createRange();
+  newRange.selectNodeContents(span);
+  sel.removeAllRanges();
+  sel.addRange(newRange);
+
+  if (select) select.value = '';
+  host.focus();
+  syncContentBlocksFromEditor();
+}
+window.applyFormatFontFamily = applyFormatFontFamily;
+
+// One-shot "paste as plain text" mode: arms a flag that the next paste
+// (Ctrl+V via this button, or Ctrl+Shift+V any time) consumes and clears,
+// so the user doesn't have to remember to turn it back off.
+function togglePastePlainMode() {
+  _forcePlainTextPaste = !_forcePlainTextPaste;
+  const btn = document.getElementById('paste-plain-toggle');
+  if (btn) btn.classList.toggle('is-active', _forcePlainTextPaste);
+  setComposerStatus(_forcePlainTextPaste
+    ? 'Đã bật: lần dán tiếp theo (Ctrl+V) sẽ giữ nguyên văn bản thuần, không giữ định dạng.'
+    : 'Soạn nội dung trong một khung duy nhất. Ảnh sẽ được chèn inline và khi lưu sẽ tự parse thành text/image blocks.');
+}
+window.togglePastePlainMode = togglePastePlainMode;
 
 function toggleColorPalette() {
   const palette = document.getElementById('fmt-color-palette');
@@ -7238,7 +7310,14 @@ function normalizePastedTables(root) {
 }
 
 async function handleComposerPaste(e) {
-  const files = Array.from(e.clipboardData?.files || []).filter(f => f.type.startsWith('image/'));
+  const forcePlainText = _forcePlainTextPaste;
+  if (forcePlainText) {
+    _forcePlainTextPaste = false;
+    const btn = document.getElementById('paste-plain-toggle');
+    if (btn) btn.classList.remove('is-active');
+    setComposerStatus('Soạn nội dung trong một khung duy nhất. Ảnh sẽ được chèn inline và khi lưu sẽ tự parse thành text/image blocks.');
+  }
+  const files = forcePlainText ? [] : Array.from(e.clipboardData?.files || []).filter(f => f.type.startsWith('image/'));
   if (files.length) {
     e.preventDefault();
     saveComposerRange();
@@ -7253,7 +7332,7 @@ async function handleComposerPaste(e) {
   if (!sel?.rangeCount) return;
 
   let insertHtml;
-  if (html) {
+  if (html && !forcePlainText) {
     const tmp = document.createElement('div');
     tmp.innerHTML = sanitizeBlockHtml(html);
     // Strip editor-only chrome so pasted markup (e.g. copied from another
@@ -7266,7 +7345,15 @@ async function handleComposerPaste(e) {
     normalizePastedTables(tmp);
     insertHtml = tmp.innerHTML;
   } else {
-    const lines = text.replace(/\r/g, '').split('\n');
+    // forcePlainText with only text/html on the clipboard (no text/plain) falls
+    // here too — strip tags via textContent so it still degrades to plain text
+    // instead of crashing on an undefined `text`.
+    const plain = text || (() => {
+      const tmp = document.createElement('div');
+      tmp.innerHTML = html || '';
+      return tmp.textContent || '';
+    })();
+    const lines = plain.replace(/\r/g, '').split('\n');
     insertHtml = lines.map(line => escapeHtml(line)).join('<br>');
   }
   // execCommand (not a manual range.insertNode) so the paste becomes a normal

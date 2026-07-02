@@ -444,7 +444,7 @@ function startSpDraftAutosave(mode, spId = '', skill = '') {
   _spDraftTimer = setInterval(flushSpDraftSave, QUESTION_DRAFT_SAVE_INTERVAL_MS);
 }
 
-function restoreSpDraftIntoForm(mode, spId = '', fallbackSkill = '') {
+function restoreSpDraftIntoForm(mode, spId = '', fallbackSkill = '', origQ = null) {
   const draft = loadQuestionDraft(getSpDraftKey(mode, spId));
   if (!draft) return false;
   _suspendSpDraftSave = true;
@@ -459,6 +459,10 @@ function restoreSpDraftIntoForm(mode, spId = '', fallbackSkill = '') {
     const skillSelect = $('#sp-skill');
     if (skillSelect && nextSkill) {
       skillSelect.value = nextSkill;
+      // The draft never captures uploaded audio (files aren't serializable to
+      // localStorage), so carry the already-uploaded audio through from the real
+      // saved question — otherwise restoring a stale draft wipes out audio that
+      // onSharedSkillChange(q) had just correctly populated moments earlier.
       const draftQ = {
         skill: nextSkill,
         content_blocks: draft.content_blocks || [],
@@ -466,6 +470,8 @@ function restoreSpDraftIntoForm(mode, spId = '', fallbackSkill = '') {
         questions_data: draft.questions_data || [],
         vocabulary: draft.vocabulary || [],
         script: draft.script || '',
+        content_urls: origQ?.content_urls,
+        content_url: origQ?.content_url,
       };
       onSharedSkillChange(nextSkill, draftQ);
     }
@@ -10415,7 +10421,7 @@ async function showSharedPoolDetail({ id }) {
   _audioUploadKey = null; _audioUploadName = ''; _audioUploadSize = 0; _audioUploading = false;
   _editingVocabIndex = -1;
   renderSharedPoolFormPage('Sửa đề luyện tập', q);
-  const restored = restoreSpDraftIntoForm('edit', id, q.skill);
+  const restored = restoreSpDraftIntoForm('edit', id, q.skill, q);
   startSpDraftAutosave('edit', id, q.skill);
   if (restored) toast('Đã khôi phục bản nháp chưa lưu trong 15 phút gần nhất.', 'info');
 

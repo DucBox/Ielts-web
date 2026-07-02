@@ -5817,6 +5817,36 @@ function contentComposerHtml(label, hint = '') {
     </div>`;
 }
 
+const EMPTY_EDITOR_PLAIN_TAGS = new Set(['DIV', 'P']);
+
+// When a user selects-all + deletes everything (e.g. clearing existing
+// content before pasting new content), the browser doesn't reset the caret's
+// container back to a plain block — it collapses down to an *empty* version
+// of whatever block was last there (e.g. `<h1><br></h1>`, or a leftover
+// `<span style="font-size:32px">`). Any text typed or pasted right after
+// then lands inside that leftover container and inherits its heading size/
+// weight, even for a plain-text paste. Detect that "visually empty but
+// carrying stale formatting" state and reset it to a bare host so the next
+// input starts from a clean slate.
+function normalizeEmptyEditorState(host) {
+  if (!host) return;
+  if (host.querySelector('img,table')) return; // real content present — leave alone
+  const text = host.textContent.replace(/​/g, '');
+  if (text.trim() !== '') return;
+  if (host.children.length === 0) return; // already bare, nothing to fix
+  if (host.children.length === 1) {
+    const el = host.firstElementChild;
+    if (EMPTY_EDITOR_PLAIN_TAGS.has(el.tagName) && !el.getAttribute('style')) return; // already a plain empty block
+  }
+  host.innerHTML = '';
+  const range = document.createRange();
+  range.selectNodeContents(host);
+  range.collapse(true);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
 function setComposerStatus(message, type = '') {
   const el = document.getElementById('content-composer-status');
   if (!el) return;
@@ -6303,7 +6333,7 @@ function renderContentComposer() {
     }
     syncContentBlocksFromEditor();
   };
-  host.oninput = () => { syncContentBlocksFromEditor(); saveComposerRange(); };
+  host.oninput = () => { normalizeEmptyEditorState(host); syncContentBlocksFromEditor(); saveComposerRange(); };
   host.onmouseup = saveComposerRange;
   host.onkeyup = saveComposerRange;
   host.onpaste = handleComposerPaste;

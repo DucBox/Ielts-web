@@ -6517,17 +6517,29 @@ window.togglePasteKeepFormat = togglePasteKeepFormat;
 
 const CLEAR_FORMAT_BLOCK_TAGS = new Set(['DIV', 'P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'LI', 'BLOCKQUOTE', 'PRE', 'TR']);
 
+// Structural content units that must survive clear-formatting untouched —
+// they carry non-formatting state (image url/alt/width, table cells) plus
+// editor tooling (resize/remove buttons, merge toolbar) that flattening
+// their internals would destroy. Matched by tag, or by tag+class for
+// wrapper elements that only count as "structural" with a specific class.
+function isClearFormatStructuralUnit(el) {
+  const tag = el.tagName;
+  if (tag === 'IMG' || tag === 'TABLE') return true;
+  if (tag === 'FIGURE' && el.classList.contains('document-editor-image-token')) return true;
+  return false;
+}
+
 // Recursively strips every element wrapper down to bare text, inserting a
-// single <br> at each block-level boundary so line breaks survive. <br>/img/
-// table are kept as-is (tables aren't "formatting" — flattening their cells
-// would wreck the resize/merge tooling bound to them).
+// single <br> at each block-level boundary so line breaks survive. <br> and
+// structural units (images, tables — see isClearFormatStructuralUnit) are
+// kept as-is; they aren't "formatting".
 function clearFormatFlatten(node, out) {
   for (const child of Array.from(node.childNodes)) {
     if (child.nodeType === Node.TEXT_NODE) { out.push(document.createTextNode(child.textContent)); continue; }
     if (child.nodeType !== Node.ELEMENT_NODE) continue;
     const tag = child.tagName;
     if (tag === 'BR') { out.push(document.createElement('br')); continue; }
-    if (tag === 'IMG' || tag === 'TABLE') { out.push(child.cloneNode(true)); continue; }
+    if (isClearFormatStructuralUnit(child)) { out.push(child.cloneNode(true)); continue; }
     const isBlock = CLEAR_FORMAT_BLOCK_TAGS.has(tag);
     if (isBlock && out.length && out[out.length - 1].nodeName !== 'BR') out.push(document.createElement('br'));
     clearFormatFlatten(child, out);
@@ -6573,6 +6585,12 @@ function clearFormatSelection() {
   newRange.selectNodeContents(span);
   sel.removeAllRanges();
   sel.addRange(newRange);
+
+  // Preserved images/tables were cloneNode()'d, which drops their bound
+  // event listeners (resize handles, remove button, merge toolbar) even
+  // though the DOM/classes look identical — rebind exactly like paste does.
+  bindImageEditorEvents(host);
+  bindTableEditorEvents(host);
 
   host.focus();
   updateFormatToolbarState();

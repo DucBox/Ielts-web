@@ -6491,44 +6491,64 @@ function togglePastePlainMode() {
 }
 window.togglePastePlainMode = togglePastePlainMode;
 
-// "Clear formatting" — strips bold/italic/underline/color/font-family/
-// bullets/numbers from the selected range and resets font-size back to the
-// editor's default (13px), i.e. plain text (unlike paste-as-plain-text,
-// which only affects the *next paste*, this acts on text already in the
-// editor).
+const CLEAR_FORMAT_BLOCK_TAGS = new Set(['DIV', 'P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'LI', 'BLOCKQUOTE', 'PRE', 'TR']);
+
+// Recursively strips every element wrapper down to bare text, inserting a
+// single <br> at each block-level boundary so line breaks survive. <br>/img/
+// table are kept as-is (tables aren't "formatting" — flattening their cells
+// would wreck the resize/merge tooling bound to them).
+function clearFormatFlatten(node, out) {
+  for (const child of Array.from(node.childNodes)) {
+    if (child.nodeType === Node.TEXT_NODE) { out.push(document.createTextNode(child.textContent)); continue; }
+    if (child.nodeType !== Node.ELEMENT_NODE) continue;
+    const tag = child.tagName;
+    if (tag === 'BR') { out.push(document.createElement('br')); continue; }
+    if (tag === 'IMG' || tag === 'TABLE') { out.push(child.cloneNode(true)); continue; }
+    const isBlock = CLEAR_FORMAT_BLOCK_TAGS.has(tag);
+    if (isBlock && out.length && out[out.length - 1].nodeName !== 'BR') out.push(document.createElement('br'));
+    clearFormatFlatten(child, out);
+    if (isBlock && out.length && out[out.length - 1].nodeName !== 'BR') out.push(document.createElement('br'));
+  }
+}
+
+// "Clear formatting" — reduces the selected range down to plain text (13px,
+// no bold/italic/underline/color/font/heading-weight/bullets/numbers),
+// regardless of whether that formatting came from the toolbar, a pasted
+// <h1>/<h2>, or an inline style="font-weight:700" a source document carried
+// over — execCommand('removeFormat') alone only catches the first of those,
+// so headings/pasted bold text used to survive it untouched. Unlike
+// paste-as-plain-text (which only affects the *next paste*), this acts on
+// text already in the editor.
 function clearFormatSelection() {
   const host = document.getElementById('content-composer-host');
   if (!host) return;
   const sel = window.getSelection();
   if (!sel?.rangeCount || sel.isCollapsed) return;
+  const range = sel.getRangeAt(0);
+  if (!host.contains(range.commonAncestorContainer)) return;
 
-  // Strips bold/italic/underline/color and most inline styles, but not
-  // block-level list wrapping or every stray font-size left on an ancestor.
-  document.execCommand('removeFormat');
+  const fragment = range.extractContents();
+  const flat = [];
+  clearFormatFlatten(fragment, flat);
 
-  // Toggle bullets/numbers off if the (still-live) selection sits inside one —
-  // same native toggle behavior the list toolbar buttons already rely on.
-  if (document.queryCommandState('insertUnorderedList')) document.execCommand('insertUnorderedList');
-  if (document.queryCommandState('insertOrderedList')) document.execCommand('insertOrderedList');
-
-  const sel2 = window.getSelection();
-  if (sel2?.rangeCount && !sel2.isCollapsed) {
-    const range = sel2.getRangeAt(0);
-    const fragment = range.extractContents();
-    fragment.querySelectorAll('[style]').forEach(el => {
-      el.style.fontSize = '';
-      el.style.fontFamily = '';
-      if (!el.getAttribute('style').trim()) el.removeAttribute('style');
-    });
-    const span = document.createElement('span');
-    span.style.fontSize = '13px';
-    span.appendChild(fragment);
-    range.insertNode(span);
-    const newRange = document.createRange();
-    newRange.selectNodeContents(span);
-    sel2.removeAllRanges();
-    sel2.addRange(newRange);
+  // Collapse consecutive <br>s down to one, and trim leading/trailing ones.
+  const collapsed = [];
+  for (const n of flat) {
+    if (n.nodeName === 'BR' && collapsed.length && collapsed[collapsed.length - 1].nodeName === 'BR') continue;
+    collapsed.push(n);
   }
+  while (collapsed.length && collapsed[0].nodeName === 'BR') collapsed.shift();
+  while (collapsed.length && collapsed[collapsed.length - 1].nodeName === 'BR') collapsed.pop();
+
+  const span = document.createElement('span');
+  span.style.fontSize = '13px';
+  collapsed.forEach(n => span.appendChild(n));
+  range.insertNode(span);
+
+  const newRange = document.createRange();
+  newRange.selectNodeContents(span);
+  sel.removeAllRanges();
+  sel.addRange(newRange);
 
   host.focus();
   updateFormatToolbarState();

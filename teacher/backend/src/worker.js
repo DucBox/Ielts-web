@@ -3728,7 +3728,7 @@ export default {
         if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
         await autoCloseExpired(sql, { assignmentId: p.id });
         const [assignment] = await sql`
-          SELECT a.id, a.title, a.deadline, a.is_active, a.class_id,
+          SELECT a.id, a.title, a.deadline, a.is_active, a.class_id, a.scoring_scale,
             q.skill, q.title AS question_title,
             c.class_name
           FROM assignments a
@@ -4201,7 +4201,7 @@ export default {
         if (method === 'GET') {
           const [sub] = await sql`
             SELECT sub.*, a.id AS assignment_id, a.title AS assignment_title,
-              a.class_id, c.class_name,
+              a.class_id, c.class_name, a.scoring_scale,
               q.skill, q.questions_data, q.content_text, q.content_blocks, q.content_url, q.vocabulary,
               s.full_name AS student_name, s.username AS student_username
             FROM submissions sub

@@ -3045,7 +3045,7 @@ function buildSubmissionRows(students, assignment) {
   return students.map(s => {
     const hasSubmission = !!s.submission_id;
     const scoreDisplay  = s.overall_score != null
-      ? `<span style="font-weight:700;color:var(--primary)">${s.overall_score}/9</span>`
+      ? `<span style="font-weight:700;color:var(--primary)">${s.overall_score}${assignment.scoring_scale === '10' ? '/10' : '/9'}</span>`
       : (hasSubmission ? '<span style="color:var(--gray-400)">Chờ chấm</span>' : '—');
     const statusBadge = hasSubmission
       ? `<span class="badge" style="background:#d1fae5;color:#065f46">✓ Đã nộp</span>`
@@ -3214,7 +3214,7 @@ function renderSubmissionModal(sub, skill) {
     $('#modal-title').textContent = `Bài làm — ${skillBadge(skill).replace(/<[^>]+>/g, '')}`;
     $('#modal-body').innerHTML = `
       <div style="margin-bottom:12px;padding:12px 16px;background:var(--primary-lt);border-radius:8px;display:flex;gap:24px;align-items:center">
-        <span style="font-size:20px;font-weight:700;color:var(--primary)">${sub.overall_score ?? '—'}/9</span>
+        <span style="font-size:20px;font-weight:700;color:var(--primary)">${sub.overall_score ?? '—'}${sub.scoring_scale === '10' ? '/10' : '/9'}</span>
         <span style="color:var(--gray-600);font-size:13px">Đúng ${correct}/${total} câu</span>
         <span style="color:var(--gray-400);font-size:12px">Nộp lúc ${formatDateTime(sub.submitted_at)}</span>
       </div>
@@ -10825,11 +10825,19 @@ function renderSharedAttemptBody(bodyEl, sub) {
 
     const correctCount = (sub.student_answers || []).filter(isCorrect).length;
     const total = (sub.questions_data || []).length;
+    // Shared-pool attempts don't carry an explicit scoring_scale column —
+    // the backend infers it at grading time from the question count alone
+    // (POST /student/shared-pool/:id/attempts: poolQCount === 40 ? 'ielts'
+    // : '10') and freezes that count into shared_attempts.max_score. Since
+    // that's the exact same value the grading decision was based on,
+    // replaying the identical rule here reproduces the real scale instead
+    // of assuming every shared-pool test is IELTS band (many aren't).
+    const scoreScale = sub.max_score === 40 ? 9 : 10;
 
     bodyEl.innerHTML = `
       <div style="margin-bottom:8px;font-size:13px;color:var(--gray-500)">${escapeHtml(sub.student_name || sub.username || '')}</div>
       <div style="margin-bottom:12px;padding:12px 16px;background:var(--primary-lt);border-radius:8px;display:flex;gap:24px;align-items:center;flex-wrap:wrap">
-        <span style="font-size:20px;font-weight:700;color:var(--primary)">${sub.overall_score ?? '—'}${sub.max_score ? '/' + sub.max_score : ''}</span>
+        <span style="font-size:20px;font-weight:700;color:var(--primary)">${sub.overall_score ?? '—'}/${scoreScale}</span>
         <span style="color:var(--gray-600);font-size:13px">Đúng ${correctCount}/${total} câu</span>
         <span style="color:var(--gray-400);font-size:12px">Nộp lúc ${formatDateTime(sub.submitted_at)}</span>
       </div>
@@ -11094,7 +11102,7 @@ function renderSharedPoolStats(stats, poolId) {
               <td>${escapeHtml(s.full_name||s.username)}</td>
               <td>${escapeHtml(s.class_names||'—')}</td>
               <td><span class="badge ${s.mode==='real_test'?'badge-red':'badge-blue'}">${s.mode==='real_test'?'🎯 Thi thật':'📝 Luyện tập'}</span></td>
-              <td>${s.overall_score != null ? `${s.overall_score}${s.max_score?'/'+s.max_score:''}` : '—'}</td>
+              <td>${s.overall_score != null ? `${s.overall_score}/${s.max_score === 40 ? 9 : 10}` : '—'}</td>
               <td>${formatDate(s.submitted_at)}</td>
             </tr>`).join('')}
           </tbody></table></div>`
@@ -11387,8 +11395,11 @@ function renderCompositeSubmissions({ assignment, sections, perStudent }) {
         const sectionCells = sections.map(sec => {
           const sub = s.sections.find(ss => ss.section_id === sec.id)?.submission;
           if (!sub) return `<td style="text-align:center;color:var(--gray-400)">—</td>`;
+          // Sections are graded via autoGrade(..., assignment.scoring_scale) — only
+          // the literal 'ielts' value produces a band-0-9 score; every other value
+          // (including the '10' scale and legacy 'composite' rows) yields a /10 score.
           const score = sub.score != null
-            ? `<span style="font-weight:700;color:var(--primary)">${sub.score}/9</span>`
+            ? `<span style="font-weight:700;color:var(--primary)">${sub.score}${assignment.scoring_scale === 'ielts' ? '/9' : '/10'}</span>`
             : `<span style="color:var(--gray-400);font-size:12px">${sec.skill === 'reading' || sec.skill === 'listening' ? '—' : 'Chờ chấm'}</span>`;
           const overtimeBadge = sub.is_overtime ? `<span class="stats-overtime-pill" style="display:block;font-size:10px;margin-top:2px">OT</span>` : '';
           const viewBtn = (sec.skill === 'writing' || sec.skill === 'speaking')

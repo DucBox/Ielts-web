@@ -6491,16 +6491,46 @@ function togglePastePlainMode() {
 }
 window.togglePastePlainMode = togglePastePlainMode;
 
-// "Clear formatting" — strips bold/italic/underline/color/font-size/font-family
-// from the selected range back to plain text, keeping paragraph/list structure
-// (unlike paste-as-plain-text, which only affects the *next paste*, this acts
-// on text already in the editor).
+// "Clear formatting" — strips bold/italic/underline/color/font-family/
+// bullets/numbers from the selected range and resets font-size back to the
+// editor's default (13px), i.e. plain text (unlike paste-as-plain-text,
+// which only affects the *next paste*, this acts on text already in the
+// editor).
 function clearFormatSelection() {
   const host = document.getElementById('content-composer-host');
   if (!host) return;
   const sel = window.getSelection();
   if (!sel?.rangeCount || sel.isCollapsed) return;
+
+  // Strips bold/italic/underline/color and most inline styles, but not
+  // block-level list wrapping or every stray font-size left on an ancestor.
   document.execCommand('removeFormat');
+
+  // Toggle bullets/numbers off if the (still-live) selection sits inside one —
+  // same native toggle behavior the list toolbar buttons already rely on.
+  if (document.queryCommandState('insertUnorderedList')) document.execCommand('insertUnorderedList');
+  if (document.queryCommandState('insertOrderedList')) document.execCommand('insertOrderedList');
+
+  const sel2 = window.getSelection();
+  if (sel2?.rangeCount && !sel2.isCollapsed) {
+    const range = sel2.getRangeAt(0);
+    const fragment = range.extractContents();
+    fragment.querySelectorAll('[style]').forEach(el => {
+      el.style.fontSize = '';
+      el.style.fontFamily = '';
+      if (!el.getAttribute('style').trim()) el.removeAttribute('style');
+    });
+    const span = document.createElement('span');
+    span.style.fontSize = '13px';
+    span.appendChild(fragment);
+    range.insertNode(span);
+    const newRange = document.createRange();
+    newRange.selectNodeContents(span);
+    sel2.removeAllRanges();
+    sel2.addRange(newRange);
+  }
+
+  host.focus();
   updateFormatToolbarState();
   syncContentBlocksFromEditor();
 }

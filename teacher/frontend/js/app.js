@@ -7194,6 +7194,32 @@ function stripUnsafePasteStyles(root) {
   });
 }
 
+// Resize/merge/toolbar support only recognizes tables carrying the
+// `editor-table` class + a <colgroup> (the structure `insertTable()` builds
+// for tables inserted via the toolbar). A pasted plain <table> (Word,
+// Google Docs, a markdown table, etc.) has neither, so it silently renders
+// as static, unresizable markup. Normalize any pasted table to the same
+// shape the editor's own table tooling expects.
+function normalizePastedTables(root) {
+  root.querySelectorAll('table').forEach(table => {
+    if (table.classList.contains('editor-table')) return;
+    table.classList.add('editor-table');
+    if (!table.style.width) table.style.width = '100%';
+    if (!table.querySelector(':scope > colgroup')) {
+      const colCount = getTableColCount(table) || 1;
+      const colgroup = document.createElement('colgroup');
+      const colPct = Math.floor(100 / colCount);
+      for (let c = 0; c < colCount; c++) {
+        const width = c === colCount - 1 ? 100 - colPct * (colCount - 1) : colPct;
+        const col = document.createElement('col');
+        col.style.width = width + '%';
+        colgroup.appendChild(col);
+      }
+      table.insertBefore(colgroup, table.firstChild);
+    }
+  });
+}
+
 async function handleComposerPaste(e) {
   const files = Array.from(e.clipboardData?.files || []).filter(f => f.type.startsWith('image/'));
   if (files.length) {
@@ -7220,6 +7246,7 @@ async function handleComposerPaste(e) {
     tmp.querySelectorAll('.document-editor-image-token[data-block-id]').forEach(el => el.removeAttribute('data-block-id'));
     tmp.querySelectorAll('.editor-table-wrap').forEach(el => el.replaceWith(...el.childNodes));
     stripUnsafePasteStyles(tmp);
+    normalizePastedTables(tmp);
     insertHtml = tmp.innerHTML;
   } else {
     const lines = text.replace(/\r/g, '').split('\n');
@@ -7230,7 +7257,13 @@ async function handleComposerPaste(e) {
   // this file use execCommand('insertHTML', ...) instead of raw DOM mutation.
   document.execCommand('insertHTML', false, insertHtml);
   const host = document.getElementById('content-composer-host');
-  if (host) normalizeIndentTokensInElement(host);
+  if (host) {
+    normalizeIndentTokensInElement(host);
+    // Wire up resize handles/merge toolbar for any table(s) just pasted in —
+    // bindTableEditorEvents already skips tables it has already wrapped, so
+    // this is safe to call repeatedly.
+    bindTableEditorEvents(host);
+  }
   syncContentBlocksFromEditor();
   saveComposerRange();
 }

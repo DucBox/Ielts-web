@@ -816,6 +816,41 @@ tbody tr:hover { background: var(--bg-surface-alt); }
   font-style: italic;
   pointer-events: none;
 }
+.content-composer-host img,
+.mixed-content-text img {
+  max-width: 100%;
+  height: auto;
+}
+/* `<pre>`/`<code>` carry the browser's own default `white-space:pre` — that's
+   a tag default, not an inline style, so it survives paste sanitization and
+   can push a pasted code block/preformatted line wider than the box. */
+.content-composer-host pre,
+.content-composer-host code,
+.mixed-content-text pre,
+.mixed-content-text code {
+  white-space: pre-wrap !important;
+  overflow-wrap: anywhere;
+}
+.content-composer-host,
+.mixed-content-text {
+  overflow-wrap: anywhere;
+}
+/* The global `* { margin:0; padding:0 }` reset also zeroes out <ol>/<ul>'s
+   default padding-inline-start, which is what reserves room for the marker
+   ("27.", "28."...) to the left of the list content. With no reserved room,
+   the marker renders past the list's own left edge and overlaps the
+   composer's border. Restore sane list indentation for real pasted lists. */
+.content-composer-host ol,
+.content-composer-host ul,
+.mixed-content-text ol,
+.mixed-content-text ul {
+  padding-inline-start: 1.5em;
+  margin: 0.5em 0;
+}
+.content-composer-host li,
+.mixed-content-text li {
+  margin: 0.25em 0;
+}
 .document-editor-indent {
   display: inline-block;
   width: 4ch;

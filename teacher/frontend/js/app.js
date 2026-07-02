@@ -7132,6 +7132,43 @@ async function onComposerImageSelected(e) {
   }
 }
 
+// Inline styles carried over from an external source (Word, Notion, a chat
+// UI's markdown renderer, etc.) can set a fixed width/nowrap/overflow that
+// blows past the composer's box and gets silently clipped by the preview
+// panel's `overflow:hidden`. Strip only the layout-breaking properties and
+// keep cosmetic ones (color, font-weight...) so paste still looks reasonable.
+const UNSAFE_PASTE_STYLE_PROPS = /^(white-space|width|min-width|max-width|height|min-height|max-height|overflow(-x|-y)?|position|display|float|clear|transform|writing-mode|contain)$/i;
+function stripUnsafePasteStyles(root) {
+  root.querySelectorAll('[style]').forEach(el => {
+    // Some shorthands (notably `white-space`) are represented internally by
+    // newer browser engines as split longhands (e.g. `white-space-collapse`,
+    // `text-wrap-mode`) when iterating el.style, whose serialized names don't
+    // match a plain property-name regex — so a name-based pass alone silently
+    // fails to remove them. Clear the known shorthands directly via their
+    // camelCase accessor first (that reliably clears every longhand a browser
+    // splits them into), then run the regex pass as a catch-all for anything
+    // else with a straightforward property name.
+    el.style.whiteSpace = '';
+    el.style.width = '';
+    el.style.minWidth = '';
+    el.style.maxWidth = '';
+    el.style.height = '';
+    el.style.minHeight = '';
+    el.style.maxHeight = '';
+    el.style.overflow = '';
+    el.style.position = '';
+    el.style.display = '';
+    el.style.float = '';
+    el.style.clear = '';
+    el.style.transform = '';
+    el.style.writingMode = '';
+    Array.from(el.style).forEach(prop => {
+      if (UNSAFE_PASTE_STYLE_PROPS.test(prop)) el.style.removeProperty(prop);
+    });
+    if (!el.getAttribute('style')) el.removeAttribute('style');
+  });
+}
+
 async function handleComposerPaste(e) {
   const files = Array.from(e.clipboardData?.files || []).filter(f => f.type.startsWith('image/'));
   if (files.length) {
@@ -7140,23 +7177,33 @@ async function handleComposerPaste(e) {
     await onComposerImageSelected({ target: { files, value: '' } });
     return;
   }
+  const html = e.clipboardData?.getData('text/html');
   const text = e.clipboardData?.getData('text/plain');
-  if (!text) return;
+  if (!html && !text) return;
   e.preventDefault();
   const sel = window.getSelection();
   if (!sel?.rangeCount) return;
-  const range = sel.getRangeAt(0);
-  range.deleteContents();
-  const lines = text.replace(/\r/g, '').split('\n');
-  const frag = document.createDocumentFragment();
-  lines.forEach((line, i) => {
-    if (i > 0) frag.appendChild(document.createElement('br'));
-    if (line) frag.appendChild(document.createTextNode(line));
-  });
-  range.insertNode(frag);
-  range.collapse(false);
-  sel.removeAllRanges();
-  sel.addRange(range);
+
+  let insertHtml;
+  if (html) {
+    const tmp = document.createElement('div');
+    tmp.innerHTML = sanitizeBlockHtml(html);
+    // Strip editor-only chrome so pasted markup (e.g. copied from another
+    // question's composer) can't smuggle in stale ids or dead UI controls.
+    tmp.querySelectorAll('[contenteditable]').forEach(el => el.removeAttribute('contenteditable'));
+    tmp.querySelectorAll('.document-editor-image-remove, .document-editor-image-resize, .editor-table-resize-handle, .tbl-col-resize-handle, .tbl-row-resize-handle').forEach(el => el.remove());
+    tmp.querySelectorAll('.document-editor-image-token[data-block-id]').forEach(el => el.removeAttribute('data-block-id'));
+    tmp.querySelectorAll('.editor-table-wrap').forEach(el => el.replaceWith(...el.childNodes));
+    stripUnsafePasteStyles(tmp);
+    insertHtml = tmp.innerHTML;
+  } else {
+    const lines = text.replace(/\r/g, '').split('\n');
+    insertHtml = lines.map(line => escapeHtml(line)).join('<br>');
+  }
+  // execCommand (not a manual range.insertNode) so the paste becomes a normal
+  // step in the browser's own undo stack — same reason Tab/Enter elsewhere in
+  // this file use execCommand('insertHTML', ...) instead of raw DOM mutation.
+  document.execCommand('insertHTML', false, insertHtml);
   const host = document.getElementById('content-composer-host');
   if (host) normalizeIndentTokensInElement(host);
   syncContentBlocksFromEditor();

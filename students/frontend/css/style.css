@@ -867,8 +867,31 @@ body {
 }
 .mixed-content-text {
   white-space: pre-wrap;
-  overflow-wrap: break-word;
+  overflow-wrap: anywhere;
   word-break: break-word;
+}
+.mixed-content-text img {
+  max-width: 100%;
+  height: auto;
+}
+/* `<pre>`/`<code>` carry the browser's own default `white-space:pre`, which
+   isn't an inline style so teacher-side paste sanitization can't touch it. */
+.mixed-content-text pre,
+.mixed-content-text code {
+  white-space: pre-wrap !important;
+  overflow-wrap: anywhere;
+}
+/* The global `* { margin:0; padding:0 }` reset (line 2) also zeroes out
+   <ol>/<ul>'s default padding-inline-start, which is what reserves room for
+   the marker ("27.", "28."...) to the left of the list content — without it,
+   markers render past the list's own left edge and overlap the page. */
+.mixed-content-text ol,
+.mixed-content-text ul {
+  padding-inline-start: 1.5em;
+  margin: 0.5em 0;
+}
+.mixed-content-text li {
+  margin: 0.25em 0;
 }
 .mixed-content-text .editor-table,
 .mixed-content-text table {

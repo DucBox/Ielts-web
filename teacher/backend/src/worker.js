@@ -5161,6 +5161,25 @@ export default {
         return json(rows);
       }
 
+      // Teacher-side view of a single shared-pool attempt's submission (score +
+      // per-question answers for reading/listening). Mirrors GET
+      // /student/shared-attempts/:id but without the student_id ownership
+      // restriction, since a teacher needs to view any student's attempt.
+      if ((p = matchPath('/shared-pool/attempts/:id', path)) && method === 'GET') {
+        if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
+        const [row] = await sql`
+          SELECT sa.*, sp.skill, sp.title, sp.content_text, sp.content_blocks, sp.content_urls, sp.content_url,
+                 sp.questions_data, sp.vocabulary, sp.script,
+                 s.full_name AS student_name, s.username
+          FROM shared_attempts sa
+          JOIN shared_pool sp ON sp.id = sa.shared_pool_id
+          JOIN students s ON s.id = sa.student_id
+          WHERE sa.id = ${p.id}
+        `;
+        if (!row) return err('Không tìm thấy bài làm', 404);
+        return json(row);
+      }
+
       if ((p = matchPath('/shared-pool/:id', path))) {
         if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
         if (method === 'GET') {

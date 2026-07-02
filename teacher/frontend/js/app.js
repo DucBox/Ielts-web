@@ -10649,7 +10649,7 @@ function _renderSharedStatsBody(bodyEl) {
                   <td colspan="6" style="padding:0 0 0 40px">
                     <div class="sp-stats-detail-inner">
                       <table class="sp-stats-detail-table">
-                        <thead><tr><th>#</th><th>Chế độ</th><th>Ngày nộp</th><th>Điểm</th></tr></thead>
+                        <thead><tr><th>#</th><th>Chế độ</th><th>Ngày nộp</th><th>Điểm</th><th></th></tr></thead>
                         <tbody>
                           ${[...st.attempts].sort((a, b) => new Date(a.submitted_at) - new Date(b.submitted_at)).map((a, i) => `
                             <tr>
@@ -10657,6 +10657,7 @@ function _renderSharedStatsBody(bodyEl) {
                               <td>${a.mode === 'real_test' ? '🎯 Thi thật' : '📝 Luyện tập'}</td>
                               <td>${formatDateTime(a.submitted_at)}</td>
                               <td><span class="stats-score-badge">${a.overall_score != null ? Number(a.overall_score).toFixed(1) : '—'}</span></td>
+                              <td><button class="btn btn-sm btn-outline" onclick="showSharedAttemptSubmission('${a.id}')">Hiển thị bài làm</button></td>
                             </tr>`).join('')}
                         </tbody>
                       </table>
@@ -10756,10 +10757,104 @@ function toggleSharedStudentDetail(studentId) {
   if (btn) btn.textContent = nowHidden ? 'Chi tiết ▾' : 'Thu gọn ▴';
 }
 
+// ── Shared-pool attempt submission viewer (per-attempt "Hiển thị bài làm") ──
+// A separate self-contained overlay (same pattern as showSharedPoolStats)
+// rather than the shared #modal-overlay singleton, so it reliably stacks on
+// top of the stats modal it's opened from instead of fighting it for
+// z-index/DOM-order.
+let _sharedAttemptModal = null;
+
+async function showSharedAttemptSubmission(attemptId) {
+  if (_sharedAttemptModal) { _sharedAttemptModal.remove(); _sharedAttemptModal = null; }
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal modal-wide" onclick="event.stopPropagation()">
+      <div class="modal-header">
+        <h3>📄 Bài làm</h3>
+        <button class="modal-close" onclick="closeSharedAttemptModal()" aria-label="Đóng">×</button>
+      </div>
+      <div class="modal-body" id="shared-attempt-body">
+        <div style="text-align:center;padding:40px 0"><div class="spinner"></div><p style="color:var(--gray-400);margin-top:12px">Đang tải bài làm...</p></div>
+      </div>
+    </div>`;
+  overlay.addEventListener('click', e => { if (e.target === overlay) closeSharedAttemptModal(); });
+  document.body.appendChild(overlay);
+  _sharedAttemptModal = overlay;
+
+  let sub;
+  try {
+    sub = await api.get(`/shared-pool/attempts/${attemptId}`);
+  } catch (e) {
+    overlay.querySelector('#shared-attempt-body').innerHTML =
+      `<p style="color:var(--red);text-align:center">Lỗi tải bài làm: ${escapeHtml(e.error || e.message)}</p>`;
+    return;
+  }
+  renderSharedAttemptBody(overlay.querySelector('#shared-attempt-body'), sub);
+}
+
+function closeSharedAttemptModal() {
+  if (_sharedAttemptModal) { _sharedAttemptModal.remove(); _sharedAttemptModal = null; }
+}
+
+// Reading/listening: same Q/A grading grid as the class-assignment
+// "Xem bài" modal (renderSubmissionModal) — shared_pool.questions_data and
+// shared_attempts.student_answers use the identical {q_no, answers}/
+// {q_no, answer} shape as question_pool/submissions, so the same matching
+// logic applies verbatim. Writing/speaking review UI doesn't exist yet for
+// shared-pool attempts (unlike class assignments, which route to a full
+// grading page) — show a placeholder rather than a broken/empty view.
+function renderSharedAttemptBody(bodyEl, sub) {
+  const skill = sub.skill;
+  if (skill === 'reading' || skill === 'listening') {
+    const qMap = {};
+    (sub.questions_data || []).forEach(q => { qMap[q.q_no] = q.answers || []; });
+
+    const isCorrect = sa => {
+      const correct = qMap[sa.q_no] || [];
+      return correct.some(a => a.toLowerCase().trim() === (sa.answer || '').toLowerCase().trim());
+    };
+    const answerRows = (sub.student_answers || []).map(sa => `
+      <tr>
+        <td style="font-weight:600;text-align:center">Q${sa.q_no}</td>
+        <td>${escapeHtml(sa.answer || '—')}</td>
+        <td style="color:var(--gray-400);font-size:12px">${(qMap[sa.q_no] || []).join(' / ')}</td>
+        <td style="text-align:center;font-size:16px">${isCorrect(sa) ? '✅' : '❌'}</td>
+      </tr>`).join('');
+
+    const correctCount = (sub.student_answers || []).filter(isCorrect).length;
+    const total = (sub.questions_data || []).length;
+
+    bodyEl.innerHTML = `
+      <div style="margin-bottom:8px;font-size:13px;color:var(--gray-500)">${escapeHtml(sub.student_name || sub.username || '')}</div>
+      <div style="margin-bottom:12px;padding:12px 16px;background:var(--primary-lt);border-radius:8px;display:flex;gap:24px;align-items:center;flex-wrap:wrap">
+        <span style="font-size:20px;font-weight:700;color:var(--primary)">${sub.overall_score ?? '—'}${sub.max_score ? '/' + sub.max_score : ''}</span>
+        <span style="color:var(--gray-600);font-size:13px">Đúng ${correctCount}/${total} câu</span>
+        <span style="color:var(--gray-400);font-size:12px">Nộp lúc ${formatDateTime(sub.submitted_at)}</span>
+      </div>
+      <div class="table-wrap" style="max-height:420px;overflow-y:auto">
+        <table>
+          <thead><tr><th>Câu</th><th>Học sinh trả lời</th><th>Đáp án đúng</th><th>Kết quả</th></tr></thead>
+          <tbody>${answerRows || '<tr><td colspan="4" style="text-align:center;color:var(--gray-400)">Không có đáp án</td></tr>'}</tbody>
+        </table>
+      </div>`;
+  } else {
+    bodyEl.innerHTML = `
+      <div style="text-align:center;padding:40px 20px;color:var(--gray-500)">
+        <div style="font-size:32px;margin-bottom:12px">🚧</div>
+        <div style="font-size:15px;font-weight:600">Tính năng đang phát triển</div>
+        <div style="font-size:13px;margin-top:6px">Xem chi tiết bài làm ${skill === 'writing' ? 'Writing' : 'Speaking'} cho kho đề luyện tập sẽ có ở phiên bản tiếp theo.</div>
+      </div>`;
+  }
+}
+
 window.showSharedPoolStats = showSharedPoolStats;
 window.closeSharedStatsModal = closeSharedStatsModal;
 window.setSharedStatsMode = setSharedStatsMode;
 window.toggleSharedStudentDetail = toggleSharedStudentDetail;
+window.showSharedAttemptSubmission = showSharedAttemptSubmission;
+window.closeSharedAttemptModal = closeSharedAttemptModal;
 
 // ─── Shared Pool Form (create / edit) ──────────────────────────────────────
 

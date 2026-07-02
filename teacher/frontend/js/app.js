@@ -10478,11 +10478,8 @@ function onSharedSkillChange(skill, q) {
   } else if (skill === 'listening') {
     html = skillEditorHtml('listening', {
       includeLocationHint: false,
-      includeSttSelector: false,
-      includeScriptLoading: false,
-      includeSpeakerRename: false,
       scriptValue: q?.script || '',
-      scriptPlaceholder: 'Script...',
+      scriptPlaceholder: 'Script sẽ tự động điền sau khi upload audio. Bạn cũng có thể nhập thủ công.',
     });
   } else if (skill === 'writing') {
     html = skillEditorHtml('writing', {

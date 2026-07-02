@@ -5802,6 +5802,33 @@ function createEditorIndentHtml(count = 1) {
   ).join('');
 }
 
+function insertEditorIndentAtSelection(host, count = 1) {
+  const sel = window.getSelection();
+  if (!host || !sel?.rangeCount) return false;
+  const range = sel.getRangeAt(0);
+  if (!host.contains(range.commonAncestorContainer)) return false;
+
+  range.deleteContents();
+  const frag = document.createDocumentFragment();
+  const tmp = document.createElement('div');
+  tmp.innerHTML = createEditorIndentHtml(count);
+  const inserted = [];
+  while (tmp.firstChild) {
+    const node = tmp.firstChild;
+    inserted.push(node);
+    frag.appendChild(node);
+  }
+  if (!inserted.length) return false;
+
+  range.insertNode(frag);
+  const newRange = document.createRange();
+  newRange.setStartAfter(inserted[inserted.length - 1]);
+  newRange.collapse(true);
+  sel.removeAllRanges();
+  sel.addRange(newRange);
+  return true;
+}
+
 function extractLeadingIndentInfo(text = '') {
   let units = 0;
   let consumedChars = 0;
@@ -6192,8 +6219,10 @@ function renderContentComposer() {
   host.onkeydown = (e) => {
     if (e.key === 'Tab') {
       e.preventDefault();
-      document.execCommand('insertHTML', false, createEditorIndentHtml(1));
-      syncContentBlocksFromEditor();
+      if (insertEditorIndentAtSelection(host, 1)) {
+        syncContentBlocksFromEditor();
+        saveComposerRange();
+      }
       return;
     }
     if (e.key !== 'Enter') return;

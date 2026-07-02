@@ -6239,6 +6239,14 @@ function renderContentComposer() {
     const selNode = window.getSelection()?.getRangeAt(0)?.commonAncestorContainer;
     const selEl = selNode?.nodeType === 3 ? selNode.parentElement : selNode;
     if (selEl?.closest('td,th')) return;
+    // Inside a real pasted <li>: let the browser handle Enter natively.
+    // Our custom <br>-insertion below always keeps the cursor inside the
+    // same block, so Enter can never create a new list item or exit the
+    // list — pressing Enter again on an empty item would never "outdent"
+    // back to normal margin. Native contenteditable Enter-in-list behavior
+    // (new <li>, or exit the list when the current item is empty) already
+    // does the right thing here.
+    if (selEl?.closest('li')) return;
     e.preventDefault();
     const sel = window.getSelection();
     if (!sel?.rangeCount) return;

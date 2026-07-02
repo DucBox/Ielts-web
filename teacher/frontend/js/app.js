@@ -7601,6 +7601,68 @@ function vocabSectionHtml() {
     </div>`;
 }
 
+// AI-prompt helpers: copy-ready prompts teachers can paste into ChatGPT/Claude
+// (together with their own passage/script) to generate a CSV in the exact
+// column format each import feature expects.
+const ANSWER_IMPORT_AI_PROMPT = `Tạo giúp tôi 1 file CSV để tôi download về và để import đáp án vào hệ thống, với đúng 4 cột theo thứ tự sau: STT, Đáp án, Giải thích, Location
+Yêu cầu:
+- STT: số thứ tự câu hỏi, bắt đầu từ 1, tăng dần liên tục.
+- Đáp án: đáp án đúng của câu đó. Nếu có nhiều cách viết đều được chấp nhận (vd TRUE/true, hoặc các cách diễn đạt khác nhau của cùng 1 đáp án), liệt kê cách nhau bởi dấu "|". Không được để trống.
+- Giải thích: giải thích ngắn gọn vì sao đáp án đó đúng, dựa vào bài đọc/script.
+- Location: PHẢI là một đoạn trích dẫn NGUYÊN VĂN (copy chính xác cụm từ, không diễn giải lại, không dịch) lấy trực tiếp từ bài đọc/audio script tôi cung cấp bên dưới — là đoạn chứa bằng chứng cho đáp án đó. Không tự bịa câu không có trong bài. Ưu tiên trích đủ dài (5-15 từ liên tục) để tránh trùng với chỗ khác trong bài.
+- Dùng dấu phẩy (,) làm ngăn cách cột, bọc trong dấu ngoặc kép "..." nếu nội dung ô có chứa dấu phẩy hoặc xuống dòng.
+- Xuất kết quả dưới dạng code block CSV (không kèm giải thích thêm), dòng đầu là header: STT,Đáp án,Giải thích,Location
+
+--- Dán bài đọc / audio script vào đây ---
+`;
+
+const VOCAB_IMPORT_AI_PROMPT = `Tạo giúp tôi 1 file CSV để tôi download về và import từ vựng vào hệ thống, với đúng 5 cột theo thứ tự sau: word, definition, pronunciation, collocation, example
+Yêu cầu:
+- word: từ vựng tiếng Anh, không được để trống.
+- definition: nghĩa/định nghĩa ngắn gọn của từ, không được để trống.
+- pronunciation: phiên âm IPA của từ (để trống nếu không chắc, đừng bịa).
+- collocation: 1-2 cụm từ đi kèm phổ biến với từ này (có thể để trống).
+- example: 1 câu ví dụ dùng từ này, ưu tiên lấy hoặc phỏng theo ngữ cảnh trong bài đọc/audio script bên dưới (có thể để trống).
+- Chỉ chọn những từ THỰC SỰ xuất hiện trong bài đọc/audio script tôi cung cấp bên dưới, ưu tiên từ vựng band 6.5 trở lên hoặc từ học thuật/chuyên ngành, không chọn từ quá cơ bản.
+- Dùng dấu phẩy (,) làm ngăn cách cột, bọc trong dấu ngoặc kép "..." nếu nội dung ô có chứa dấu phẩy hoặc xuống dòng.
+- Xuất kết quả dưới dạng code block CSV (không kèm giải thích thêm), dòng đầu là header: word,definition,pronunciation,collocation,example
+
+--- Dán bài đọc / audio script vào đây ---
+`;
+
+function showAiPromptHelper(kind) {
+  const prompt = kind === 'vocab' ? VOCAB_IMPORT_AI_PROMPT : ANSWER_IMPORT_AI_PROMPT;
+  const title = kind === 'vocab' ? '✨ Prompt tạo CSV từ vựng bằng AI' : '✨ Prompt tạo CSV đáp án bằng AI';
+  openModal(title, `
+    <div style="display:flex;flex-direction:column;gap:12px">
+      <div style="font-size:13px;color:var(--text-muted)">Sao chép prompt này, dán vào ChatGPT/Claude kèm theo bài đọc hoặc audio script của bạn, rồi tải file CSV mà AI trả về và import vào đây.</div>
+      <textarea id="ai-prompt-helper-text" class="form-textarea" rows="14" readonly style="font-family:ui-monospace,monospace;font-size:12px;white-space:pre-wrap">${escapeHtml(prompt)}</textarea>
+      <div class="modal-footer" style="display:flex;justify-content:flex-end;gap:8px">
+        <button type="button" class="btn btn-outline" onclick="closeModal()">Đóng</button>
+        <button type="button" class="btn btn-primary" onclick="copyAiPromptHelperText()">📋 Sao chép toàn bộ</button>
+      </div>
+    </div>
+  `);
+}
+window.showAiPromptHelper = showAiPromptHelper;
+
+async function copyAiPromptHelperText() {
+  const el = document.getElementById('ai-prompt-helper-text');
+  if (!el) return;
+  try {
+    await navigator.clipboard.writeText(el.value);
+    toast('Đã sao chép prompt! Dán vào ChatGPT/Claude để dùng.', 'success');
+  } catch {
+    el.removeAttribute('readonly');
+    el.focus();
+    el.select();
+    document.execCommand('copy');
+    el.setAttribute('readonly', '');
+    toast('Đã sao chép prompt!', 'success');
+  }
+}
+window.copyAiPromptHelperText = copyAiPromptHelperText;
+
 function vocabImportBoxHtml() {
   return `
     <div class="pdf-import-box" style="margin-top:10px">
@@ -7608,6 +7670,7 @@ function vocabImportBoxHtml() {
         <div>
           <div class="pdf-import-title">📥 Hoặc import từ file Excel/CSV</div>
           <div class="pdf-import-sub">Lấy sheet đầu tiên, dòng đầu là tên cột tiếng Anh: word, definition (bắt buộc), pronunciation, collocation, example (tùy chọn).</div>
+          <button type="button" onclick="showAiPromptHelper('vocab')" style="margin-top:4px;background:none;border:none;color:var(--primary);font-size:12px;font-weight:600;cursor:pointer;padding:0">✨ Gợi ý prompt tạo CSV bằng AI</button>
         </div>
         <div class="pdf-import-area" role="button" tabindex="0" aria-label="Upload Excel/CSV" onclick="if(event.target.tagName!=='INPUT')$('#vocab-file-input').click()">
           <input id="vocab-file-input" type="file" accept=".csv,.xlsx,.xls,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" onchange="handleVocabFileImport(this)" />
@@ -8170,6 +8233,7 @@ function answerImportBoxHtml() {
         <div>
           <div class="pdf-import-title">📥 Import đáp án từ Excel/CSV</div>
           <div class="pdf-import-sub">Cột: STT, Đáp án (nhiều đáp án cách nhau bởi | hoặc ;), Giải thích, Location (trích nguyên văn từ bài — không cần khớp 100% khoảng trắng/hoa-thường). Chỉ áp dụng cho các câu đã có sẵn trong lưới ở trên.</div>
+          <button type="button" onclick="showAiPromptHelper('answer')" style="margin-top:4px;background:none;border:none;color:var(--primary);font-size:12px;font-weight:600;cursor:pointer;padding:0">✨ Gợi ý prompt tạo CSV bằng AI</button>
         </div>
         <div class="pdf-import-area" role="button" tabindex="0" aria-label="Upload Excel/CSV" onclick="if(event.target.tagName!=='INPUT')$('#answer-file-input').click()">
           <input id="answer-file-input" type="file" accept=".csv,.xlsx,.xls,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" onchange="handleAnswerFileImport(this)" />

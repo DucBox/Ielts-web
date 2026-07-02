@@ -8021,7 +8021,12 @@ const ANSWER_IMPORT_AI_PROMPT = `Tạo giúp tôi 1 file CSV để tôi download
 Yêu cầu:
 - STT: số thứ tự câu hỏi, bắt đầu từ 1, tăng dần liên tục.
 - Đáp án: đáp án đúng của câu đó. Nếu có nhiều cách viết đều được chấp nhận (vd TRUE/true, hoặc các cách diễn đạt khác nhau của cùng 1 đáp án), liệt kê cách nhau bởi dấu "|". Không được để trống.
-- Giải thích: giải thích ngắn gọn vì sao đáp án đó đúng, dựa vào bài đọc/script.
+- Giải thích: giải thích CỰC KỲ CHI TIẾT vì sao đáp án đó đúng, không chỉ nêu kết quả mà phải giúp người làm bài hiểu sâu, hiểu kỹ, không bị lừa lần sau. Cụ thể phải có đủ:
+  (1) Chỉ rõ từ khoá/cụm từ trong câu hỏi được paraphrase (diễn đạt lại) từ cụm nào trong Location, ánh xạ rõ ràng giữa ngôn ngữ câu hỏi và ngôn ngữ trong bài.
+  (2) Trình bày logic suy luận từng bước dẫn tới đáp án — vì sao các dữ kiện trong Location dẫn đến kết luận đó, không chỉ khẳng định suông.
+  (3) Nếu trong đoạn văn có thông tin gây nhiễu, dễ nhầm lẫn, hoặc phương án sai trông hợp lý, PHẢI chỉ rõ đó là bẫy gì và vì sao nó sai, để người học tránh chọn nhầm ở lần sau.
+  (4) Văn phong rõ ràng, dễ hiểu với người đang luyện band 6.5-8.0, đủ sâu để hiểu bản chất chứ không học thuộc máy móc.
+  Luôn bám sát nội dung thật trong bài đọc/script, tuyệt đối không suy diễn hay thêm thông tin ngoài bài.
 - Location: PHẢI là một đoạn trích dẫn NGUYÊN VĂN (copy chính xác cụm từ, không diễn giải lại, không dịch) lấy trực tiếp từ bài đọc/audio script tôi cung cấp bên dưới — là đoạn chứa bằng chứng cho đáp án đó. Không tự bịa câu không có trong bài. Ưu tiên trích đủ dài (5-15 từ liên tục) để tránh trùng với chỗ khác trong bài.
 - Dùng dấu phẩy (,) làm ngăn cách cột, bọc trong dấu ngoặc kép "..." nếu nội dung ô có chứa dấu phẩy hoặc xuống dòng.
 - Xuất kết quả dưới dạng code block CSV (không kèm giải thích thêm), dòng đầu là header: STT,Đáp án,Giải thích,Location
@@ -8049,7 +8054,7 @@ function showAiPromptHelper(kind) {
   openModal(title, `
     <div style="display:flex;flex-direction:column;gap:12px">
       <div style="font-size:13px;color:var(--text-muted)">Sao chép prompt này, dán vào ChatGPT/Claude kèm theo bài đọc hoặc audio script của bạn, rồi tải file CSV mà AI trả về và import vào đây.</div>
-      <textarea id="ai-prompt-helper-text" class="form-textarea" rows="14" readonly style="font-family:ui-monospace,monospace;font-size:12px;white-space:pre-wrap">${escapeHtml(prompt)}</textarea>
+      <textarea id="ai-prompt-helper-text" class="form-textarea" rows="20" readonly style="font-family:ui-monospace,monospace;font-size:12px;white-space:pre-wrap">${escapeHtml(prompt)}</textarea>
       <div class="modal-footer" style="display:flex;justify-content:flex-end;gap:8px">
         <button type="button" class="btn btn-outline" onclick="closeModal()">Đóng</button>
         <button type="button" class="btn btn-primary" onclick="copyAiPromptHelperText()">📋 Sao chép toàn bộ</button>

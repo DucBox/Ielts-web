@@ -2158,7 +2158,7 @@ ${i.transcript}`).join(`
             <tr>
               <td>${escapeHtml(i.full_name||i.username)}</td>
               <td>${escapeHtml(i.class_names||"\u2014")}</td>
-              <td><span class="badge ${i.mode==="real_test"?"badge-red":"badge-blue"}">${i.mode==="real_test"?"Thi th\u1EED":"Luy\u1EC7n t\u1EADp"}</span></td>
+              <td><span class="badge ${i.mode==="real_test"?"badge-red":"badge-blue"}">${i.mode==="real_test"?"\u{1F3AF} Thi th\u1EADt":"\u{1F4DD} Luy\u1EC7n t\u1EADp"}</span></td>
               <td>${i.overall_score!=null?`${i.overall_score}${i.max_score?"/"+i.max_score:""}`:"\u2014"}</td>
               <td>${formatDate(i.submitted_at)}</td>
             </tr>`).join("")}

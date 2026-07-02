@@ -10998,7 +10998,7 @@ function renderSharedPoolStats(stats, poolId) {
             <tr>
               <td>${escapeHtml(s.full_name||s.username)}</td>
               <td>${escapeHtml(s.class_names||'—')}</td>
-              <td><span class="badge ${s.mode==='real_test'?'badge-red':'badge-blue'}">${s.mode==='real_test'?'Thi thử':'Luyện tập'}</span></td>
+              <td><span class="badge ${s.mode==='real_test'?'badge-red':'badge-blue'}">${s.mode==='real_test'?'🎯 Thi thật':'📝 Luyện tập'}</span></td>
               <td>${s.overall_score != null ? `${s.overall_score}${s.max_score?'/'+s.max_score:''}` : '—'}</td>
               <td>${formatDate(s.submitted_at)}</td>
             </tr>`).join('')}

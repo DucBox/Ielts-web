@@ -5729,7 +5729,6 @@ function contentComposerHtml(label, hint = '') {
         <div class="content-composer-toolbar">
           <button type="button" class="btn btn-outline btn-sm" onclick="openImagePicker()">+ Chèn ảnh</button>
           <button type="button" class="btn btn-outline btn-sm" id="content-composer-toggle" onclick="toggleComposerEditor()">Thu gọn editor</button>
-          <button type="button" class="btn btn-outline btn-sm" id="paste-plain-toggle" onclick="togglePastePlainMode()" title="Bật rồi Ctrl+V (hoặc Ctrl+Shift+V bất cứ lúc nào): lần dán tiếp theo sẽ giữ nguyên văn bản thuần, không giữ định dạng/màu/bảng từ nguồn dán.">Dán dạng thuần</button>
           <span class="content-composer-toolbar-note">Soạn như một tài liệu duy nhất. Có thể paste text bình thường và dán ảnh từ clipboard vào đúng vị trí con trỏ.</span>
         </div>
         <div class="content-composer-format-bar">
@@ -5767,6 +5766,9 @@ function contentComposerHtml(label, hint = '') {
             <option value="28">28</option>
             <option value="32">32</option>
           </select>
+          <div class="fmt-sep"></div>
+          <button type="button" class="fmt-btn" id="paste-plain-toggle" onmousedown="event.preventDefault()" onclick="togglePastePlainMode()" title="Dán dạng thuần: bật rồi Ctrl+V (hoặc Ctrl+Shift+V bất cứ lúc nào) — lần dán tiếp theo giữ nguyên văn bản thuần, không giữ định dạng/màu/bảng từ nguồn dán."><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><rect x="2" y="2" width="10" height="11" rx="1" stroke="currentColor" stroke-width="1.3"/><rect x="4.5" y="0.3" width="5" height="2.4" rx="0.5" fill="currentColor"/><text x="3.8" y="10" font-size="6.5" font-family="serif" fill="currentColor">T</text></svg></button>
+          <button type="button" class="fmt-btn" id="fmt-clear-format" onmousedown="event.preventDefault()" onclick="clearFormatSelection()" title="Xoá định dạng vùng đã chọn (về lại văn bản thuần)"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><text x="0" y="10.5" font-size="9" font-family="serif" fill="currentColor">T</text><line x1="1" y1="12.5" x2="13" y2="1.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>
           <div class="fmt-sep"></div>
           <div style="position:relative">
             <button type="button" class="fmt-color-wrap" id="fmt-color-btn" title="Màu chữ" onmousedown="saveComposerRange();event.preventDefault()" onclick="toggleColorPalette()">
@@ -6488,6 +6490,21 @@ function togglePastePlainMode() {
     : 'Soạn nội dung trong một khung duy nhất. Ảnh sẽ được chèn inline và khi lưu sẽ tự parse thành text/image blocks.');
 }
 window.togglePastePlainMode = togglePastePlainMode;
+
+// "Clear formatting" — strips bold/italic/underline/color/font-size/font-family
+// from the selected range back to plain text, keeping paragraph/list structure
+// (unlike paste-as-plain-text, which only affects the *next paste*, this acts
+// on text already in the editor).
+function clearFormatSelection() {
+  const host = document.getElementById('content-composer-host');
+  if (!host) return;
+  const sel = window.getSelection();
+  if (!sel?.rangeCount || sel.isCollapsed) return;
+  document.execCommand('removeFormat');
+  updateFormatToolbarState();
+  syncContentBlocksFromEditor();
+}
+window.clearFormatSelection = clearFormatSelection;
 
 function toggleColorPalette() {
   const palette = document.getElementById('fmt-color-palette');

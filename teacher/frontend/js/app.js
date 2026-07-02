@@ -7751,6 +7751,7 @@ function renderQuestionDetail(q) {
           key: t.key || null,
           status: 'done',
           transcript: null,
+          isPreExistingTranscript: true,
         }))
       : [_newAudioSlot()];
     _audioFiles = _audioSlots;
@@ -9244,7 +9245,29 @@ function _renderCombinedTranscript() {
   if (!scriptEl) return;
   const done = _audioSlots.filter(s => typeof s.transcript === 'string' && s.transcript !== '');
   if (done.length === 0) return;
-  if (done.length === 1) {
+
+  // A slot loaded from an already-saved question has transcript === null
+  // and isPreExistingTranscript === true — its text already lives in
+  // scriptEl.value (populated from the saved q.script at load time), it
+  // was just never split back out per-slot. Rebuilding scriptEl.value from
+  // `done` alone in that situation would wipe those pre-existing sections
+  // out and leave only the newly-transcribed slot(s) — reproduced by:
+  // save a question with 2 transcribed audio files, reopen it to edit,
+  // add a 3rd file. Distinguishing this from a *fresh* multi-upload
+  // session (where other slots are also transient null while still
+  // in-flight, not "already saved and unknown") is exactly what
+  // isPreExistingTranscript is for — a brand-new session's in-flight
+  // slots don't have that flag, so it still gets the deterministic
+  // full-rebuild-in-slot-order path below.
+  const hasPreExistingUnknown = _audioSlots.some(s => s.isPreExistingTranscript && s.transcript === null);
+  if (hasPreExistingUnknown) {
+    done.forEach(s => {
+      if (s._appendedToScript) return;
+      s._appendedToScript = true;
+      const section = `--- Transcript: ${s.displayName || s.name} ---\n${s.transcript}`;
+      scriptEl.value = scriptEl.value.trim() ? `${scriptEl.value}\n\n\n${section}` : section;
+    });
+  } else if (done.length === 1) {
     scriptEl.value = done[0].transcript;
   } else {
     scriptEl.value = done.map(s => `--- Transcript: ${s.displayName || s.name} ---\n${s.transcript}`).join('\n\n\n');
@@ -10881,6 +10904,7 @@ function onSharedSkillChange(skill, q) {
           key: t.key || null,
           status: 'done',
           transcript: null,
+          isPreExistingTranscript: true,
         }))
       : [_newAudioSlot()];
     _audioFiles = _audioSlots;
@@ -11024,7 +11048,12 @@ function _loadCQSectionIntoEditor(idx) {
   _editingVocabIndex = -1;
   if (sec.skill === 'listening') {
     const slots = (sec.content_urls?.length ? sec.content_urls : (sec.content_url ? [{ url: sec.content_url, key: null, name: 'audio' }] : []));
-    _audioSlots = slots.map(s => ({ displayName: s.name || '', file: null, name: s.filename || s.name || '', size: 0, status: 'done', url: s.url, key: s.key || null, pct: 100, eta: null }));
+    // transcript must be explicitly null (not left undefined) so
+    // _maybeTranscribeAll()'s "needs transcription" filter (which checks
+    // === undefined) correctly skips these already-transcribed files
+    // instead of wastefully re-transcribing them every time this section
+    // is reopened for editing.
+    _audioSlots = slots.map(s => ({ displayName: s.name || '', file: null, name: s.filename || s.name || '', size: 0, status: 'done', url: s.url, key: s.key || null, pct: 100, eta: null, transcript: null, isPreExistingTranscript: true }));
     if (_audioSlots.length === 0) _audioSlots = [_newAudioSlot()];
     _audioFiles = _audioSlots;
     _audioUploading = false;

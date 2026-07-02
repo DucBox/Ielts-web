@@ -5640,6 +5640,99 @@ let _composerSavedRange = null;
 let _composerCollapsed = false;
 let _keepFormatOnNextPaste = false;
 
+// ── Composer undo/redo ──────────────────────────────────────────────────────
+// Mixing the browser's native Ctrl+Z stack with this editor doesn't work:
+// only document.execCommand()-driven edits (bold/italic/paste/Enter/insert
+// table) register on it, while every manual DOM mutation elsewhere in this
+// file (font-size/font-family spans, clear-formatting, table row/col add/
+// delete/merge, image insert/resize, indent) is invisible to it. That left
+// Ctrl+Z silently skipping those actions or corrupting the DOM by trying to
+// reverse an execCommand step against a tree a manual mutation had since
+// changed. Fixed with a single, source-agnostic mechanism: a MutationObserver
+// on the host captures every actual DOM change regardless of how it happened,
+// coalesces bursts (typing, drag-resize) into one undo step via a pause
+// debounce, and Ctrl+Z/Ctrl+Shift+Z are intercepted here entirely — the
+// native undo command is never invoked.
+let _composerUndoStack = [];
+let _composerRedoStack = [];
+let _composerLastStableSnapshot = null;
+let _composerUndoObserver = null;
+let _composerUndoApplying = false;
+let _composerCoalesceTimer = null;
+const COMPOSER_UNDO_MAX = 100;
+const COMPOSER_COALESCE_MS = 500;
+
+function _composerCommitPendingSnapshot(host) {
+  if (_composerCoalesceTimer) { clearTimeout(_composerCoalesceTimer); _composerCoalesceTimer = null; }
+  if (!host || _composerLastStableSnapshot === null) return;
+  const html = host.innerHTML;
+  if (html === _composerLastStableSnapshot) return;
+  _composerUndoStack.push(_composerLastStableSnapshot);
+  if (_composerUndoStack.length > COMPOSER_UNDO_MAX) _composerUndoStack.shift();
+  _composerLastStableSnapshot = html;
+  _composerRedoStack.length = 0;
+}
+
+function initComposerUndoStack(host) {
+  if (!host) return;
+  if (_composerUndoObserver) _composerUndoObserver.disconnect();
+  if (_composerCoalesceTimer) { clearTimeout(_composerCoalesceTimer); _composerCoalesceTimer = null; }
+  _composerUndoStack = [];
+  _composerRedoStack = [];
+  _composerLastStableSnapshot = host.innerHTML;
+  _composerUndoObserver = new MutationObserver(() => {
+    if (_composerUndoApplying) return; // ignore mutations caused by undo/redo itself
+    if (_composerCoalesceTimer) clearTimeout(_composerCoalesceTimer);
+    _composerCoalesceTimer = setTimeout(() => {
+      _composerCoalesceTimer = null;
+      _composerCommitPendingSnapshot(host);
+    }, COMPOSER_COALESCE_MS);
+  });
+  _composerUndoObserver.observe(host, { childList: true, subtree: true, characterData: true, attributes: true });
+}
+
+function _composerRestoreSnapshot(host, html) {
+  _composerUndoApplying = true;
+  host.innerHTML = html;
+  normalizeIndentTokensInElement(host);
+  bindImageEditorEvents(host);
+  bindTableEditorEvents(host);
+  const range = document.createRange();
+  range.selectNodeContents(host);
+  range.collapse(false);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+  host.focus();
+  if (_composerUndoObserver) _composerUndoObserver.takeRecords();
+  _composerLastStableSnapshot = html;
+  _composerUndoApplying = false;
+  syncContentBlocksFromEditor();
+  updateFormatToolbarState();
+}
+
+function composerUndo() {
+  const host = document.getElementById('content-composer-host');
+  if (!host) return;
+  _composerCommitPendingSnapshot(host); // flush an in-progress typing burst first
+  if (!_composerUndoStack.length) return;
+  const current = host.innerHTML;
+  const prev = _composerUndoStack.pop();
+  _composerRedoStack.push(current);
+  _composerRestoreSnapshot(host, prev);
+}
+window.composerUndo = composerUndo;
+
+function composerRedo() {
+  const host = document.getElementById('content-composer-host');
+  if (!host || !_composerRedoStack.length) return;
+  const current = host.innerHTML;
+  const next = _composerRedoStack.pop();
+  _composerUndoStack.push(current);
+  _composerRestoreSnapshot(host, next);
+}
+window.composerRedo = composerRedo;
+
 function nextContentBlockId() { return `cb-${_contentBlockSeq++}`; }
 function createTextBlock(html = '') { return { id: nextContentBlockId(), type: 'text', html }; }
 function createImageBlock(url = '', alt = '', width = 100) { return { id: nextContentBlockId(), type: 'image', url, alt, width }; }
@@ -6084,59 +6177,80 @@ function insertImageAtSavedRange(imageBlock) {
 
 function bindTableEditorEvents(host) {
   host.querySelectorAll('.editor-table').forEach(table => {
-    if (table.closest('.editor-table-wrap')) return; // already wrapped
-    const wrap = document.createElement('div');
-    wrap.className = 'editor-table-wrap';
-    wrap.style.width = table.style.width || '100%';
-    table.style.width = '100%';
-    table.parentNode.insertBefore(wrap, table);
-    wrap.appendChild(table);
-    const handle = document.createElement('button');
-    handle.type = 'button';
-    handle.className = 'editor-table-resize-handle';
-    handle.contentEditable = 'false';
-    handle.title = 'Kéo để đổi kích thước bảng';
-    handle.innerHTML = '<svg width="10" height="10" viewBox="0 0 10 10" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M2 9L9 2M5 9L9 5M8 9L9 8" stroke="#475569" stroke-width="1.6" stroke-linecap="round"/></svg>';
-    wrap.appendChild(handle);
-    handle.onpointerdown = (e) => {
-      e.preventDefault(); e.stopPropagation();
-      const hostW = host.clientWidth || 1;
-      const startX = e.clientX;
-      const startW = wrap.getBoundingClientRect().width;
-      wrap.classList.add('resizing');
-      document.body.classList.add('resizing-image');
-      const onMove = (ev) => {
-        const newPx = Math.max(60, startW + (ev.clientX - startX));
-        const newPct = Math.max(10, Math.min(100, Math.round((newPx / hostW) * 100)));
-        wrap.style.width = newPct + '%';
-        setComposerStatus(`Độ rộng bảng: ${newPct}%`, 'loading');
-      };
-      const onUp = () => {
-        document.removeEventListener('pointermove', onMove);
-        document.removeEventListener('pointerup', onUp);
-        wrap.classList.remove('resizing');
-        document.body.classList.remove('resizing-image');
-        syncContentBlocksFromEditor();
-        setComposerStatus('Đã cập nhật kích thước bảng.', 'success');
-      };
-      document.addEventListener('pointermove', onMove);
-      document.addEventListener('pointerup', onUp, { once: true });
-    };
+    // Whether the table needs *wrapping* and whether its handlers are
+    // *bound* are separate questions — don't conflate them. A table can
+    // already carry a `.editor-table-wrap` (e.g. HTML restored verbatim
+    // from an undo/redo snapshot, or reloaded from saved content) with
+    // brand-new DOM nodes that have never had a single listener attached,
+    // since cloning/reparsing HTML never carries over JS-assigned handlers
+    // or the `_bound` dedup flags below.
+    let wrap = table.closest('.editor-table-wrap');
+    if (!wrap) {
+      wrap = document.createElement('div');
+      wrap.className = 'editor-table-wrap';
+      wrap.style.width = table.style.width || '100%';
+      table.style.width = '100%';
+      table.parentNode.insertBefore(wrap, table);
+      wrap.appendChild(table);
+    }
 
+    let handle = wrap.querySelector('.editor-table-resize-handle');
+    if (!handle) {
+      handle = document.createElement('button');
+      handle.type = 'button';
+      handle.className = 'editor-table-resize-handle';
+      handle.contentEditable = 'false';
+      handle.title = 'Kéo để đổi kích thước bảng';
+      handle.innerHTML = '<svg width="10" height="10" viewBox="0 0 10 10" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M2 9L9 2M5 9L9 5M8 9L9 8" stroke="#475569" stroke-width="1.6" stroke-linecap="round"/></svg>';
+      wrap.appendChild(handle);
+    }
+    if (!handle._bound) {
+      handle._bound = true;
+      handle.onpointerdown = (e) => {
+        e.preventDefault(); e.stopPropagation();
+        const hostW = host.clientWidth || 1;
+        const startX = e.clientX;
+        const startW = wrap.getBoundingClientRect().width;
+        wrap.classList.add('resizing');
+        document.body.classList.add('resizing-image');
+        const onMove = (ev) => {
+          const newPx = Math.max(60, startW + (ev.clientX - startX));
+          const newPct = Math.max(10, Math.min(100, Math.round((newPx / hostW) * 100)));
+          wrap.style.width = newPct + '%';
+          setComposerStatus(`Độ rộng bảng: ${newPct}%`, 'loading');
+        };
+        const onUp = () => {
+          document.removeEventListener('pointermove', onMove);
+          document.removeEventListener('pointerup', onUp);
+          wrap.classList.remove('resizing');
+          document.body.classList.remove('resizing-image');
+          syncContentBlocksFromEditor();
+          setComposerStatus('Đã cập nhật kích thước bảng.', 'success');
+        };
+        document.addEventListener('pointermove', onMove);
+        document.addEventListener('pointerup', onUp, { once: true });
+      };
+    }
+
+    // injectTableResizeHandles always removes+rebuilds the per-cell col/row
+    // handles from scratch, so it's safe (and necessary) to call every time.
     injectTableResizeHandles(table);
 
-    // Shift+click for multi-cell range selection (merge)
-    table.addEventListener('mousedown', (e) => {
-      const cell = e.target.closest('td,th');
-      if (!cell || !table.contains(cell)) return;
-      if (e.shiftKey && _activeTableCell && _activeTableCell.closest('table') === table) {
-        e.preventDefault();
-        selectTableCellRange(table, _activeTableCell, cell);
-        showTableFloatToolbar(table);
-      } else if (!e.shiftKey) {
-        clearTableCellSelection();
-      }
-    });
+    if (!table._mergeMousedownBound) {
+      table._mergeMousedownBound = true;
+      // Shift+click for multi-cell range selection (merge)
+      table.addEventListener('mousedown', (e) => {
+        const cell = e.target.closest('td,th');
+        if (!cell || !table.contains(cell)) return;
+        if (e.shiftKey && _activeTableCell && _activeTableCell.closest('table') === table) {
+          e.preventDefault();
+          selectTableCellRange(table, _activeTableCell, cell);
+          showTableFloatToolbar(table);
+        } else if (!e.shiftKey) {
+          clearTableCellSelection();
+        }
+      });
+    }
   });
 }
 
@@ -6278,7 +6392,22 @@ function renderContentComposer() {
   if (!host) return;
   host.innerHTML = buildEditorDocumentHtml(_contentBlocks);
   normalizeIndentTokensInElement(host);
+  initComposerUndoStack(host);
   host.onkeydown = (e) => {
+    const key = e.key.toLowerCase();
+    if ((e.ctrlKey || e.metaKey) && key === 'z') {
+      // Intercept entirely — never let the native execCommand('undo')/('redo')
+      // stack engage, since it doesn't know about most mutations this editor
+      // makes (see initComposerUndoStack's comment above).
+      e.preventDefault();
+      if (e.shiftKey) composerRedo(); else composerUndo();
+      return;
+    }
+    if ((e.ctrlKey && !e.metaKey) && key === 'y') { // common Windows redo shortcut
+      e.preventDefault();
+      composerRedo();
+      return;
+    }
     if (e.key === 'Tab') {
       e.preventDefault();
       if (insertEditorIndentAtSelection(host, 1)) {

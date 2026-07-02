@@ -6753,7 +6753,12 @@ function tableDeleteRow() {
     }
   });
   row.remove();
-  if (!table.querySelectorAll('tr').length) { table.remove(); }
+  if (!table.querySelectorAll('tr').length) {
+    // Remove the wrapping .editor-table-wrap too — bindTableEditorEvents adds
+    // it around the table (to host the corner resize handle), and removing
+    // only the <table> left that empty wrap+handle behind as a stray box.
+    (table.closest('.editor-table-wrap') || table).remove();
+  }
   else injectTableResizeHandles(table);
   _activeTableCell = null;
   hideTableFloatToolbar();
@@ -6836,8 +6841,14 @@ function tableDeleteCol() {
   if (cg && cg.children[colIndex]) { cg.children[colIndex].remove(); redistributeColWidths(cg); }
   _activeTableCell = null;
   hideTableFloatToolbar();
+  if (getTableColCount(table) === 0) {
+    // Same cleanup as tableDeleteRow: remove the wrapping .editor-table-wrap
+    // too, not just the now-columnless table, or an empty box is left behind.
+    (table.closest('.editor-table-wrap') || table).remove();
+  } else {
+    injectTableResizeHandles(table);
+  }
   syncContentBlocksFromEditor();
-  injectTableResizeHandles(table);
 }
 
 function redistributeColWidths(cg) {

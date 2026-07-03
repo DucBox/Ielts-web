@@ -2068,35 +2068,57 @@ async function callAiFeedback(skill, contentText, studentContent, env) {
 
   const responsesUrl = getOpenAIEndpoint(env, '/v1/responses', 'responses');
   console.log('[AI] calling', skill, responsesUrl, 'schema:', schemaName);
-  // G5: 120s timeout — AI grading can be slow but should never hang indefinitely
+  // G5: 180s timeout (was 120s — too tight: the call goes through a proxy
+  // that can cold-start after being idle, on top of the model's own
+  // reasoning time, so legitimate slow calls were being cut off).
   const aiAbort = new AbortController();
-  const aiAbortTimer = setTimeout(() => aiAbort.abort(), 120_000);
-  const aiRes = await fetch(responsesUrl, {
-    method: 'POST',
-    signal: aiAbort.signal,
-    headers: {
-      'Authorization': `Bearer ${getOpenAIAuthToken(env, responsesUrl, 'responses')}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: 'gpt-5-mini',
-      text: { format: { type: 'json_schema', name: schemaName, strict: true, schema } },
-      input: [
-        { role: 'developer', content: systemPrompt },
-        { role: 'user',      content: prompt },
-      ],
-    }),
-  });
+  const aiAbortTimer = setTimeout(() => aiAbort.abort(), 180_000);
+  let aiRes;
+  try {
+    aiRes = await fetch(responsesUrl, {
+      method: 'POST',
+      signal: aiAbort.signal,
+      headers: {
+        'Authorization': `Bearer ${getOpenAIAuthToken(env, responsesUrl, 'responses')}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'gpt-5-mini',
+        text: { format: { type: 'json_schema', name: schemaName, strict: true, schema } },
+        input: [
+          { role: 'developer', content: systemPrompt },
+          { role: 'user',      content: prompt },
+        ],
+      }),
+    });
+  } catch (e) {
+    // fetch() throws (not resolves to a non-ok status) both on abort/timeout
+    // and on genuine network failure — distinguish them so the message
+    // actually says what happened instead of a generic "failed to fetch".
+    const timedOut = e.name === 'AbortError';
+    console.error('[AI] fetch failed:', JSON.stringify({ skill, endpoint: responsesUrl, timedOut, error: e.message }));
+    throw Object.assign(
+      new Error(timedOut
+        ? 'Chấm AI quá thời gian chờ (180s) — dịch vụ chấm bài đang phản hồi chậm, vui lòng thử lại.'
+        : `Không thể kết nối dịch vụ chấm AI: ${e.message}`),
+      { statusCode: 504 },
+    );
+  } finally {
+    // Must run on every exit path, not just success — previously only
+    // cleared after the final parse succeeded, leaving the timer dangling
+    // (and liable to fire pointlessly later) on every earlier throw.
+    clearTimeout(aiAbortTimer);
+  }
   const responseText = await aiRes.text();
   console.log('[AI] status:', aiRes.status, 'body:', responseText.slice(0, 600));
   if (!aiRes.ok) {
     console.error('[AI] error:', JSON.stringify({ skill, endpoint: responsesUrl, status: aiRes.status, body: responseText.slice(0, 400) }));
-    throw Object.assign(new Error('Lỗi khi gọi AI'), { statusCode: 502 });
+    throw Object.assign(new Error(`AI trả về lỗi (HTTP ${aiRes.status})`), { statusCode: 502 });
   }
   let aiData;
   try { aiData = JSON.parse(responseText); } catch(e) {
     console.error('[AI] JSON parse fail:', responseText.slice(0, 300));
-    throw new Error('AI response không phải JSON');
+    throw Object.assign(new Error('AI response không phải JSON'), { statusCode: 502 });
   }
   const rawText = extractOutputText(aiData);
   console.log('[AI] extracted text:', rawText.slice(0, 400));
@@ -2104,9 +2126,8 @@ async function callAiFeedback(skill, contentText, studentContent, env) {
   let parsed;
   try { parsed = JSON.parse(jsonMatch ? jsonMatch[0] : rawText); } catch(e) {
     console.error('[AI] inner JSON parse fail:', rawText.slice(0, 300));
-    throw new Error('AI trả về JSON không hợp lệ');
+    throw Object.assign(new Error('AI trả về JSON không hợp lệ'), { statusCode: 502 });
   }
-  clearTimeout(aiAbortTimer);
   console.log('[AI] parsed keys:', Object.keys(parsed).join(', '));
   return { ...parsed, skill, schema_version: 'v3', generated_at: new Date().toISOString() };
 }
@@ -5117,34 +5138,6 @@ export default {
         }
       }
 
-      // Teacher: force re-grade a stuck shared attempt
-      if ((p = matchPath('/shared-attempts/:id/retry-ai', path)) && method === 'POST') {
-        if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
-        const [sa] = await sql`
-          SELECT sa.*, sp.skill, sp.content_text
-          FROM shared_attempts sa
-          JOIN shared_pool sp ON sp.id = sa.shared_pool_id
-          WHERE sa.id = ${p.id}
-        `;
-        if (!sa) return err('Không tìm thấy attempt', 404);
-        if (sa.skill !== 'writing' && sa.skill !== 'speaking') return err('Skill này không cần AI chấm', 400);
-        if (!env.OPENAI_API_KEY) return err('Chưa cấu hình AI', 500);
-        const studentContent = sa.skill === 'writing' ? sa.writing_content : sa.speaking_script;
-        if (!studentContent?.trim()) return err('Bài làm trống', 400);
-        if (isSttFailedScript(studentContent)) return err('Không có transcript (lỗi STT) — không thể chấm AI cho lần nộp này', 400);
-        await sql`UPDATE shared_attempts SET ai_feedback = NULL WHERE id = ${sa.id}`;
-        ctx.waitUntil(
-          callAiFeedback(sa.skill, sa.content_text || '', studentContent, env)
-            .then(aiFeedback => sql`
-              UPDATE shared_attempts
-              SET ai_feedback   = ${JSON.stringify(aiFeedback)}::jsonb,
-                  overall_score = ${aiFeedback.overall_score ?? null}
-              WHERE id = ${sa.id}`)
-            .catch(e => console.error('Teacher retry AI error:', e))
-        );
-        return json({ status: 'queued', attempt_id: sa.id });
-      }
-
       if ((p = matchPath('/shared-pool/:id/stats', path)) && method === 'GET') {
         if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
         const rows = await sql`
@@ -5387,9 +5380,19 @@ export default {
                 .then(aiFeedback => sql`
                   UPDATE shared_attempts
                   SET ai_feedback   = ${JSON.stringify(aiFeedback)}::jsonb,
-                      overall_score = ${aiFeedback.overall_score ?? null}
+                      overall_score = ${aiFeedback.overall_score ?? null},
+                      ai_feedback_error = NULL
                   WHERE id = ${attempt.id}`)
-                .catch(e => console.error('Shared pool AI feedback error:', e))
+                .catch(e => {
+                  // Previously this only logged to the console — invisible
+                  // both to the student (page just shows "pending" until the
+                  // 2-minute poll gives up) and to anyone debugging later
+                  // (only visible if you were tailing live logs at the exact
+                  // moment it happened). Persist it so both sides can see it.
+                  console.error('[shared-attempt AI feedback] failed:', JSON.stringify({ attemptId: attempt.id, skill: poolQ.skill, error: e.message }));
+                  return sql`UPDATE shared_attempts SET ai_feedback_error = ${e.message || 'Lỗi không xác định'} WHERE id = ${attempt.id}`.catch(dbErr =>
+                    console.error('[shared-attempt AI feedback] failed to persist error:', dbErr.message));
+                })
             );
           }
         }
@@ -5452,13 +5455,19 @@ export default {
         try {
           aiFeedback = await callAiFeedback(sa.skill, sa.content_text || '', studentContent, env);
         } catch (e) {
-          console.error('[retry-ai] callAiFeedback failed:', e.message);
-          return err(e.message || 'Lỗi khi gọi AI', 502);
+          console.error('[retry-ai] callAiFeedback failed:', JSON.stringify({ attemptId: sa.id, skill: sa.skill, error: e.message }));
+          // Persist alongside the HTTP error response so a failure is still
+          // visible/queryable later even if the student never reports it or
+          // this browser tab closes before they read the toast.
+          await sql`UPDATE shared_attempts SET ai_feedback_error = ${e.message || 'Lỗi không xác định'} WHERE id = ${sa.id}`.catch(dbErr =>
+            console.error('[retry-ai] failed to persist error:', dbErr.message));
+          return err(e.message || 'Lỗi khi gọi AI', e.statusCode || 502);
         }
         const [updated] = await sql`
           UPDATE shared_attempts
           SET ai_feedback   = ${JSON.stringify(aiFeedback)}::jsonb,
-              overall_score = ${aiFeedback.overall_score ?? null}
+              overall_score = ${aiFeedback.overall_score ?? null},
+              ai_feedback_error = NULL
           WHERE id = ${sa.id}
           RETURNING *
         `;

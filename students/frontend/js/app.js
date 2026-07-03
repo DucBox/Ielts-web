@@ -7587,6 +7587,16 @@ async function retryAiGrading(attemptId) {
   }
 }
 
+// Shows the *actual* recorded failure reason (e.g. the AI-timeout message
+// from callAiFeedback) instead of the generic "AI bị bận" copy — the
+// backend now persists ai_feedback_error on the attempt whenever the
+// background grading fails, precisely so this doesn't have to guess.
+function _showSharedFeedbackError(id, message) {
+  document.querySelectorAll('.pending-feedback-text').forEach(el => {
+    el.innerHTML = `<h4>AI chưa chấm được bài này</h4><p>${escapeHtml(message)}</p><button class="btn-primary" onclick="retryAiGrading('${id}')">Chấm lại ngay</button>`;
+  });
+}
+
 async function showSharedAttemptResult({ id }) {
   _stopAiFeedbackPoll();
   setLoading('Đang tải kết quả...');
@@ -7598,37 +7608,42 @@ async function showSharedAttemptResult({ id }) {
     // Auto-poll when AI feedback is still pending
     const needsPoll = (sub.skill === 'writing' || sub.skill === 'speaking') && !sub.ai_feedback;
     if (needsPoll) {
-      let attempts = 0;
-      _aiFeedbackPollTimer = setInterval(async () => {
-        attempts++;
-        if (attempts > 30) {
-          _stopAiFeedbackPoll();
-          // Show retry button in the pending-feedback areas
-          document.querySelectorAll('.pending-feedback-text').forEach(el => {
-            el.innerHTML = `<h4>AI chưa chấm được bài này</h4><p>Có thể AI bị bận, hãy thử lại.</p><button class="btn-primary" onclick="retryAiGrading('${id}')">Chấm lại ngay</button>`;
-          });
-          return;
-        }
-        try {
-          const fresh = await api.get(`/student/shared-attempts/${id}`);
-          if (fresh.ai_feedback) {
+      // Background grading already recorded a failure — show it right away
+      // instead of silently polling for 2 minutes for something that has
+      // already failed.
+      if (sub.ai_feedback_error) {
+        _showSharedFeedbackError(id, sub.ai_feedback_error);
+      } else {
+        let attempts = 0;
+        _aiFeedbackPollTimer = setInterval(async () => {
+          attempts++;
+          if (attempts > 30) {
             _stopAiFeedbackPoll();
-            _renderSharedAttemptResult(fresh);
-            toast('✅ AI đã chấm xong bài của bạn!', 'success');
+            _showSharedFeedbackError(id, 'Có thể AI bị bận, hãy thử lại.');
+            return;
           }
-        } catch { _stopAiFeedbackPoll(); }
-      }, 4000);
+          try {
+            const fresh = await api.get(`/student/shared-attempts/${id}`);
+            if (fresh.ai_feedback) {
+              _stopAiFeedbackPoll();
+              _renderSharedAttemptResult(fresh);
+              toast('✅ AI đã chấm xong bài của bạn!', 'success');
+            } else if (fresh.ai_feedback_error) {
+              _stopAiFeedbackPoll();
+              _showSharedFeedbackError(id, fresh.ai_feedback_error);
+            }
+          } catch { _stopAiFeedbackPoll(); }
+        }, 4000);
+      }
     }
     // If already known to be stuck (page reload on old attempt), show retry immediately
-    if (needsPoll) {
+    if (needsPoll && !sub.ai_feedback_error) {
       // Re-check after a short delay whether the attempt was already submitted long ago
       // (If submitted > 5 min ago with no ai_feedback → it's stuck, show retry right away)
       const submittedAt = sub.submitted_at ? new Date(sub.submitted_at) : null;
       if (submittedAt && (Date.now() - submittedAt.getTime()) > 5 * 60 * 1000) {
         _stopAiFeedbackPoll();
-        document.querySelectorAll('.pending-feedback-text').forEach(el => {
-          el.innerHTML = `<h4>AI chưa chấm được bài này</h4><p>Có thể bài nộp lúc trước gặp sự cố. Hãy thử chấm lại.</p><button class="btn-primary" onclick="retryAiGrading('${id}')">Chấm lại ngay</button>`;
-        });
+        _showSharedFeedbackError(id, 'Có thể bài nộp lúc trước gặp sự cố. Hãy thử chấm lại.');
       }
     }
   } catch (e) {

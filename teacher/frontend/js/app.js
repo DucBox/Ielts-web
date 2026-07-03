@@ -10848,11 +10848,19 @@ function renderSharedAttemptBody(bodyEl, sub) {
         </table>
       </div>`;
   } else {
+    // ai_feedback_error is populated by the backend whenever background AI
+    // grading failed (timeout, proxy error, bad JSON, ...) — surface it here
+    // too, not just on the student's own result page, since this is
+    // otherwise the only place a teacher could notice grading is stuck.
+    const errorBox = sub.ai_feedback_error
+      ? `<div style="margin-top:14px;padding:10px 14px;background:#fee2e2;border:1px solid #fca5a5;border-radius:8px;color:#991b1b;font-size:13px;text-align:left">⚠️ Chấm AI thất bại: ${escapeHtml(sub.ai_feedback_error)}</div>`
+      : '';
     bodyEl.innerHTML = `
       <div style="text-align:center;padding:40px 20px;color:var(--gray-500)">
         <div style="font-size:32px;margin-bottom:12px">🚧</div>
         <div style="font-size:15px;font-weight:600">Tính năng đang phát triển</div>
         <div style="font-size:13px;margin-top:6px">Xem chi tiết bài làm ${skill === 'writing' ? 'Writing' : 'Speaking'} cho kho đề luyện tập sẽ có ở phiên bản tiếp theo.</div>
+        ${errorBox}
       </div>`;
   }
 }

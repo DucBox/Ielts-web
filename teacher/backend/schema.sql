@@ -405,6 +405,23 @@ CREATE INDEX IF NOT EXISTS idx_composite_section_exam_sessions_assignment
 CREATE INDEX IF NOT EXISTS idx_shared_attempts_student_pool_submitted
   ON shared_attempts (student_id, shared_pool_id, submitted_at DESC);
 
+-- ── Composite completion view (migration 034) ─────────────────────────────────
+-- Centralizes "has this student submitted every section of this composite
+-- assignment" — see migration 034 for why.
+CREATE OR REPLACE VIEW composite_completion AS
+SELECT
+  css.assignment_id,
+  css.student_id,
+  COUNT(DISTINCT css.section_id)::int AS submitted_sections,
+  (SELECT COUNT(*) FROM composite_question_sections cqs
+     JOIN assignments a2 ON a2.id = css.assignment_id
+     WHERE cqs.composite_id = a2.question_id)::int AS total_sections,
+  MAX(css.submitted_at) AS submitted_at,
+  COUNT(css.id) FILTER (WHERE css.score IS NOT NULL)::int AS scored_count,
+  AVG(css.score) FILTER (WHERE css.score IS NOT NULL)::float AS avg_score
+FROM composite_section_submissions css
+GROUP BY css.assignment_id, css.student_id;
+
 -- Default teacher row for the current single-teacher deployment model.
 INSERT INTO teachers (full_name, email)
 VALUES ('Giáo viên', 'teacher@local.dev')

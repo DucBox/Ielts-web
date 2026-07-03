@@ -70,6 +70,23 @@ function btnReset(btn) {
   btn.innerHTML = btn._origHTML || btn.innerHTML;
 }
 
+// Translates the browser's getUserMedia() DOMException into a clear Vietnamese
+// message students can act on, instead of the raw English error text.
+function micErrorMessageVi(e) {
+  const name = e?.name || '';
+  if (name === 'NotAllowedError' || name === 'SecurityError')
+    return 'Trình duyệt đang chặn quyền truy cập microphone. Hãy vào phần cài đặt trang web (biểu tượng khoá/camera trên thanh địa chỉ), cho phép Micro, rồi tải lại trang.';
+  if (name === 'NotFoundError' || name === 'DevicesNotFoundError')
+    return 'Không tìm thấy microphone trên thiết bị này. Hãy kiểm tra mic đã cắm/bật chưa rồi thử lại.';
+  if (name === 'NotReadableError' || name === 'TrackStartError')
+    return 'Không thể mở microphone — có thể một ứng dụng khác đang dùng mic. Hãy đóng ứng dụng đó rồi thử lại.';
+  if (name === 'OverconstrainedError')
+    return 'Microphone hiện tại không đáp ứng được yêu cầu ghi âm. Hãy thử đổi mic khác nếu có.';
+  if (name === 'AbortError')
+    return 'Quá trình mở microphone bị gián đoạn. Vui lòng thử lại.';
+  return 'Không thể truy cập microphone. Hãy kiểm tra quyền truy cập mic của trình duyệt rồi thử lại.';
+}
+
 function toast(msg, type = 'success') {
   const duration = type === 'error' ? 6000 : 3500;
   const el = document.createElement('div');

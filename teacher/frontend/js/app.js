@@ -800,7 +800,7 @@ function addChip(container, value) {
   const chip = document.createElement('span');
   chip.className = 'chip';
   chip.dataset.value = value.trim();
-  chip.innerHTML = `${value.trim()} <button class="chip-remove" title="Xoá">×</button>`;
+  chip.innerHTML = `${value.trim()} <button class="chip-remove" title="Xoá" aria-label="Xoá">×</button>`;
   chip.querySelector('.chip-remove').onclick = () => chip.remove();
   const input = container.querySelector('.chip-input');
   container.insertBefore(chip, input);
@@ -1043,13 +1043,34 @@ let _navSeq = 0;
 function routeToken() { return _navSeq; }
 function routeChanged(token) { return token !== _navSeq; }
 
+// Guards navigation away from an unsaved grading page. When the user cancels,
+// the hash is reverted and this flag makes the router skip the re-render that
+// would otherwise re-fetch the submission and wipe the in-progress edits.
+let _lastRouteHash = null;
+let _skipNextRouterRun = false;
+
 function router() {
+  const hash = window.location.hash.slice(1) || '/classes';
+
+  if (_skipNextRouterRun) {
+    _skipNextRouterRun = false;
+    _lastRouteHash = hash;
+    return;
+  }
+  if (_lastRouteHash && _lastRouteHash.startsWith('/grading/') && hash !== _lastRouteHash && isGradingDirty()) {
+    if (!confirm('Bạn có thay đổi chưa lưu ở bài chấm này. Rời trang sẽ mất các thay đổi đó. Bạn có chắc muốn rời đi?')) {
+      _skipNextRouterRun = true;
+      window.location.hash = _lastRouteHash;
+      return;
+    }
+  }
+  _lastRouteHash = hash;
+
   _navSeq++;
   stopQuestionDraftAutosave();
   stopSpDraftAutosave();
   document.getElementById('preview-sticky-float')?.classList.remove('is-visible');
   document.getElementById('preview-sticky-toggle')?.classList.remove('is-visible');
-  const hash = window.location.hash.slice(1) || '/classes';
   try {
     hideTableFloatToolbar();
     clearTableCellSelection();
@@ -1760,7 +1781,7 @@ window.rebuildTrendChart = rebuildTrendChart;
 
 function showHistogramStudents(bucketIdx) {
   const ranges = [[0,2],[2,4],[4,6],[6,8],[8,10]];
-  const labels = ['0 – 2','2 – 4','4 – 6','6 – 8','8 – 9'];
+  const labels = ['0 – 2','2 – 4','4 – 6','6 – 8','8 – 10'];
   const [lo, hi] = ranges[bucketIdx] || [0,10];
   const panel = document.getElementById('stats-hist-detail');
   if (!panel) return;
@@ -2303,7 +2324,7 @@ function renderStatsTab(container, data) {
         const chart = new Chart(distCanvas.getContext('2d'), {
           type: 'bar',
           data: {
-            labels: ['0 – 2','2 – 4','4 – 6','6 – 8','8 – 9'],
+            labels: ['0 – 2','2 – 4','4 – 6','6 – 8','8 – 10'],
             datasets: [{
               label: 'Số bài',
               data: distribution,
@@ -2653,7 +2674,7 @@ function renderClassDetail(cls, students = []) {
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
         <div id="bulk-action-bar" class="bulk-action-bar hidden">
           <span id="bulk-count-label" class="bulk-count-label">0 đã chọn</span>
-          <button class="btn btn-sm btn-outline" onclick="bulkRemoveStudents('${cls.id}')">🗑 Xoá khỏi lớp</button>
+          <button class="btn btn-sm btn-outline" onclick="bulkRemoveStudents('${cls.id}', this)">🗑 Xoá khỏi lớp</button>
           <button class="btn btn-sm btn-outline" onclick="bulkExportCSV('${cls.id}')">📥 Export CSV</button>
           <button class="btn btn-sm btn-outline" onclick="deselectAll()">✕ Bỏ chọn</button>
         </div>
@@ -2823,7 +2844,7 @@ function deselectAll() {
 }
 window.deselectAll = deselectAll;
 
-async function bulkRemoveStudents(classId) {
+async function bulkRemoveStudents(classId, btn) {
   const ids = getSelectedStudentIds();
   if (ids.length === 0) return;
   const ok = await confirmAction({
@@ -2833,6 +2854,7 @@ async function bulkRemoveStudents(classId) {
     danger: true,
   });
   if (!ok) return;
+  btnLoading(btn);
   try {
     await Promise.all(ids.map(sid =>
       api.delete(`/student-classes?student_id=${sid}&class_id=${classId}`)
@@ -2840,6 +2862,7 @@ async function bulkRemoveStudents(classId) {
     toast(`Đã xoá ${ids.length} học sinh khỏi lớp`);
     showClassDetail({ id: classId });
   } catch (e) {
+    btnReset(btn);
     toast('Lỗi xoá: ' + (e.error || e.message), 'error');
   }
 }
@@ -3253,7 +3276,7 @@ function renderSubmissionModal(sub, skill) {
           <div style="${multi ? 'margin-bottom:10px' : ''}">
             <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
               ${multi ? `<div style="font-size:12px;font-weight:600;color:var(--gray-500)">${escapeHtml(t.name || ('Phần ' + (i + 1)))}</div>` : '<div></div>'}
-              <button type="button" class="btn-icon" title="Tải xuống" onclick="downloadAudioFile('${escapeHtml(t.url || '')}', '${escapeHtml((sub.student_name || 'speaking') + '_' + (t.name || ('phan' + (i + 1))))}', this)">📥</button>
+              <button type="button" class="btn-icon" title="Tải xuống" aria-label="Tải xuống" onclick="downloadAudioFile('${escapeHtml(t.url || '')}', '${escapeHtml((sub.student_name || 'speaking') + '_' + (t.name || ('phan' + (i + 1))))}', this)">📥</button>
             </div>
             <audio controls src="${escapeHtml(t.url || '')}" style="width:100%;border-radius:8px"></audio>
           </div>`).join('')
@@ -3446,6 +3469,30 @@ let _voiceNoteRecordIdx   = -1;
 let _voiceNoteRecordSeconds = 0;
 let _voiceNoteRecordTimer = null;
 
+// Dirty-check for the grading page: signature captured right after load, compared
+// against current state before letting the user navigate away or close the tab.
+let _gradingInitialSignature = null;
+function _gradingSignature() {
+  if (_gradingSubmissionId == null) return null;
+  return JSON.stringify({
+    id: _gradingSubmissionId,
+    overall: document.getElementById('overall-feedback')?.value || '',
+    score: document.getElementById('grading-score')?.value || '',
+    annotations: _gradingAnnotations,
+    voiceNotes: _gradingVoiceNotes.map(v => ({ url: v.url, name: v.displayName || v.name, status: v.status })),
+  });
+}
+function isGradingDirty() {
+  if (_gradingInitialSignature == null) return false;
+  return _gradingSignature() !== _gradingInitialSignature;
+}
+window.addEventListener('beforeunload', (e) => {
+  if (!window.location.hash.includes('/grading/')) return;
+  if (!isGradingDirty()) return;
+  e.preventDefault();
+  e.returnValue = '';
+});
+
 // B4.7 — global grading keyboard shortcuts
 let _gradingKeyHandler = null;
 function bindGradingShortcuts() {
@@ -3483,6 +3530,7 @@ function bindGradingShortcuts() {
 function unbindGradingShortcuts() {
   if (_gradingKeyHandler) document.removeEventListener('keydown', _gradingKeyHandler);
   _gradingKeyHandler = null;
+  _gradingInitialSignature = null;
 }
 
 async function showGradingPage({ id }) {
@@ -3577,7 +3625,7 @@ function renderGradingPage(sub) {
             <div style="${multi ? 'margin-bottom:10px' : ''}">
               <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
                 ${multi ? `<div style="font-size:12px;color:var(--gray-500)">${escapeHtml(t.name || ('Phần ' + (i + 1)))} <span id="audio-dur-${i}" style="color:var(--gray-400)"></span></div>` : '<div></div>'}
-                <button type="button" class="btn-icon" title="Tải xuống" onclick="downloadAudioFile('${escapeHtml(t.url || '')}', '${escapeHtml((sub.student_name || 'speaking') + '_' + (t.name || ('phan' + (i + 1))))}', this)">📥</button>
+                <button type="button" class="btn-icon" title="Tải xuống" aria-label="Tải xuống" onclick="downloadAudioFile('${escapeHtml(t.url || '')}', '${escapeHtml((sub.student_name || 'speaking') + '_' + (t.name || ('phan' + (i + 1))))}', this)">📥</button>
               </div>
               ${i === 0 ? `<div id="waveform-container" class="waveform-container"><div class="waveform-loading">Đang tải waveform...</div></div>` : ''}
               <audio ${i === 0 ? 'id="waveform-audio"' : `id="track-audio-${i}"`} controls src="${escapeHtml(t.url || '')}" preload="metadata" style="width:100%;height:36px;outline:none;${i === 0 ? 'margin-top:6px' : ''}"></audio>
@@ -3717,6 +3765,9 @@ function renderGradingPage(sub) {
     fixTrackAudioDuration(trackIdx);
     trackIdx++;
   }
+
+  // Capture the "clean" state last, after all fields above are populated.
+  _gradingInitialSignature = _gradingSignature();
 }
 
 // ─── Render / refresh ────────────────────────────────────────────────────────
@@ -4324,6 +4375,11 @@ async function saveGrading(btn, action = 'complete') {
     .filter(s => s.status === 'done' && s.url)
     .map((s, i) => ({ url: s.url, key: s.key, name: (s.displayName || '').trim() || `part_${i + 1}` }));
 
+  // Lock every grading action button (not just the one clicked) so a second
+  // click on a different button can't fire a conflicting request mid-save.
+  const otherBtns = Array.from(document.querySelectorAll('#save-btn, .grading-action-buttons button'))
+    .filter(b => b !== btn);
+  otherBtns.forEach(b => { b.disabled = true; });
   btnLoading(btn);
   try {
     await api.patch(`/submissions/${_gradingSubmissionId}`, {
@@ -4331,11 +4387,13 @@ async function saveGrading(btn, action = 'complete') {
       overall_score: score,
       action,
     });
+    _gradingInitialSignature = _gradingSignature(); // saved — no longer dirty
     const msg = action === 'request_rewrite' ? 'Đã yêu cầu học sinh làm lại! ✓' : 'Đã hoàn thành chấm bài! ✓';
     toast(msg);
     setTimeout(() => navigate('/inbox'), 800);
   } catch (e) {
     btnReset(btn);
+    otherBtns.forEach(b => { b.disabled = false; });
     toast('Lỗi lưu: ' + (e.error || e.message), 'error');
   }
 }
@@ -4933,7 +4991,7 @@ function _buildFolderTreeItems(parentId, depth) {
           <span class="folder-item-actions" onclick="event.stopPropagation()">
             <button class="folder-action-btn" title="Thêm thư mục con" aria-label="Thêm thư mục con" onclick="createFolderPrompt('${f.id}')">&#xff0b;</button>
             <button class="folder-action-btn" title="Đổi tên" aria-label="Đổi tên thư mục" onclick="renameFolderPrompt('${f.id}','${safeName}')">&#x270f;</button>
-            <button class="folder-action-btn danger" title="Xoá" aria-label="Xoá thư mục" onclick="deleteFolderConfirm('${f.id}','${safeName}')">&#x1f5d1;</button>
+            <button class="folder-action-btn danger" title="Xoá" aria-label="Xoá thư mục" onclick="deleteFolderConfirm('${f.id}','${safeName}',this)">&#x1f5d1;</button>
           </span>
         </div>
         ${_buildFolderTreeItems(f.id, depth + 1)}`;
@@ -4983,7 +5041,7 @@ async function renameFolderPrompt(id, currentName) {
 }
 window.renameFolderPrompt = renameFolderPrompt;
 
-async function deleteFolderConfirm(id, name) {
+async function deleteFolderConfirm(id, name, btn) {
   const childCount = _allFolders.filter(f => f.parent_id === id).length;
   const qCount     = _allQuestions.filter(q => q.folder_id === id).length;
   let message = `<p style="margin:0">Thư mục <strong>${escapeHtml(name)}</strong> sẽ bị xoá.</p>`;
@@ -5000,6 +5058,7 @@ async function deleteFolderConfirm(id, name) {
     danger: true,
   });
   if (!ok) return;
+  btnLoading(btn);
   try {
     await api.delete(`/question-folders/${id}`);
     const subtree = _getFolderSubtreeIds(id);
@@ -5008,7 +5067,10 @@ async function deleteFolderConfirm(id, name) {
     if (subtree.has(_currentFolderFilter)) _currentFolderFilter = null;
     renderQuestions();
     toast('Đã xoá thư mục');
-  } catch (e) { toast('Lỗi: ' + (e.error || e.message), 'error'); }
+  } catch (e) {
+    btnReset(btn);
+    toast('Lỗi: ' + (e.error || e.message), 'error');
+  }
 }
 window.deleteFolderConfirm = deleteFolderConfirm;
 
@@ -5873,7 +5935,7 @@ function contentComposerHtml(label, hint = '') {
                    '#ff0000','#e91e63','#9c27b0','#3f51b5','#2196f3',
                    '#03a9f4','#009688','#4caf50','#8bc34a','#ffeb3b',
                    '#ff9800','#ff5722','#795548','#607d8b','#1a237e'].map(c =>
-                  `<button type="button" class="fmt-swatch" style="background:${c}" title="${c}" onmousedown="event.preventDefault()" onclick="applyFormatColor('${c}');closeColorPalette()"></button>`
+                  `<button type="button" class="fmt-swatch" style="background:${c}" title="${c}" aria-label="Màu chữ ${c}" onmousedown="event.preventDefault()" onclick="applyFormatColor('${c}');closeColorPalette()"></button>`
                 ).join('')}
               </div>
               <div class="fmt-palette-custom">
@@ -6754,7 +6816,7 @@ function ensureTableFloatToolbar() {
   tb.id = 'editor-table-float-toolbar';
   tb.className = 'editor-table-float-toolbar';
   const btn = (title, onclick, danger, svgPath, id) =>
-    `<button${id ? ` id="${id}"` : ''} class="tft-btn${danger ? ' tft-danger' : ''}" title="${title}" onmousedown="event.preventDefault()" onclick="${onclick}"><svg width="15" height="15" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">${svgPath}</svg></button>`;
+    `<button${id ? ` id="${id}"` : ''} class="tft-btn${danger ? ' tft-danger' : ''}" title="${title}" aria-label="${title}" onmousedown="event.preventDefault()" onclick="${onclick}"><svg width="15" height="15" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">${svgPath}</svg></button>`;
   tb.innerHTML =
     btn('Thêm hàng phía trên', 'tableAddRowAbove()', false,
       '<rect x="1" y="6" width="12" height="7" rx="1" stroke="currentColor" stroke-width="1.4"/><path d="M7 1v4M5 3h4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>') +
@@ -7825,7 +7887,7 @@ function renderQuestionDetail(q) {
         const chip = document.createElement('span');
         chip.className = 'chip';
         chip.dataset.value = tag;
-        chip.innerHTML = `${escapeHtml(tag)} <button type="button" class="chip-remove">×</button>`;
+        chip.innerHTML = `${escapeHtml(tag)} <button type="button" class="chip-remove" title="Xoá" aria-label="Xoá">×</button>`;
         chip.querySelector('.chip-remove').onclick = () => chip.remove();
         tagContainer.insertBefore(chip, tagInput);
       }
@@ -9340,7 +9402,7 @@ function _renderSpeakerRenameUI() {
       <input type="text" value="${escapeHtml(s.original)}" oninput="_speakerNames[${i}].original=this.value" style="${inp};max-width:120px;flex:0 0 120px">
       <span style="color:var(--gray-400);font-size:13px;flex-shrink:0">→</span>
       <input type="text" value="${escapeHtml(s.replace)}" oninput="_speakerNames[${i}].replace=this.value" placeholder="Tên mới..." style="${inp};flex:1">
-      <button type="button" onclick="_removeSpeakerRow(${i})" style="flex-shrink:0;border:none;background:none;color:var(--gray-400);cursor:pointer;font-size:15px;padding:2px 4px;line-height:1" title="Xóa">×</button>
+      <button type="button" onclick="_removeSpeakerRow(${i})" style="flex-shrink:0;border:none;background:none;color:var(--gray-400);cursor:pointer;font-size:15px;padding:2px 4px;line-height:1" title="Xóa" aria-label="Xóa">×</button>
     </div>`).join('');
 }
 
@@ -9721,7 +9783,7 @@ function renderProfileFieldsPage(fields) {
             <td><div class="pf-label-cell">${escapeHtml(f.label)}${opts}</div></td>
             <td><span class="pf-type-badge">${PF_TYPE_LABELS[f.field_type] || f.field_type}</span></td>
             <td>${role}</td>
-            <td><button class="btn-icon danger" onclick="deleteProfileField('${f.id}')" aria-label="Xoá trường hồ sơ">🗑</button></td>
+            <td><button class="btn-icon danger" onclick="deleteProfileField('${f.id}', this)" aria-label="Xoá trường hồ sơ">🗑</button></td>
           </tr>`;
         }).join('')}</tbody>
       </table></div>`;
@@ -9821,7 +9883,7 @@ async function submitAddProfileField(e) {
 }
 window.submitAddProfileField = submitAddProfileField;
 
-async function deleteProfileField(id) {
+async function deleteProfileField(id, btn) {
   const ok = await confirmAction({
     title: 'Xoá câu hỏi hồ sơ',
     message: 'Các câu trả lời của học sinh cho câu hỏi này cũng sẽ bị xoá.',
@@ -9829,11 +9891,13 @@ async function deleteProfileField(id) {
     danger: true,
   });
   if (!ok) return;
+  btnLoading(btn);
   try {
     await api.delete(`/profile-fields/${id}`);
     toast('Đã xoá câu hỏi');
     showProfileFields();
   } catch (e) {
+    btnReset(btn);
     toast('Lỗi: ' + (e.error || e.message), 'error');
   }
 }
@@ -10489,7 +10553,7 @@ function _buildSharedPoolRows(list) {
       <td style="white-space:nowrap">
         <button class="btn btn-sm btn-outline" onclick="showSharedPoolStats('${q.id}','${escapeHtml(q.title)}')">📊 Thống kê</button>
         <button class="btn btn-sm btn-outline" onclick="navigate('/shared-pool/${q.id}')">✏️ Sửa</button>
-        <button class="btn btn-sm btn-outline" style="color:var(--red)" onclick="deleteSharedQuestion('${q.id}','${escapeHtml(q.title)}')">🗑</button>
+        <button class="btn btn-sm btn-outline" style="color:var(--red)" title="Xoá đề" aria-label="Xoá đề" onclick="deleteSharedQuestion('${q.id}','${escapeHtml(q.title)}',this)">🗑</button>
       </td>
     </tr>`).join('');
 }
@@ -10497,7 +10561,7 @@ function _buildSharedPoolRows(list) {
 function setSharedSkillFilter(s) { _sharedSkillFilter = s; renderSharedPool(); }
 window.setSharedSkillFilter = setSharedSkillFilter;
 
-async function deleteSharedQuestion(id, title) {
+async function deleteSharedQuestion(id, title, btn) {
   const ok = await confirmAction({
     title: 'Xoá đề khỏi kho luyện tập',
     message: `Đề <strong>${escapeHtml(title)}</strong> sẽ bị xoá khỏi Kho đề luyện tập.`,
@@ -10505,12 +10569,16 @@ async function deleteSharedQuestion(id, title) {
     danger: true,
   });
   if (!ok) return;
+  btnLoading(btn);
   try {
     await api.delete(`/shared-pool/${id}`);
     _sharedQuestions = _sharedQuestions.filter(q => q.id !== id);
     renderSharedPool();
     toast('Đã xoá đề', 'success');
-  } catch (e) { toast('Lỗi xoá đề: ' + (e.error || e.message), 'error'); }
+  } catch (e) {
+    btnReset(btn);
+    toast('Lỗi xoá đề: ' + (e.error || e.message), 'error');
+  }
 }
 window.deleteSharedQuestion = deleteSharedQuestion;
 

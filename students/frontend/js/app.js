@@ -652,7 +652,7 @@ function renderNotifItem(n) {
   const readCls = n.is_read ? 'notif-item--read' : 'notif-item--unread';
   const markReadBtn = n.is_read
     ? ''
-    : `<button class="notif-btn-read" onclick="markNotifRead(this);event.stopPropagation()" title="Đánh dấu đã đọc">✓</button>`;
+    : `<button class="notif-btn-read" onclick="markNotifRead(this);event.stopPropagation()" title="Đánh dấu đã đọc" aria-label="Đánh dấu đã đọc">✓</button>`;
 
   return `
     <div class="notif-item ${readCls} ${urgencyCls ? 'notif-item--' + urgencyCls : ''}"
@@ -1032,7 +1032,7 @@ function buildHighlightToolbar() {
       <span class="hl-label">Highlight</span>
       ${colors.map(([key, emoji]) => `
         <button type="button" class="hl-btn ${_highlightColor === key ? 'hl-btn-active' : ''}"
-          title="${key}" onclick="setHighlightColor('${key}')">${emoji}</button>`).join('')}
+          title="${key}" aria-label="Đánh dấu màu ${key}" onclick="setHighlightColor('${key}')">${emoji}</button>`).join('')}
     </div>`;
 }
 
@@ -2397,7 +2397,7 @@ function renderTargetSummaryCompact(assignments) {
         <div>
           <div class="target-summary-label">🎯 Overall target</div>
           <div class="target-summary-value">${targets.overall.toFixed(1)}</div>
-          <div class="target-summary-sub">${overallAvg !== null ? `Band hiện tại: ${overallAvg.toFixed(1)}` : 'Chưa có band tổng quan'} · Tính từ 4 kỹ năng</div>
+          <div class="target-summary-sub">${overallAvg !== null ? `Band hiện tại: ${overallAvg.toFixed(2)}` : 'Chưa có band tổng quan'} · Tính từ 4 kỹ năng</div>
         </div>
         <a href="#/profile" class="target-summary-link">Chỉnh target</a>
       </div>
@@ -2430,7 +2430,7 @@ function renderSkillTargetEditor(assignments) {
         <div>
           <div class="target-editor-label">🎯 Mục tiêu tổng thể</div>
           <div class="target-editor-overall">${targets.overall.toFixed(1)}</div>
-          <div class="target-editor-sub">${overallAvg !== null ? `Band hiện tại ${overallAvg.toFixed(1)}` : 'Chưa có điểm tổng quan'} · Tự tính từ 4 kỹ năng</div>
+          <div class="target-editor-sub">${overallAvg !== null ? `Band hiện tại ${overallAvg.toFixed(2)}` : 'Chưa có điểm tổng quan'} · Tự tính từ 4 kỹ năng</div>
         </div>
       </div>
       <div class="target-editor-grid">
@@ -2452,8 +2452,8 @@ function renderSkillChartCard(assignments, skill, rangeDays, mode = 'profile') {
   const latest = graded.length ? Number(graded[graded.length - 1].overall_score) : null;
   const delta = avg !== null ? avg - skillTarget : null;
   const deltaLabel = delta === null ? '' : delta >= 0
-    ? `<span class="chart-skill-delta ok">+${delta.toFixed(1)} vs target</span>`
-    : `<span class="chart-skill-delta gap">${delta.toFixed(1)} vs target</span>`;
+    ? `<span class="chart-skill-delta ok">+${delta.toFixed(2)} vs target</span>`
+    : `<span class="chart-skill-delta gap">${delta.toFixed(2)} vs target</span>`;
   const chartContent = points.length
     ? buildProgressChartSvg(points, skillTarget, rangeDays, skill, mode)
     : `<div class="chart-empty-state">
@@ -2467,7 +2467,7 @@ function renderSkillChartCard(assignments, skill, rangeDays, mode = 'profile') {
         <div>
           <div class="skill-chart-label">${SKILL_ICONS[skill] || '📝'} ${SKILL_LABELS[skill]}</div>
           <div class="skill-chart-summary">
-            <span class="skill-chart-avg" style="color:${color}">${avg !== null ? avg.toFixed(1) : '—'}</span>
+            <span class="skill-chart-avg" style="color:${color}">${avg !== null ? avg.toFixed(2) : '—'}</span>
             ${deltaLabel}
           </div>
           <div class="skill-chart-sub">Target ${skillTarget.toFixed(1)} · ${graded.length} bài đã chấm · ${allDone} bài đã làm</div>
@@ -2502,7 +2502,7 @@ function showProgressPointTooltip(event, skill, dateKey) {
   const tooltip = ensureProgressTooltip();
   tooltip.innerHTML = `
     <div class="progress-tooltip-date">${dateKey}</div>
-    <div class="progress-tooltip-avg">Band trung bình ngày: <strong>${avg.toFixed(1)}</strong></div>
+    <div class="progress-tooltip-avg">Band trung bình ngày: <strong>${avg.toFixed(2)}</strong></div>
     <div class="progress-tooltip-list">
       ${assignments.map(item => `
         <div class="progress-tooltip-item">
@@ -2644,7 +2644,7 @@ function renderHome(assignments) {
         </a>
         <a href="#/history" class="home-stat-card">
           <div class="stat-icon">🎯</div>
-          <div class="stat-num">${overallAvg !== null ? overallAvg.toFixed(1) : '—'}</div>
+          <div class="stat-num">${overallAvg !== null ? overallAvg.toFixed(2) : '—'}</div>
           <div class="stat-label">Band TB</div>
         </a>
       </div>
@@ -2954,7 +2954,7 @@ function renderProfile(assignments) {
   const gradedAssignments = assignments.filter(a => a.submission_id && a.overall_score != null);
   const allScores = gradedAssignments.map(a => Number(a.overall_score)).filter(Boolean);
   const overallAvg = allScores.length
-    ? (allScores.reduce((s, v) => s + v, 0) / allScores.length).toFixed(1) : '—';
+    ? (allScores.reduce((s, v) => s + v, 0) / allScores.length).toFixed(2) : '—';
 
   const SKILLS = ['reading', 'listening', 'writing', 'speaking'];
   const ieltsGraded = getIeltsGradedAssignments(assignments);
@@ -3016,8 +3016,8 @@ function renderProfile(assignments) {
     const status = avg === null ? '' : avg >= target ? '✅' : avg >= target - 0.5 ? '🟡' : '🔴';
     const spark  = sparkSvg(timeline, color);
     const vsTarget = avg !== null ? (avg >= target
-      ? `<span class="spc-vs ok">+${(avg - target).toFixed(1)} vs target</span>`
-      : `<span class="spc-vs gap">-${(target - avg).toFixed(1)} vs target</span>`) : '';
+      ? `<span class="spc-vs ok">+${(avg - target).toFixed(2)} vs target</span>`
+      : `<span class="spc-vs gap">-${(target - avg).toFixed(2)} vs target</span>`) : '';
     const totalDone = submittedBySkill(sk).length;
     return `
       <button class="skill-progress-card spc-${sk}" type="button"
@@ -3028,13 +3028,13 @@ function renderProfile(assignments) {
           <span>${status}</span>
         </div>
         <div class="spc-band-row">
-          <span class="spc-band" style="color:${color}">${avg !== null ? avg.toFixed(1) : '—'}</span>
+          <span class="spc-band" style="color:${color}">${avg !== null ? avg.toFixed(2) : '—'}</span>
           ${vsTarget}
         </div>
         <div class="spc-bar-wrap">
           <div class="spc-bar" style="width:${pct}%;background:${color}"></div>
         </div>
-        <div class="spc-bar-label">${avg !== null ? avg.toFixed(1) : '—'} / ${target} target</div>
+        <div class="spc-bar-label">${avg !== null ? avg.toFixed(2) : '—'} / ${target} target</div>
         ${spark ? `<div class="spc-spark">${spark}</div>` : '<div class="spc-spark spc-spark-empty">Chưa có dữ liệu</div>'}
         <div class="spc-meta">${count === 0 ? 'Chưa có bài nào được chấm' : `${count} bài đã chấm · Best: ${best}`}</div>
         <div class="spc-footnote">${totalDone > 0 ? `${totalDone} bài đã làm · Nhấn để xem chi tiết` : 'Chưa có bài đã làm'}</div>
@@ -3070,7 +3070,7 @@ function renderProfile(assignments) {
         <div class="profile-hero-info">
           <div class="profile-name">
             <span id="profile-name-text">${escapeHtml(_student.full_name)}</span>
-            <button class="profile-name-edit-btn" onclick="startEditProfileName()" title="Đổi tên">
+            <button class="profile-name-edit-btn" onclick="startEditProfileName()" title="Đổi tên" aria-label="Đổi tên">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
             </button>
           </div>
@@ -3212,7 +3212,7 @@ renderHome = function(assignments) {
         </a>
         <a href="#/history" class="home-stat-card">
           <div class="stat-icon">🎯</div>
-          <div class="stat-num">${overallAvg !== null ? overallAvg.toFixed(1) : '—'}</div>
+          <div class="stat-num">${overallAvg !== null ? overallAvg.toFixed(2) : '—'}</div>
           <div class="stat-label">Band TB</div>
         </a>
       </div>
@@ -3417,7 +3417,7 @@ renderProfile = function(assignments, profileData) {
   const targets = getTargetSettings();
   const submittedAssignments = getSubmittedAssignments(assignments);
   const overallAvgValue = calculateOverallAverage(assignments);
-  const overallAvg = overallAvgValue !== null ? overallAvgValue.toFixed(1) : '—';
+  const overallAvg = overallAvgValue !== null ? overallAvgValue.toFixed(2) : '—';
   const skillStats = SKILL_ORDER.map(sk => {
     const scores = getSkillGradedAssignments(assignments, sk).map(a => Number(a.overall_score)).filter(Number.isFinite);
     return { sk, best: scores.length ? Math.max(...scores) : null };
@@ -3464,7 +3464,7 @@ renderProfile = function(assignments, profileData) {
         <div class="profile-hero-info">
           <div class="profile-name">
             <span id="profile-name-text">${escapeHtml(_student.full_name)}</span>
-            <button class="profile-name-edit-btn" onclick="startEditProfileName()" title="Đổi tên">
+            <button class="profile-name-edit-btn" onclick="startEditProfileName()" title="Đổi tên" aria-label="Đổi tên">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
             </button>
           </div>
@@ -3899,7 +3899,7 @@ function renderMyVocabList() {
           <div class="mvc-def">${escapeHtml(v.definition)}</div>
           ${v.example ? `<div class="mvc-ex">"${escapeHtml(v.example)}"</div>` : ''}
           ${v.source ? `<div class="mvc-src">📋 ${escapeHtml(v.source)}</div>` : ''}
-          <button class="mvc-del" data-word="${escapeHtml(v.word)}" onclick="removeMyVocabWord(this)">🗑</button>
+          <button class="mvc-del" data-word="${escapeHtml(v.word)}" title="Xoá từ" aria-label="Xoá từ" onclick="removeMyVocabWord(this)">🗑</button>
         </div>`).join('')}
       </div>`;
 
@@ -4090,7 +4090,7 @@ function renderAssignments(assignments) {
         statusBadge = `<span class="badge badge-pending">Chưa làm</span>`;
       }
       rightContent = isCompositeAssignmentFullyGraded(a) && avgScore !== null
-        ? `<div class="score-band">${avgScore.toFixed(1)}</div><div class="score-label">Band</div>`
+        ? `<div class="score-band">${avgScore.toFixed(2)}</div><div class="score-label">Band</div>`
         : '';
     } else if (isClosed) {
       statusBadge  = `<span class="badge badge-closed">🔒 Đã đóng</span>`;
@@ -4361,7 +4361,7 @@ function renderReading(a) {
         <span class="q-label">Q${i}</span>
         <input class="answer-input" id="ans-${i}" type="text" placeholder="Đáp án câu ${i}"
           oninput="updateNavigatorState();scheduleAnswerDraftSave('${a.id}', ${qCount})" />
-        <button class="q-flag-btn${flagged}" data-flag-q="${i}" onclick="toggleFlag(${i})" title="Đánh dấu xem lại">🚩</button>
+        <button class="q-flag-btn${flagged}" data-flag-q="${i}" onclick="toggleFlag(${i})" title="Đánh dấu xem lại" aria-label="Đánh dấu xem lại">🚩</button>
       </div>`;
   }
 
@@ -4410,7 +4410,7 @@ function renderListening(a) {
         <span class="q-label">Q${i}</span>
         <input class="answer-input" id="ans-${i}" type="text" placeholder="Đáp án câu ${i}"
           oninput="updateNavigatorState();scheduleAnswerDraftSave('${a.id}', ${qCount})" />
-        <button class="q-flag-btn${flagged}" data-flag-q="${i}" onclick="toggleFlag(${i})" title="Đánh dấu xem lại">🚩</button>
+        <button class="q-flag-btn${flagged}" data-flag-q="${i}" onclick="toggleFlag(${i})" title="Đánh dấu xem lại" aria-label="Đánh dấu xem lại">🚩</button>
       </div>`;
   }
 
@@ -4886,7 +4886,7 @@ async function startSlotRecording(idx) {
     _speakingSlots[idx].status = 'idle';
     _speakingRecordIdx = -1;
     _renderSpeakingSlots();
-    toast('Không thể truy cập microphone: ' + e.message, 'error');
+    toast(micErrorMessageVi(e), 'error');
   }
 }
 
@@ -7221,7 +7221,7 @@ function renderSharedReading(q, mode) {
         <span class="q-label">Q${qItem.q_no}</span>
         <input class="answer-input" id="ans-${qItem.q_no}" type="text" placeholder="Đáp án câu ${qItem.q_no}"
           oninput="updateNavigatorState()" />
-        <button class="q-flag-btn" data-flag-q="${qItem.q_no}" onclick="toggleFlag(${qItem.q_no})" title="Đánh dấu xem lại">🚩</button>
+        <button class="q-flag-btn" data-flag-q="${qItem.q_no}" onclick="toggleFlag(${qItem.q_no})" title="Đánh dấu xem lại" aria-label="Đánh dấu xem lại">🚩</button>
       </div>`;
   }
   const modeBanner = mode === 'practice'
@@ -7272,7 +7272,7 @@ function renderSharedListening(q, mode) {
         <span class="q-label">Q${qItem.q_no}</span>
         <input class="answer-input" id="ans-${qItem.q_no}" type="text" placeholder="Đáp án câu ${qItem.q_no}"
           oninput="updateNavigatorState()" />
-        <button class="q-flag-btn" data-flag-q="${qItem.q_no}" onclick="toggleFlag(${qItem.q_no})" title="Đánh dấu xem lại">🚩</button>
+        <button class="q-flag-btn" data-flag-q="${qItem.q_no}" onclick="toggleFlag(${qItem.q_no})" title="Đánh dấu xem lại" aria-label="Đánh dấu xem lại">🚩</button>
       </div>`;
   }
   const audioHtml = mode === 'practice'
@@ -8140,32 +8140,14 @@ window.saveProfileName = saveProfileName;
 
 let _compositeExam = null;
 let _activeSectionId = null;
-let _sectionTimerInterval = null;
-let _sectionTimerSecsLeft = 0;
 
+// The composite-section countdown is `startAssignmentCountdown` (started in
+// _renderCompositeSectionFullScreen, targeting #assign-countdown). There used to
+// be a second, separate timer here (`startCompositeSectionTimer`) that targeted a
+// DOM id from a dead render path and called an undefined auto-submit function —
+// removed rather than fixed, since the real timer above already does the job.
 function stopCompositeSectionTimer() {
-  if (_sectionTimerInterval) { clearInterval(_sectionTimerInterval); _sectionTimerInterval = null; }
-}
-
-function _tickCompositeSectionTimer() {
-  _sectionTimerSecsLeft = Math.max(0, _sectionTimerSecsLeft - 1);
-  const el = document.getElementById('csec-countdown');
-  if (el) {
-    const m = Math.floor(_sectionTimerSecsLeft / 60);
-    const s = _sectionTimerSecsLeft % 60;
-    el.textContent = `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
-    el.className = `assign-countdown${_sectionTimerSecsLeft < 60 ? ' timer-urgent' : ''}`;
-  }
-  if (_sectionTimerSecsLeft <= 0) {
-    stopCompositeSectionTimer();
-    autoSubmitCurrentCompositeSection();
-  }
-}
-
-function startCompositeSectionTimer(secs) {
-  stopCompositeSectionTimer();
-  _sectionTimerSecsLeft = Math.floor(secs);
-  _sectionTimerInterval = setInterval(_tickCompositeSectionTimer, 1000);
+  stopAssignmentCountdown();
 }
 
 // ── Composite overview page ──────────────────────────────────────────────────
@@ -8316,10 +8298,11 @@ async function showCompositeSectionExam({ id, sectionId }) {
 
     if (routeChanged(_t)) return;
     _activeSectionId = sectionId;
+    // _renderCompositeSectionFullScreen starts the real countdown (startAssignmentCountdown)
+    // itself when timerSecs !== null — don't start a second one here.
     _renderCompositeSectionFullScreen(id, sec, timerSecs);
     if (timerSecs !== null) {
       _installExamBeforeUnload();
-      startCompositeSectionTimer(timerSecs);
     }
   } catch (e) {
     if (routeChanged(_t)) return;
@@ -8353,7 +8336,7 @@ function _renderCompositeSectionFullScreen(compositeId, sec, timerSecs) {
         <span class="q-label">Q${i}</span>
         <input class="answer-input" id="ans-${i}" type="text" placeholder="Đáp án câu ${i}"
           oninput="updateNavigatorState();scheduleAnswerDraftSave('${secDraftId}',${qCount})" />
-        <button class="q-flag-btn${flagged}" data-flag-q="${i}" onclick="toggleFlag(${i})" title="Đánh dấu xem lại">🚩</button>
+        <button class="q-flag-btn${flagged}" data-flag-q="${i}" onclick="toggleFlag(${i})" title="Đánh dấu xem lại" aria-label="Đánh dấu xem lại">🚩</button>
       </div>`;
     }
     skillHtml = `
@@ -8386,7 +8369,7 @@ function _renderCompositeSectionFullScreen(compositeId, sec, timerSecs) {
         <span class="q-label">Q${i}</span>
         <input class="answer-input" id="ans-${i}" type="text" placeholder="Đáp án câu ${i}"
           oninput="updateNavigatorState();scheduleAnswerDraftSave('${secDraftId}',${qCount})" />
-        <button class="q-flag-btn${flagged}" data-flag-q="${i}" onclick="toggleFlag(${i})" title="Đánh dấu xem lại">🚩</button>
+        <button class="q-flag-btn${flagged}" data-flag-q="${i}" onclick="toggleFlag(${i})" title="Đánh dấu xem lại" aria-label="Đánh dấu xem lại">🚩</button>
       </div>`;
     }
     const audioHtml = _compositeExam.mode === 'practice' ? renderListeningAudioHtml(sec) : renderLockedListeningAudioHtml(sec);
@@ -8631,175 +8614,6 @@ async function _autoSubmitCompositeSectionAndBack(compositeId, sectionId) {
   const btn = document.getElementById('submit-btn');
   await _submitCompositeSectionAndBack(compositeId, sectionId, btn, true);
 }
-
-function _deadFunction_renderCompositeSectionContent(sectionId, sec, timerSecs) {
-  const bodyEl = document.getElementById(`csb-${sectionId}`);
-  if (!bodyEl) return;
-  _activeAssignmentId = sectionId;
-  const flagDraft = loadDraft(sectionId, 'flags');
-  _flaggedSet = new Set(Array.isArray(flagDraft?.data) ? flagDraft.data : []);
-
-  const qCount = sec.question_count || 0;
-
-  const timerHtml = timerSecs !== null
-    ? `<div class="assign-countdown-wrap">
-        <span class="assign-countdown-label">⏱ Còn lại</span>
-        <span class="assign-countdown" id="csec-countdown">--:--</span>
-       </div>` : '';
-
-  const miniToolbar = `
-    <div class="assignment-toolbar" style="position:sticky;top:0;z-index:10;border-bottom:1px solid var(--border);border-top:2px solid var(--border)">
-      <span style="font-weight:600;font-size:14px;color:var(--gray-700)">${escapeHtml(sec.label)}</span>
-      ${timerHtml}
-      <div id="save-indicator" class="save-indicator" style="margin-left:auto"></div>
-      <button class="btn btn-primary btn-sm" id="csec-submit-btn-${sectionId}"
-        onclick="submitCompositeSection('${sectionId}',false)">Nộp phần này</button>
-    </div>`;
-
-  let contentHtml = '';
-  let postRender = null;
-
-  if (sec.skill === 'reading') {
-    let answerRows = '';
-    for (let i = 1; i <= qCount; i++) {
-      const flagged = _flaggedSet.has(i) ? ' flagged' : '';
-      answerRows += `<div class="answer-row">
-        <span class="q-label">Q${i}</span>
-        <input class="answer-input" id="ans-${i}" type="text" placeholder="Đáp án câu ${i}"
-          oninput="updateNavigatorState();scheduleAnswerDraftSave('${sectionId}',${qCount})" />
-        <button class="q-flag-btn${flagged}" data-flag-q="${i}" onclick="toggleFlag(${i})" title="Đánh dấu xem lại">🚩</button>
-      </div>`;
-    }
-    contentHtml = `
-      <div class="assignment-content">
-        <div class="content-pane" id="reading-content-pane">
-          <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:16px">
-            <div class="section-title" style="margin-bottom:0">Bài đọc &amp; Câu hỏi</div>
-            ${buildHighlightToolbar()}
-          </div>
-          <div class="reading-text" id="reading-text">${renderQuestionContentHTML(sec.content_blocks, sec.content_text || '')}</div>
-        </div>
-        <div class="answer-pane">
-          ${buildQuestionNavigator(qCount, sectionId)}
-          <div class="section-title">Điền đáp án</div>
-          ${qCount === 0 ? `<div style="color:var(--gray-400);font-size:13px">Không có câu hỏi.</div>` : `<div class="answer-grid">${answerRows}</div>`}
-        </div>
-      </div>`;
-    postRender = () => {
-      restoreAnswerDraft(sectionId, qCount);
-      bindReadingTextInteractions();
-      updateNavigatorState();
-      startAutoSave(() => persistAnswerDraft(sectionId, qCount));
-    };
-
-  } else if (sec.skill === 'listening') {
-    let answerRows = '';
-    for (let i = 1; i <= qCount; i++) {
-      const flagged = _flaggedSet.has(i) ? ' flagged' : '';
-      answerRows += `<div class="answer-row">
-        <span class="q-label">Q${i}</span>
-        <input class="answer-input" id="ans-${i}" type="text" placeholder="Đáp án câu ${i}"
-          oninput="updateNavigatorState();scheduleAnswerDraftSave('${sectionId}',${qCount})" />
-        <button class="q-flag-btn${flagged}" data-flag-q="${i}" onclick="toggleFlag(${i})" title="Đánh dấu xem lại">🚩</button>
-      </div>`;
-    }
-    const audioHtml = _compositeExam.mode === 'practice'
-      ? renderListeningAudioHtml(sec)
-      : renderLockedListeningAudioHtml(sec);
-    contentHtml = `
-      <div class="assignment-content">
-        <div class="content-pane">
-          ${audioHtml}
-          <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:16px">
-            <div class="section-title" style="margin-bottom:0">Câu hỏi</div>
-            ${buildHighlightToolbar()}
-          </div>
-          <div class="reading-text" id="reading-text">${renderQuestionContentHTML(sec.content_blocks, sec.content_text || '')}</div>
-        </div>
-        <div class="answer-pane">
-          ${buildQuestionNavigator(qCount, sectionId)}
-          <div class="section-title">Điền đáp án</div>
-          ${qCount === 0 ? `<div style="color:var(--gray-400);font-size:13px">Không có câu hỏi.</div>` : `<div class="answer-grid">${answerRows}</div>`}
-        </div>
-      </div>`;
-    postRender = () => {
-      restoreAnswerDraft(sectionId, qCount);
-      if (_compositeExam.mode !== 'practice') setupLockedListeningAudio();
-      bindReadingTextInteractions();
-      updateNavigatorState();
-      startAutoSave(() => persistAnswerDraft(sectionId, qCount));
-    };
-
-  } else if (sec.skill === 'writing') {
-    contentHtml = `
-      <div class="assignment-content">
-        <div class="content-pane">
-          <div class="section-title">Đề bài</div>
-          <div class="writing-prompt-body">${renderQuestionContentHTML(sec.content_blocks, sec.content_text || '')}</div>
-        </div>
-        <div class="answer-pane writing-answer-pane">
-          <div class="section-title">Bài làm của bạn</div>
-          <textarea id="writing-answer" class="writing-textarea"
-            placeholder="Viết bài của bạn vào đây..."
-            oninput="updateWordCount(this);scheduleWritingDraftSave('${sectionId}')"></textarea>
-          <div id="word-count" class="word-count word-count-extended">
-            <span data-stat="words">0 từ</span>
-            <span data-stat="chars">0 ký tự</span>
-            <span data-stat="sentences">0 câu</span>
-            <span data-stat="paragraphs">0 đoạn</span>
-          </div>
-          <div class="form-hint">Task 1: ~150 từ — Task 2: ~250 từ</div>
-        </div>
-      </div>`;
-    postRender = () => {
-      const draft = loadDraft(sectionId, 'writing');
-      if (draft?.data) {
-        const ta = $('#writing-answer');
-        if (ta) { ta.value = draft.data; updateWordCount(ta); }
-      }
-      startAutoSave(() => persistWritingDraft(sectionId));
-    };
-
-  } else if (sec.skill === 'speaking') {
-    _speakingSlots = [_newSpeakingSlot()];
-    _speakingRecordIdx = -1;
-    _speakingAssignId = sectionId;
-    _speakingIsShared = false;
-    _mediaRecorder = null; _audioChunks = []; _recordedBlob = null; _uploadedFile = null;
-    contentHtml = `
-      <div class="assignment-content single-col">
-        <div class="content-pane">
-          <div class="section-title">Câu hỏi / Cue Card</div>
-          <div class="cue-card">${renderQuestionContentHTML(sec.content_blocks, sec.content_text || '')}</div>
-        </div>
-        <div class="answer-pane">
-          <div class="section-title">Bài nói của bạn</div>
-          <div id="recording-indicator" style="display:none;padding:10px 14px;background:#fef2f2;border:1px solid #fecaca;border-radius:10px;margin-bottom:10px">
-            <canvas id="waveform-canvas" class="waveform-canvas" width="600" height="60"></canvas>
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-top:6px">
-              <div id="record-timer" class="record-timer" style="font-size:18px">0:00</div>
-              <button class="record-btn recording-active" style="padding:6px 18px;font-size:13px" onclick="stopSlotRecording()">⏹ Dừng thu âm</button>
-            </div>
-          </div>
-          <div id="speaking-slot-list"></div>
-          <button class="btn btn-outline btn-sm" style="margin-top:8px" onclick="addSpeakingSlot()">+ Thêm phần</button>
-          <div id="audio-submit-status" class="audio-submit-status hidden" style="margin-top:12px"></div>
-        </div>
-      </div>`;
-    postRender = () => { _renderSpeakingSlots(); };
-  }
-
-  bodyEl.innerHTML = miniToolbar + contentHtml;
-  if (postRender) postRender();
-
-  if (timerSecs !== null) {
-    const m = Math.floor(timerSecs / 60);
-    const s = Math.floor(timerSecs % 60);
-    const el = document.getElementById('csec-countdown');
-    if (el) el.textContent = `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
-  }
-}
-
 
 
 function _confirmCompositeSectionSubmit(label) {

@@ -23,6 +23,21 @@ async function checkRateLimit(kv, key, limit, windowSecs, failClosed = false) {
   }
 }
 
+// Simple KV-backed mutual-exclusion lock (best-effort — KV get+put isn't atomic,
+// but this is enough to stop the common case of a double-click or a second tab
+// firing the same expensive/non-idempotent request while the first is in flight).
+async function acquireLock(kv, key, ttlSecs) {
+  if (!kv) return true; // fail-open if KV is unavailable
+  const existing = await kv.get(key).catch(() => null);
+  if (existing) return false;
+  await kv.put(key, '1', { expirationTtl: ttlSecs }).catch(() => {});
+  return true;
+}
+async function releaseLock(kv, key) {
+  if (!kv) return;
+  await kv.delete(key).catch(() => {});
+}
+
 // ─── Auth helpers ─────────────────────────────────────────────────────────────
 
 // Next 03:00 Vietnam time (UTC+7) = next 20:00 UTC
@@ -1365,13 +1380,9 @@ async function claimNextStudentEmailEvent(sql, { ownerId, delayMs = 2000, leaseM
               WHERE sub.assignment_id = e.assignment_id AND sub.student_id = e.student_id
             )
             AND NOT EXISTS (
-              SELECT 1 FROM assignments a2
-              JOIN question_pool q2 ON q2.id = a2.question_id AND q2.skill = 'composite'
-              WHERE a2.id = e.assignment_id
-                AND (SELECT COUNT(*) FROM composite_question_sections cqs WHERE cqs.composite_id = a2.question_id) > 0
-                AND (SELECT COUNT(DISTINCT css.section_id) FROM composite_section_submissions css
-                       WHERE css.assignment_id = e.assignment_id AND css.student_id = e.student_id)
-                    >= (SELECT COUNT(*) FROM composite_question_sections cqs WHERE cqs.composite_id = a2.question_id)
+              SELECT 1 FROM composite_completion cc
+              WHERE cc.assignment_id = e.assignment_id AND cc.student_id = e.student_id
+                AND cc.total_sections > 0 AND cc.submitted_sections >= cc.total_sections
             )
           )
         )
@@ -1774,12 +1785,10 @@ async function enqueueDeadline1DayEmails(sql) {
         SELECT 1 FROM submissions sub
         WHERE sub.assignment_id = a.id AND sub.student_id = sc.student_id
       )
-      AND NOT (
-        EXISTS (SELECT 1 FROM question_pool q WHERE q.id = a.question_id AND q.skill = 'composite')
-        AND (SELECT COUNT(*) FROM composite_question_sections cqs WHERE cqs.composite_id = a.question_id) > 0
-        AND (SELECT COUNT(DISTINCT css.section_id) FROM composite_section_submissions css
-               WHERE css.assignment_id = a.id AND css.student_id = sc.student_id)
-            >= (SELECT COUNT(*) FROM composite_question_sections cqs WHERE cqs.composite_id = a.question_id)
+      AND NOT EXISTS (
+        SELECT 1 FROM composite_completion cc
+        WHERE cc.assignment_id = a.id AND cc.student_id = sc.student_id
+          AND cc.total_sections > 0 AND cc.submitted_sections >= cc.total_sections
       )
   `;
   const grouped = new Map();
@@ -2158,12 +2167,10 @@ async function createDeadlineReminders(sql) {
         SELECT 1 FROM submissions sub
         WHERE sub.assignment_id = a.id AND sub.student_id = sc.student_id
       )
-      AND NOT (
-        q.skill = 'composite'
-        AND (SELECT COUNT(*) FROM composite_question_sections cqs WHERE cqs.composite_id = a.question_id) > 0
-        AND (SELECT COUNT(DISTINCT css.section_id) FROM composite_section_submissions css
-               WHERE css.assignment_id = a.id AND css.student_id = sc.student_id)
-            >= (SELECT COUNT(*) FROM composite_question_sections cqs WHERE cqs.composite_id = a.question_id)
+      AND NOT EXISTS (
+        SELECT 1 FROM composite_completion cc
+        WHERE cc.assignment_id = a.id AND cc.student_id = sc.student_id
+          AND cc.total_sections > 0 AND cc.submitted_sections >= cc.total_sections
       )
   `;
   if (approaching.length === 0) return;
@@ -2543,22 +2550,25 @@ export default {
             ORDER BY s.full_name ASC
             LIMIT 1000
           `,
-          // Per-student composite submissions: one row per (assignment, student) with avg score of scored sections
+          // Per-student composite submissions: one row per (assignment, student) with avg score
+          // of scored sections. `section_count`/`total_sections` let the fold-in below only
+          // count a composite as "submitted" once every section is in (N/N), matching the
+          // reminder/notification logic instead of "any section submitted".
           sql`
             SELECT
-              css.assignment_id,
-              css.student_id,
-              MAX(css.submitted_at) AS submitted_at,
+              cc.assignment_id,
+              cc.student_id,
+              cc.submitted_at,
               a.deadline, a.is_active,
-              COUNT(css.id)::int AS section_count,
-              COUNT(css.id) FILTER (WHERE css.score IS NOT NULL)::int AS scored_count,
-              AVG(css.score) FILTER (WHERE css.score IS NOT NULL)::float AS avg_score,
+              cc.submitted_sections AS section_count,
+              cc.total_sections,
+              cc.scored_count,
+              cc.avg_score,
               s.full_name AS student_name
-            FROM composite_section_submissions css
-            JOIN assignments a ON a.id = css.assignment_id
-            JOIN students s ON s.id = css.student_id
+            FROM composite_completion cc
+            JOIN assignments a ON a.id = cc.assignment_id
+            JOIN students s ON s.id = cc.student_id
             WHERE a.class_id = ${classId}
-            GROUP BY css.assignment_id, css.student_id, a.deadline, a.is_active, s.full_name
             LIMIT 5000
           `,
         ]);
@@ -2653,8 +2663,11 @@ export default {
             is_overtime: sub.is_overtime ?? false,
           });
         }
-        // Add composite submissions to per-student stats (skill breakdown intentionally excluded)
+        // Add composite submissions to per-student stats (skill breakdown intentionally excluded).
+        // Only counted as "submitted" once every section is in (N/N) — matches the reminder/
+        // notification logic instead of the old "any section submitted" semantics.
         for (const csub of compositeSubmissions) {
+          if (!(csub.total_sections > 0 && csub.section_count >= csub.total_sections)) continue;
           const st = studentMap[csub.student_id];
           if (!st) continue;
           st.submitted++;
@@ -2710,8 +2723,9 @@ export default {
             else a.late++;
           }
         }
-        // Composite: count one submission per student (regardless of section count)
+        // Composite: count one submission per student, only once every section is in (N/N)
         for (const csub of compositeSubmissions) {
+          if (!(csub.total_sections > 0 && csub.section_count >= csub.total_sections)) continue;
           const a = assignMap[csub.assignment_id];
           if (!a) continue;
           a.submitted++;
@@ -3361,6 +3375,25 @@ export default {
               const imgKey = extractR2Key(imgUrl, env.R2_PUBLIC_URL);
               if (imgKey) await r2RefIncrement(sql, imgKey).catch(e => console.error('R2 ref track failed:', e));
             }
+            // Track composite section assets too — without this, sections created here
+            // are never ref-tracked, so a later delete/update can't safely clean them up
+            // (r2SafeDelete skips deletion when no ref row exists, so this is a storage
+            // leak rather than a wrongful delete, but it should still be tracked properly).
+            for (const s of sectionQueries) {
+              const secUrls = JSON.parse(s.content_urls || '[]');
+              for (const item of secUrls) {
+                const k = item?.key || extractR2Key(item?.url, env.R2_PUBLIC_URL);
+                if (k) await r2RefIncrement(sql, k).catch(e => console.error('R2 ref track failed:', e));
+              }
+              if (!secUrls.length) {
+                const audioKey = extractR2Key(s.content_url, env.R2_PUBLIC_URL);
+                if (audioKey) await r2RefIncrement(sql, audioKey).catch(e => console.error('R2 ref track failed:', e));
+              }
+              for (const imgUrl of extractContentBlockImageUrls(JSON.parse(s.content_blocks || '[]'))) {
+                const imgKey = extractR2Key(imgUrl, env.R2_PUBLIC_URL);
+                if (imgKey) await r2RefIncrement(sql, imgKey).catch(e => console.error('R2 ref track failed:', e));
+              }
+            }
 
             return json(row, 201);
           } catch (dbErr) {
@@ -3427,6 +3460,21 @@ export default {
                 ${sec.time_limit_minutes ?? null}, ${sec.question_offset ?? 0}, ${sec.display_order ?? 0}
               )
             `;
+            // The duplicated section now also references the same R2 objects as the
+            // source section — bump ref-count so deleting either copy later doesn't
+            // delete a file the other copy still needs.
+            for (const item of (sec.content_urls || [])) {
+              const k = item?.key || extractR2Key(item?.url, env.R2_PUBLIC_URL);
+              if (k) await r2RefIncrement(sql, k).catch(e => console.error('R2 ref track failed:', e));
+            }
+            if (!(sec.content_urls?.length)) {
+              const audioKey = extractR2Key(sec.content_url, env.R2_PUBLIC_URL);
+              if (audioKey) await r2RefIncrement(sql, audioKey).catch(e => console.error('R2 ref track failed:', e));
+            }
+            for (const imgUrl of extractContentBlockImageUrls(sec.content_blocks || [])) {
+              const imgKey = extractR2Key(imgUrl, env.R2_PUBLIC_URL);
+              if (imgKey) await r2RefIncrement(sql, imgKey).catch(e => console.error('R2 ref track failed:', e));
+            }
           }
         }
         return json(row, 201);
@@ -3518,6 +3566,14 @@ export default {
                   LIMIT 1`;
             if (removedCheck.length > 0) return err('Không thể xoá section đã có bài nộp của học sinh', 409);
 
+            // Snapshot existing section assets so we can ref-count them correctly after
+            // the transaction (bump refs for newly-added assets, safe-delete refs for
+            // assets that were removed/replaced/orphaned by a section deletion).
+            const existingSectionAssets = await sql`
+              SELECT id, content_url, content_urls, content_blocks
+              FROM composite_question_sections WHERE composite_id = ${p.id}
+            `;
+
             // Build section mutation queries
             const sectionTxQueries = [];
             if (incomingIds.length > 0) {
@@ -3573,6 +3629,43 @@ export default {
             // Run parent UPDATE + all section mutations atomically
             const txResults = await sql.transaction(() => [parentUpdate, ...sectionTxQueries]);
             row = txResults[0][0];
+
+            // R2 ref cleanup for section assets — runs after transaction (idempotent).
+            // Mirrors the parent-level image/audio cleanup below, but per-section since
+            // each section carries its own content_url/content_urls/content_blocks.
+            const secKeyOf = (item) => item?.key || extractR2Key(item?.url, env.R2_PUBLIC_URL);
+            const secAudioKeys = (sec) => {
+              const urls = Array.isArray(sec.content_urls) ? sec.content_urls : [];
+              return (urls.length ? urls.map(secKeyOf) : [extractR2Key(sec.content_url, env.R2_PUBLIC_URL)]).filter(Boolean);
+            };
+            const secImageKeys = (sec) => extractContentBlockImageUrls(sec.content_blocks || [])
+              .map(url => extractR2Key(url, env.R2_PUBLIC_URL)).filter(Boolean);
+
+            for (const oldSec of existingSectionAssets) {
+              const incoming = incomingSections.find(s => s._id === oldSec.id);
+              const oldKeys = new Set([...secAudioKeys(oldSec), ...secImageKeys(oldSec)]);
+              if (!incoming) {
+                // Section was deleted — release every asset it held.
+                for (const key of oldKeys) await r2SafeDelete(env, sql, key).catch(e => console.error('R2 section cleanup failed:', e));
+                continue;
+              }
+              // Section was kept/updated — diff old vs new asset keys.
+              const newKeys = new Set([
+                ...secAudioKeys({ content_url: incoming.content_url ?? null, content_urls: incoming.content_urls ?? [] }),
+                ...secImageKeys({ content_blocks: normalizeContentBlocks(incoming.content_blocks || []) }),
+              ]);
+              for (const key of newKeys) if (!oldKeys.has(key)) await r2RefIncrement(sql, key).catch(e => console.error('R2 section ref increment failed:', e));
+              for (const key of oldKeys) if (!newKeys.has(key)) await r2SafeDelete(env, sql, key).catch(e => console.error('R2 section cleanup failed:', e));
+            }
+            // Brand-new sections (no _id) — ref-track their assets for the first time.
+            for (const sec of incomingSections) {
+              if (sec._id) continue;
+              const newKeys = new Set([
+                ...secAudioKeys({ content_url: sec.content_url ?? null, content_urls: sec.content_urls ?? [] }),
+                ...secImageKeys({ content_blocks: normalizeContentBlocks(sec.content_blocks || []) }),
+              ]);
+              for (const key of newKeys) await r2RefIncrement(sql, key).catch(e => console.error('R2 section ref increment failed:', e));
+            }
           } else {
             [row] = await parentUpdate;
           }
@@ -3613,7 +3706,7 @@ export default {
         }
         if (method === 'DELETE') {
           const [question] = await sql`
-            SELECT id, content_url, content_urls, content_blocks FROM question_pool WHERE id = ${p.id}
+            SELECT id, skill, content_url, content_urls, content_blocks FROM question_pool WHERE id = ${p.id}
           `;
           if (!question) return err('Không tìm thấy đề', 404);
 
@@ -3622,6 +3715,12 @@ export default {
           `;
           if (used.length > 0)
             return err('Đề đang được dùng trong bài tập, không thể xoá', 409);
+
+          // Snapshot composite section assets before the CASCADE delete removes the
+          // section rows — otherwise their R2 files are orphaned (never ref-cleaned).
+          const sectionsToClean = question.skill === 'composite'
+            ? await sql`SELECT content_url, content_urls, content_blocks FROM composite_question_sections WHERE composite_id = ${p.id}`
+            : [];
 
           await sql`DELETE FROM question_pool WHERE id = ${p.id}`;
 
@@ -3637,6 +3736,15 @@ export default {
           for (const url of extractContentBlockImageUrls(question.content_blocks)) {
             const key = extractR2Key(url, env.R2_PUBLIC_URL);
             if (key) await r2SafeDelete(env, sql, key).catch(e => console.error('R2 image cleanup failed:', e));
+          }
+          for (const sec of sectionsToClean) {
+            const urls = Array.isArray(sec.content_urls) ? sec.content_urls : [];
+            const audioKeys = (urls.length ? urls.map(item => item?.key || extractR2Key(item?.url, env.R2_PUBLIC_URL)) : [extractR2Key(sec.content_url, env.R2_PUBLIC_URL)]).filter(Boolean);
+            for (const key of audioKeys) await r2SafeDelete(env, sql, key).catch(e => console.error('R2 section audio cleanup failed:', e));
+            for (const url of extractContentBlockImageUrls(sec.content_blocks)) {
+              const key = extractR2Key(url, env.R2_PUBLIC_URL);
+              if (key) await r2SafeDelete(env, sql, key).catch(e => console.error('R2 section image cleanup failed:', e));
+            }
           }
 
           return json({ ok: true });
@@ -4138,83 +4246,94 @@ export default {
         if (await checkRateLimit(env.KV, `aifeedback:${ip}`, 60, 60))
           return err('Quá nhiều yêu cầu — thử lại sau', 429);
 
-        const [sub] = await sql`
-          SELECT sub.writing_content, sub.speaking_script, q.skill, q.content_text
-          FROM submissions sub
-          JOIN assignments a ON a.id = sub.assignment_id
-          JOIN question_pool q ON q.id = a.question_id
-          WHERE sub.id = ${p.id}
-        `;
-        if (!sub) return err('Không tìm thấy bài nộp', 404);
-        if (sub.skill !== 'writing' && sub.skill !== 'speaking')
-          return err('AI Feedback chỉ hỗ trợ Writing và Speaking', 400);
+        // Hold a lock for the whole request so a double-click or a second tab can't
+        // fire a second (paid) OpenAI call for the same submission while the first
+        // is still in flight. Released in `finally` whether it succeeds or fails.
+        const lockKey = `aifeedback-lock:${p.id}`;
+        if (!await acquireLock(env.KV, lockKey, 120))
+          return err('Đang chấm AI cho bài này rồi, vui lòng đợi kết quả', 409);
 
-        const studentText = sub.skill === 'writing' ? sub.writing_content : sub.speaking_script;
-        if (!studentText?.trim()) return err('Bài làm trống, không thể phân tích', 400);
-        if (isSttFailedScript(studentText)) return err('Không có transcript (lỗi STT) — không thể chấm AI cho lần nộp này, vui lòng nghe audio trực tiếp', 400);
-
-        const prompt = sub.skill === 'writing'
-          ? buildWritingPrompt(sub.content_text, studentText)
-          : buildSpeakingPrompt(sub.content_text, studentText);
-
-        const responsesUrl = getOpenAIEndpoint(env, '/v1/responses', 'responses');
-        const aiRes = await fetch(responsesUrl, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${getOpenAIAuthToken(env, responsesUrl, 'responses')}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            model: 'gpt-5-mini',
-            text: {
-              format: {
-                type: 'json_schema',
-                name: sub.skill === 'speaking' ? 'ielts_speaking_feedback' : 'ielts_writing_feedback',
-                strict: true,
-                schema: sub.skill === 'speaking' ? SPEAKING_AI_SCHEMA : WRITING_AI_SCHEMA,
-              },
-            },
-            input: [
-              { role: 'developer', content: sub.skill === 'speaking' ? SPEAKING_AI_SYSTEM_PROMPT : WRITING_AI_SYSTEM_PROMPT },
-              { role: 'user',      content: prompt },
-            ],
-          }),
-        });
-
-        if (!aiRes.ok) {
-          const text = await aiRes.text();
-          console.error('OpenAI error:', JSON.stringify({
-            endpoint: responsesUrl,
-            colo: request.cf?.colo || null,
-            error: parseOpenAIError(text),
-            raw: text,
-          }));
-          if (isUnsupportedRegionOpenAIError(text)) {
-            return err('Dịch vụ AI hiện đang bị chặn theo vùng từ hạ tầng hiện tại. Nếu app đang chạy qua Cloudflare Worker, hãy route OpenAI qua một server/proxy khác rồi thử lại.', 502);
-          }
-          return err('Lỗi khi gọi AI, thử lại sau', 502);
-        }
-
-        const aiData  = await aiRes.json();
-        const rawText = extractOutputText(aiData);
-        let feedback;
         try {
-          const jsonMatch = rawText.match(/\{[\s\S]*\}/);
-          feedback = JSON.parse(jsonMatch ? jsonMatch[0] : rawText);
-        } catch {
-          console.error('AI response parse error:', rawText);
-          return err('AI trả về định dạng không hợp lệ', 502);
+          const [sub] = await sql`
+            SELECT sub.writing_content, sub.speaking_script, q.skill, q.content_text
+            FROM submissions sub
+            JOIN assignments a ON a.id = sub.assignment_id
+            JOIN question_pool q ON q.id = a.question_id
+            WHERE sub.id = ${p.id}
+          `;
+          if (!sub) return err('Không tìm thấy bài nộp', 404);
+          if (sub.skill !== 'writing' && sub.skill !== 'speaking')
+            return err('AI Feedback chỉ hỗ trợ Writing và Speaking', 400);
+
+          const studentText = sub.skill === 'writing' ? sub.writing_content : sub.speaking_script;
+          if (!studentText?.trim()) return err('Bài làm trống, không thể phân tích', 400);
+          if (isSttFailedScript(studentText)) return err('Không có transcript (lỗi STT) — không thể chấm AI cho lần nộp này, vui lòng nghe audio trực tiếp', 400);
+
+          const prompt = sub.skill === 'writing'
+            ? buildWritingPrompt(sub.content_text, studentText)
+            : buildSpeakingPrompt(sub.content_text, studentText);
+
+          const responsesUrl = getOpenAIEndpoint(env, '/v1/responses', 'responses');
+          const aiRes = await fetch(responsesUrl, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${getOpenAIAuthToken(env, responsesUrl, 'responses')}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              model: 'gpt-5-mini',
+              text: {
+                format: {
+                  type: 'json_schema',
+                  name: sub.skill === 'speaking' ? 'ielts_speaking_feedback' : 'ielts_writing_feedback',
+                  strict: true,
+                  schema: sub.skill === 'speaking' ? SPEAKING_AI_SCHEMA : WRITING_AI_SCHEMA,
+                },
+              },
+              input: [
+                { role: 'developer', content: sub.skill === 'speaking' ? SPEAKING_AI_SYSTEM_PROMPT : WRITING_AI_SYSTEM_PROMPT },
+                { role: 'user',      content: prompt },
+              ],
+            }),
+          });
+
+          if (!aiRes.ok) {
+            const text = await aiRes.text();
+            console.error('OpenAI error:', JSON.stringify({
+              endpoint: responsesUrl,
+              colo: request.cf?.colo || null,
+              error: parseOpenAIError(text),
+              raw: text,
+            }));
+            if (isUnsupportedRegionOpenAIError(text)) {
+              return err('Dịch vụ AI hiện đang bị chặn theo vùng từ hạ tầng hiện tại. Nếu app đang chạy qua Cloudflare Worker, hãy route OpenAI qua một server/proxy khác rồi thử lại.', 502);
+            }
+            return err('Lỗi khi gọi AI, thử lại sau', 502);
+          }
+
+          const aiData  = await aiRes.json();
+          const rawText = extractOutputText(aiData);
+          let feedback;
+          try {
+            const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+            feedback = JSON.parse(jsonMatch ? jsonMatch[0] : rawText);
+          } catch {
+            console.error('AI response parse error:', rawText);
+            return err('AI trả về định dạng không hợp lệ', 502);
+          }
+
+          const aiFeedback = normalizeAiFeedbackPayload(feedback, sub.skill);
+
+          const [updated] = await sql`
+            UPDATE submissions
+            SET ai_feedback = ${JSON.stringify(aiFeedback)}::jsonb
+            WHERE id = ${p.id}
+            RETURNING id, ai_feedback
+          `;
+          return json(updated);
+        } finally {
+          await releaseLock(env.KV, lockKey);
         }
-
-        const aiFeedback = normalizeAiFeedbackPayload(feedback, sub.skill);
-
-        const [updated] = await sql`
-          UPDATE submissions
-          SET ai_feedback = ${JSON.stringify(aiFeedback)}::jsonb
-          WHERE id = ${p.id}
-          RETURNING id, ai_feedback
-        `;
-        return json(updated);
       }
 
       if ((p = matchPath('/submissions/:id', path))) {
@@ -5524,12 +5643,10 @@ export default {
                   SELECT 1 FROM submissions sub
                   WHERE sub.assignment_id = a.id AND sub.student_id = ${studentId}::uuid
                 )
-                AND NOT (
-                  EXISTS (SELECT 1 FROM question_pool q WHERE q.id = a.question_id AND q.skill = 'composite')
-                  AND (SELECT COUNT(*) FROM composite_question_sections cqs WHERE cqs.composite_id = a.question_id) > 0
-                  AND (SELECT COUNT(DISTINCT css.section_id) FROM composite_section_submissions css
-                         WHERE css.assignment_id = a.id AND css.student_id = ${studentId}::uuid)
-                      >= (SELECT COUNT(*) FROM composite_question_sections cqs WHERE cqs.composite_id = a.question_id)
+                AND NOT EXISTS (
+                  SELECT 1 FROM composite_completion cc
+                  WHERE cc.assignment_id = a.id AND cc.student_id = ${studentId}::uuid
+                    AND cc.total_sections > 0 AND cc.submitted_sections >= cc.total_sections
                 )
               )
             )
@@ -5565,12 +5682,10 @@ export default {
                       SELECT 1 FROM submissions sub
                       WHERE sub.assignment_id = a.id AND sub.student_id = ${studentId}::uuid
                     )
-                    AND NOT (
-                      EXISTS (SELECT 1 FROM question_pool q WHERE q.id = a.question_id AND q.skill = 'composite')
-                      AND (SELECT COUNT(*) FROM composite_question_sections cqs WHERE cqs.composite_id = a.question_id) > 0
-                      AND (SELECT COUNT(DISTINCT css.section_id) FROM composite_section_submissions css
-                             WHERE css.assignment_id = a.id AND css.student_id = ${studentId}::uuid)
-                          >= (SELECT COUNT(*) FROM composite_question_sections cqs WHERE cqs.composite_id = a.question_id)
+                    AND NOT EXISTS (
+                      SELECT 1 FROM composite_completion cc
+                      WHERE cc.assignment_id = a.id AND cc.student_id = ${studentId}::uuid
+                        AND cc.total_sections > 0 AND cc.submitted_sections >= cc.total_sections
                     )
                   )
                 )
@@ -5829,11 +5944,11 @@ export default {
           // If every section is now submitted, the composite is complete — mark its
           // assignment reminders as read (mirrors the non-composite submit path).
           const [completion] = await sql`
-            SELECT (
-              (SELECT COUNT(DISTINCT css.section_id) FROM composite_section_submissions css
-                 WHERE css.assignment_id = ${assignmentId}::uuid AND css.student_id = ${studentId}::uuid)
-              >= (SELECT COUNT(*) FROM composite_question_sections cqs
-                    WHERE cqs.composite_id = (SELECT question_id FROM assignments WHERE id = ${assignmentId}::uuid))
+            SELECT COALESCE(
+              (SELECT cc.total_sections > 0 AND cc.submitted_sections >= cc.total_sections
+                 FROM composite_completion cc
+                 WHERE cc.assignment_id = ${assignmentId}::uuid AND cc.student_id = ${studentId}::uuid),
+              false
             ) AS done
           `;
           if (completion?.done) {
@@ -5985,6 +6100,7 @@ export default {
             css.teacher_feedback,
             a.title AS assignment_title,
             a.class_id,
+            a.scoring_scale,
             c.class_name,
             cqs.label AS section_label,
             cqs.skill,

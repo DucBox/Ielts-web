@@ -2570,7 +2570,7 @@ export default {
         if (method !== 'GET') return err('Method not allowed', 405);
 
         const classId = p.id;
-        const [submissions, allAssignments, allStudents, compositeSubmissions] = await Promise.all([
+        const [submissions, allAssignments, allStudents, compositeSubmissions, compositeSectionRows] = await Promise.all([
           sql`
             SELECT
               sub.id, sub.student_id, sub.assignment_id,
@@ -2630,7 +2630,69 @@ export default {
             WHERE a.class_id = ${classId}
             LIMIT 5000
           `,
+          // Per-SECTION rows for every composite assignment in this class — one row per
+          // (assignment, section) if nobody submitted it, or per (assignment, section,
+          // submitting student) otherwise (LEFT JOIN). Used to decompose a composite into
+          // independent per-skill/per-scale "virtual assignments" for stats purposes: a
+          // composite's Reading/Listening sections should count toward the same
+          // IELTS/Practice bucket as any other Reading/Listening assignment (matching
+          // whatever scoring_scale the teacher picked when assigning the composite —
+          // R and L always share that one value, there's no per-section scale in this
+          // schema), and Writing/Speaking sections always count as IELTS band regardless
+          // (AI grades them on 0-9 no matter what scoring_scale the composite carries).
+          // This does NOT change how anything is actually graded — only how it's grouped
+          // for the class stats view.
+          sql`
+            SELECT
+              a.id AS assignment_id, a.title AS assignment_title,
+              a.deadline, a.is_active, a.mode,
+              a.scoring_scale AS assignment_scoring_scale,
+              cqs.id AS section_id, cqs.label AS section_label, cqs.skill AS section_skill,
+              cqs.time_limit_minutes AS section_time_limit_minutes,
+              css.student_id,
+              css.score::float AS overall_score,
+              css.submitted_at,
+              css.is_overtime
+            FROM assignments a
+            JOIN question_pool q ON q.id = a.question_id AND q.skill = 'composite'
+            JOIN composite_question_sections cqs ON cqs.composite_id = q.id
+            LEFT JOIN composite_section_submissions css
+              ON css.section_id = cqs.id AND css.assignment_id = a.id
+            WHERE a.class_id = ${classId}
+            ORDER BY cqs.display_order
+            LIMIT 5000
+          `,
         ]);
+
+        // Writing/Speaking sections are always AI-graded on the IELTS band regardless of
+        // the composite's own scoring_scale; Reading/Listening sections inherit whichever
+        // scale the teacher picked when assigning the composite (both share that one
+        // value — there's no independent per-section scale in this schema, see the
+        // compositeSectionRows query above for why).
+        const sectionEffectiveScale = (sectionSkill, assignmentScale) =>
+          (sectionSkill === 'writing' || sectionSkill === 'speaking') ? 'ielts' : (assignmentScale || '10');
+
+        // One definition per distinct section (regardless of how many/few students
+        // submitted it) — used to build a "virtual assignment" per section below, so a
+        // composite's Reading section counts toward stats exactly like a standalone
+        // Reading assignment on the same scale, independent of its Writing/Speaking
+        // siblings. `virtual_id` (assignment_id:section_id) can't collide with a real
+        // assignment UUID, so it's safe to mix into the same id space as real assignments.
+        const compositeSectionDefs = new Map();
+        for (const row of compositeSectionRows) {
+          if (compositeSectionDefs.has(row.section_id)) continue;
+          compositeSectionDefs.set(row.section_id, {
+            virtual_id: `${row.assignment_id}:${row.section_id}`,
+            assignment_id: row.assignment_id,
+            title: `${row.assignment_title} · ${row.section_label}`,
+            skill: row.section_skill,
+            scoring_scale: sectionEffectiveScale(row.section_skill, row.assignment_scoring_scale),
+            mode: row.mode,
+            time_limit_minutes: row.section_time_limit_minutes ?? null,
+            deadline: row.deadline,
+            is_active: row.is_active,
+          });
+        }
 
         const totalStudents = allStudents.length;
         const totalAssignments = allAssignments.length;
@@ -2749,6 +2811,32 @@ export default {
             is_overtime: false,
           });
         }
+        // Decompose composite into per-section entries too — one per section a student
+        // actually submitted. Only added to `subs` (the array the stats UI recomputes
+        // everything from), deliberately NOT folded into st.scores/st.submitted/st.closedTotal
+        // above — those already carry the whole-composite fold-in, and the frontend
+        // filters `subs` by scale-specific virtual assignment ids (never both the whole
+        // composite AND its decomposed sections in the same filtered view), so adding
+        // section rows here as well would double-count in any field that isn't
+        // recomputed client-side.
+        for (const row of compositeSectionRows) {
+          if (!row.student_id) continue; // section exists but nobody has submitted it
+          const st = studentMap[row.student_id];
+          if (!st) continue;
+          const def = compositeSectionDefs.get(row.section_id);
+          const score = row.overall_score !== null ? Number(row.overall_score) : null;
+          st.subs.push({
+            assignment_id: def.virtual_id,
+            assignment_title: def.title,
+            skill: row.section_skill,
+            overall_score: score,
+            submitted_at: row.submitted_at,
+            is_active: row.is_active,
+            deadline: row.deadline,
+            on_time: row.deadline ? new Date(row.submitted_at) <= new Date(row.deadline) : null,
+            is_overtime: row.is_overtime ?? false,
+          });
+        }
         const perStudent = Object.values(studentMap).map(st => ({
           id: st.id, name: st.name,
           submitted: st.submitted, total: st.total,
@@ -2794,17 +2882,54 @@ export default {
             else a.late++;
           }
         }
+        // Fold compositeSectionRows into per-section virtual-assignment aggregates —
+        // kept entirely separate from assignMap (which stays whole-composite-only,
+        // N/N-based), so a composite's Reading section becomes its own independent row
+        // in the "IELTS Test"/"Practice Test" views, regardless of its Writing/Speaking
+        // siblings' state.
+        const sectionAssignMap = new Map();
+        for (const def of compositeSectionDefs.values()) {
+          sectionAssignMap.set(def.virtual_id, { ...def, submitted: 0, total: totalStudents, scores: [], onTime: 0, late: 0 });
+        }
+        for (const row of compositeSectionRows) {
+          if (!row.student_id) continue;
+          const def = compositeSectionDefs.get(row.section_id);
+          const a = sectionAssignMap.get(def.virtual_id);
+          if (!a) continue;
+          a.submitted++;
+          if (row.overall_score !== null) a.scores.push(Number(row.overall_score));
+          if (!row.is_active && row.deadline) {
+            if (new Date(row.submitted_at) <= new Date(row.deadline)) a.onTime++;
+            else a.late++;
+          }
+        }
+        const perCompositeSectionAssignment = Array.from(sectionAssignMap.values()).map(a => ({
+          id: a.virtual_id, title: a.title, skill: a.skill, mode: a.mode, scoring_scale: a.scoring_scale,
+          time_limit_minutes: a.time_limit_minutes,
+          deadline: a.deadline, is_active: a.is_active,
+          submitted: a.submitted, total: a.total,
+          avg_score: avg(a.scores),
+          on_time: a.onTime, late: a.late,
+          missing: !a.is_active ? Math.max(0, a.total - a.submitted) : null,
+        }));
+
         const perAssignment = allAssignments.map(a => {
           const d = assignMap[a.id];
           return {
-            id: d.id, title: d.title, skill: d.skill, mode: a.mode, scoring_scale: a.scoring_scale ?? '10', time_limit_minutes: a.time_limit_minutes ?? null,
+            id: d.id, title: d.title, skill: d.skill, mode: a.mode,
+            // The composite's own row is exposed under the literal 'composite' scale
+            // bucket (the "Mixed Skills" tab shows only the whole-assignment average
+            // here); its real scoring_scale still drives sectionEffectiveScale() above
+            // for the decomposed per-section rows in perCompositeSectionAssignment.
+            scoring_scale: a.skill === 'composite' ? 'composite' : (a.scoring_scale ?? '10'),
+            time_limit_minutes: a.time_limit_minutes ?? null,
             deadline: d.deadline, is_active: d.is_active,
             submitted: d.submitted, total: d.total,
             avg_score: avg(d.scores),
             on_time: d.onTime, late: d.late,
             missing: !d.is_active ? Math.max(0, d.total - d.submitted) : null,
           };
-        });
+        }).concat(perCompositeSectionAssignment);
 
         return json({
           overview: {

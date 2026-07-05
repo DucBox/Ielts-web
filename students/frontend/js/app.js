@@ -972,6 +972,20 @@ function freezeExamInputs() {
   page.style.pointerEvents = 'none';
 }
 
+// Reverses freezeExamInputs() when an auto-submit attempt fails (e.g. a network blip) —
+// without this, a failed auto-submit left the whole page permanently locked with no way
+// for the student to retry (unlike the composite-section auto-submit path, which only
+// ever disables its own submit button and re-enables it on failure). This doesn't retry
+// anything automatically; it just gives the student back a clickable "Nộp bài" button so
+// they can try again themselves.
+function unfreezeExamInputs() {
+  const page = document.querySelector('.assignment-page') || document.getElementById('app');
+  if (!page) return;
+  page.querySelectorAll('input, textarea, select, button').forEach(el => { el.disabled = false; });
+  page.querySelectorAll('[contenteditable]').forEach(el => { el.contentEditable = 'true'; });
+  page.style.pointerEvents = '';
+}
+
 async function autoSubmitAssignment(ctx) {
   const { assignmentId, skill, qCount } = ctx || {};
   if (!assignmentId) return;
@@ -4265,7 +4279,12 @@ async function submitAnswers(assignmentId, qCount, skill, btn, isAuto = false) {
   } catch (e) {
     if (e.error?.includes('đã nộp')) { navigate(`/result/${assignmentId}`); return; }
     if (isAuto) {
-      toast('⏰ Hết giờ — nộp tự động thất bại. Vui lòng liên hệ giáo viên.', 'error');
+      // Give the page back to the student instead of leaving it permanently frozen —
+      // a failed auto-submit (e.g. a network blip) used to lock every input with no
+      // way to recover; now they can just press "Nộp bài" again.
+      unfreezeExamInputs();
+      btnReset(btn);
+      toast('⏰ Hết giờ — nộp tự động thất bại (có thể do mất mạng). Bấm "Nộp bài" để thử lại.', 'error');
     } else {
       btnReset(btn);
       toast('Lỗi nộp bài: ' + (e.error || e.message), 'error');
@@ -4378,7 +4397,9 @@ async function submitWriting(assignmentId, btn, isAuto = false) {
   } catch (e) {
     if (e.error?.includes('đã nộp')) { navigate(`/result/${assignmentId}`); return; }
     if (isAuto) {
-      toast('⏰ Hết giờ — nộp tự động thất bại. Vui lòng liên hệ giáo viên.', 'error');
+      unfreezeExamInputs();
+      btnReset(btn);
+      toast('⏰ Hết giờ — nộp tự động thất bại (có thể do mất mạng). Bấm "Nộp bài" để thử lại.', 'error');
     } else {
       btnReset(btn);
       toast('Lỗi nộp bài: ' + (e.error || e.message), 'error');
@@ -4863,8 +4884,11 @@ async function submitSpeaking(assignmentId, btn, isAuto = false) {
   } catch (e) {
     setSpeakingSubmitStatus(null);
     btnReset(btn);
+    if (isAuto) unfreezeExamInputs();
     if (e.error?.includes('đã nộp')) { navigate(`/result/${assignmentId}`); return; }
-    toast('Lỗi nộp bài: ' + (e.error || e.message), 'error');
+    toast(isAuto
+      ? '⏰ Hết giờ — nộp tự động thất bại (có thể do mất mạng). Bấm "Nộp bài" để thử lại.'
+      : 'Lỗi nộp bài: ' + (e.error || e.message), 'error');
   }
 }
 

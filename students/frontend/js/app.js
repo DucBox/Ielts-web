@@ -2818,6 +2818,20 @@ async function showProfile() {
 }
 
 
+function homeAssignCard(a, urgent) {
+  const icon = SKILL_ICONS[a.skill] || '📝';
+  const cd = formatCountdown(a.deadline);
+  return `
+    <a href="#/assignment/${a.id}" class="home-assign-card${urgent ? ' urgent' : ''}">
+      <div class="home-assign-icon">${icon}</div>
+      <div class="home-assign-body">
+        <div class="home-assign-title">${escapeHtml(a.title)}</div>
+        <div class="home-assign-meta">${skillBadge(a.skill)} ${cd ? `<span class="countdown-chip">${cd}</span>` : ''} <span class="home-assign-date">📅 ${formatDateTime(a.deadline)}</span></div>
+      </div>
+      <div class="home-assign-arrow">›</div>
+    </a>`;
+}
+
 renderHome = function(assignments) {
   const streak = calculateSubmissionStreak(assignments, window._cachedVocabSessions || []);
   const total = assignments.length;

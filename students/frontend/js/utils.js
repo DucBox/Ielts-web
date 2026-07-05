@@ -5,7 +5,28 @@ function $(sel) { return document.querySelector(sel); }
 function escapeHtml(str) {
   return String(str ?? '')
     .replace(/&/g, '&amp;').replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// For embedding untrusted text as an argument INSIDE an inline event-handler
+// attribute, e.g. onclick="fn('${escapeJsAttr(x)}')". escapeHtml() alone is NOT
+// enough here: the browser HTML-decodes the attribute value BEFORE compiling it
+// as JS, so encoding a quote as &#39; still turns back into a literal ' by the
+// time the JS parser sees it — it does not stop the string from being broken
+// out of. This backslash-escapes the value as a JS single-quoted string literal
+// FIRST (so the decoded JS source contains \' , a real escape sequence, not a
+// bare terminator), then HTML-escapes the result so it also can't break out of
+// the surrounding double-quoted HTML attribute.
+function escapeJsAttr(str) {
+  const jsEscaped = String(str ?? '')
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'")
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '\\r')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
+  return escapeHtml(jsEscaped);
 }
 
 // Marks a speaking_script as a server-side STT-failure placeholder (see worker.js

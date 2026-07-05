@@ -130,6 +130,40 @@ function redactQuestionsData(questionsData) {
   return questionsData.map(({ answers: _a, explanation: _e, ...rest }) => rest);
 }
 
+// Rejects structurally invalid questions_data before it gets persisted. Without this,
+// a bad shape here doesn't fail loudly at write time — it saves fine, then fails later
+// (and far more confusingly) when autoGrade() reads q.answers.some(...) on a row that
+// isn't actually an array, or the grading/practice UI reads q_no on something that
+// isn't a number. Returns an error message string, or null if valid/not provided
+// (questions_data is optional on PATCH — undefined means "leave unchanged").
+function validateQuestionsData(questionsData) {
+  if (questionsData === undefined || questionsData === null) return null;
+  if (!Array.isArray(questionsData)) return 'questions_data phải là một mảng';
+  for (let i = 0; i < questionsData.length; i++) {
+    const q = questionsData[i];
+    if (!q || typeof q !== 'object' || Array.isArray(q)) return `questions_data[${i}] phải là một object`;
+    if (q.q_no !== undefined && !Number.isFinite(Number(q.q_no))) return `questions_data[${i}].q_no phải là số`;
+    if (q.answers !== undefined) {
+      if (!Array.isArray(q.answers)) return `questions_data[${i}].answers phải là một mảng`;
+      if (q.answers.some(a => typeof a !== 'string')) return `questions_data[${i}].answers phải là mảng chuỗi`;
+    }
+  }
+  return null;
+}
+
+// Same idea as validateQuestionsData, for the vocabulary column (also editor-authored
+// JSON saved as-is today). undefined/null means "not provided" — valid, no-op on PATCH.
+function validateVocabulary(vocabulary) {
+  if (vocabulary === undefined || vocabulary === null) return null;
+  if (!Array.isArray(vocabulary)) return 'vocabulary phải là một mảng';
+  for (let i = 0; i < vocabulary.length; i++) {
+    const v = vocabulary[i];
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return `vocabulary[${i}] phải là một object`;
+    if (v.word !== undefined && typeof v.word !== 'string') return `vocabulary[${i}].word phải là chuỗi`;
+  }
+  return null;
+}
+
 function getStudentPasswordValidationError(password) {
   const value = String(password || '');
   if (value.length < 6) return 'Mật khẩu mới phải có ít nhất 6 ký tự';
@@ -1072,6 +1106,7 @@ async function loadStudentAssignmentAccess(sql, assignmentId, studentId) {
       a.mode,
       a.time_limit_minutes,
       a.scoring_scale,
+      a.min_word_count,
       q.skill,
       q.title AS question_title,
       q.content_text,
@@ -2451,11 +2486,23 @@ export default {
             SELECT c.*,
               (SELECT COUNT(*) FROM student_classes sc WHERE sc.class_id = c.id)::int AS student_count,
               (SELECT COUNT(*) FROM assignments a WHERE a.class_id = c.id)::int AS assignment_count,
+              -- Includes composite assignments (counted N/N — every section submitted,
+              -- same definition as reminders/notifications/analytics), UNIONed with
+              -- regular submissions. Previously this only looked at 'submissions', so a
+              -- class doing only composite assignments always showed 0 here even though
+              -- other screens (inbox, class analytics) correctly showed activity.
               (
-                SELECT COUNT(DISTINCT sub.student_id)
-                FROM assignments a
-                JOIN submissions sub ON sub.assignment_id = a.id
-                WHERE a.class_id = c.id
+                SELECT COUNT(DISTINCT student_id) FROM (
+                  SELECT sub.student_id
+                  FROM assignments a
+                  JOIN submissions sub ON sub.assignment_id = a.id
+                  WHERE a.class_id = c.id
+                  UNION
+                  SELECT cc.student_id
+                  FROM assignments a
+                  JOIN composite_completion cc ON cc.assignment_id = a.id
+                  WHERE a.class_id = c.id AND cc.total_sections > 0 AND cc.submitted_sections >= cc.total_sections
+                ) combined_submitters
               )::int AS submitted_student_count,
               (
                 SELECT COUNT(*) FROM assignments a
@@ -2464,15 +2511,27 @@ export default {
                   AND a.deadline BETWEEN NOW() AND NOW() + INTERVAL '7 days'
                   AND a.is_active = true
               )::int AS upcoming_deadline_count,
-              -- B4.9: writing/speaking submissions chưa có overall_score (cần GV chấm)
+              -- B4.9: writing/speaking submissions chưa có overall_score (cần GV chấm).
+              -- Also counts ungraded writing/speaking sections of composite assignments —
+              -- matches /inbox's definition, so this badge and the inbox list agree on
+              -- how many bài are actually waiting to be graded.
               (
-                SELECT COUNT(*) FROM submissions sub
-                JOIN assignments a ON a.id = sub.assignment_id
-                JOIN question_pool q ON q.id = a.question_id
-                WHERE a.class_id = c.id
-                  AND sub.overall_score IS NULL
-                  AND q.skill IN ('writing', 'speaking')
-                  AND sub.rewrite_status IS DISTINCT FROM 'rewritten'
+                (
+                  SELECT COUNT(*) FROM submissions sub
+                  JOIN assignments a ON a.id = sub.assignment_id
+                  JOIN question_pool q ON q.id = a.question_id
+                  WHERE a.class_id = c.id
+                    AND sub.overall_score IS NULL
+                    AND q.skill IN ('writing', 'speaking')
+                    AND sub.rewrite_status IS DISTINCT FROM 'rewritten'
+                ) + (
+                  SELECT COUNT(*) FROM composite_section_submissions css
+                  JOIN assignments a ON a.id = css.assignment_id
+                  JOIN composite_question_sections cqs ON cqs.id = css.section_id
+                  WHERE a.class_id = c.id
+                    AND css.score IS NULL
+                    AND cqs.skill IN ('writing', 'speaking')
+                )
               )::int AS pending_grading_count
             FROM classes c
             ORDER BY c.created_at DESC
@@ -2780,8 +2839,14 @@ export default {
 
           const assignments = await sql`
             SELECT a.*, q.title AS question_title, q.skill,
+              -- N/N (every section submitted) via composite_completion — same "submitted"
+              -- definition used by reminders/notifications and class analytics. Counting
+              -- "any section submitted" here (as before) made this screen disagree with
+              -- those, e.g. showing a student as "submitted" mid-way through a composite
+              -- assignment they hadn't actually finished yet.
               CASE WHEN q.skill = 'composite' THEN
-                (SELECT COUNT(DISTINCT css.student_id) FROM composite_section_submissions css WHERE css.assignment_id = a.id)::int
+                (SELECT COUNT(DISTINCT cc.student_id) FROM composite_completion cc
+                   WHERE cc.assignment_id = a.id AND cc.total_sections > 0 AND cc.submitted_sections >= cc.total_sections)::int
               ELSE
                 (SELECT COUNT(DISTINCT student_id) FROM submissions sub WHERE sub.assignment_id = a.id AND sub.rewrite_status IS DISTINCT FROM 'rewritten')::int
               END AS submission_count,
@@ -2851,63 +2916,72 @@ export default {
           if (!cls) return err('Không tìm thấy lớp', 404);
         }
 
+        // Each student is prepared (username/password) AND inserted (+ linked to the
+        // class) inside its own try/catch, rather than preparing the whole batch first
+        // and running one shared transaction across all inserts — either an extremely
+        // rare username-generation exhaustion (generateUniqueStudentUsername runs out of
+        // fallback slots) or a DB-level collision (e.g. a concurrent request grabbing the
+        // same username) for ONE student no longer aborts/rolls back every other student
+        // in the batch. The insert+link pair for a single student is still atomic (it's
+        // one CTE-based query). The caller gets both `created` and `failed` (with a
+        // reason per row) so the teacher can see exactly who succeeded and retry just
+        // the ones who didn't.
         const reservedUsernames = new Set();
-        const preparedStudents = [];
-        try {
-          const _existingRows = await sql`SELECT username FROM students`;
-          const _existingUsernames = new Set(_existingRows.map(r => r.username));
-          for (const student of students) {
-            const username = await generateUniqueStudentUsername(sql, student.full_name, reservedUsernames, _existingUsernames);
-            const password = generateStudentPassword();
-            const passwordHash = await hashPassword(password);
-            preparedStudents.push({
+        const _existingRows = await sql`SELECT username FROM students`;
+        const _existingUsernames = new Set(_existingRows.map(r => r.username));
+
+        const created = [];
+        const failed = [];
+        for (const student of students) {
+          let username, password, passwordHash;
+          try {
+            username = await generateUniqueStudentUsername(sql, student.full_name, reservedUsernames, _existingUsernames);
+            password = generateStudentPassword();
+            passwordHash = await hashPassword(password);
+          } catch (e) {
+            failed.push({ full_name: student.full_name, error: e.message || 'Không thể tạo username' });
+            continue;
+          }
+          try {
+            const rows = classId
+              ? await sql`
+                  WITH inserted AS (
+                    INSERT INTO students (full_name, username, password_hash)
+                    VALUES (${student.full_name}, ${username}, ${passwordHash})
+                    RETURNING id, full_name, username
+                  ), linked AS (
+                    INSERT INTO student_classes (student_id, class_id)
+                    SELECT id, ${classId} FROM inserted
+                    ON CONFLICT DO NOTHING
+                  )
+                  SELECT id, full_name, username FROM inserted
+                `
+              : await sql`
+                  INSERT INTO students (full_name, username, password_hash)
+                  VALUES (${student.full_name}, ${username}, ${passwordHash})
+                  RETURNING id, full_name, username
+                `;
+            const row = rows[0];
+            if (!row) throw new Error('Không tạo được tài khoản');
+            created.push({
+              id: row.id,
               full_name: student.full_name,
               username,
               password,
-              passwordHash,
+            });
+          } catch (e) {
+            const isDuplicate = e.message?.includes('unique') || e.message?.includes('duplicate');
+            failed.push({
+              full_name: student.full_name,
+              error: isDuplicate ? 'Username vừa bị trùng, vui lòng thử lại' : (e.message || 'Không thể tạo tài khoản'),
             });
           }
-        } catch (e) {
-          return err(e.message || 'Không thể tạo tài khoản học sinh', e.statusCode || 400);
         }
 
-        try {
-          const rows = await sql.transaction(txn =>
-            preparedStudents.map(student => (
-              classId
-                ? txn`
-                    WITH inserted AS (
-                      INSERT INTO students (full_name, username, password_hash)
-                      VALUES (${student.full_name}, ${student.username}, ${student.passwordHash})
-                      RETURNING id, full_name, username
-                    ), linked AS (
-                      INSERT INTO student_classes (student_id, class_id)
-                      SELECT id, ${classId} FROM inserted
-                      ON CONFLICT DO NOTHING
-                    )
-                    SELECT id, full_name, username FROM inserted
-                  `
-                : txn`
-                    INSERT INTO students (full_name, username, password_hash)
-                    VALUES (${student.full_name}, ${student.username}, ${student.passwordHash})
-                    RETURNING id, full_name, username
-                  `
-            ))
-          );
-
-          const created = rows.map((result, index) => ({
-            id: result[0]?.id,
-            full_name: preparedStudents[index].full_name,
-            username: preparedStudents[index].username,
-            password: preparedStudents[index].password,
-          }));
-
-          return json({ created }, 201);
-        } catch (e) {
-          if (e.message?.includes('unique') || e.message?.includes('duplicate'))
-            return err('Username vừa bị trùng, vui lòng thử lại', 409);
-          throw e;
+        if (created.length === 0) {
+          return err(failed[0]?.error || 'Không thể tạo tài khoản học sinh', 409);
         }
+        return json({ created, failed }, 201);
       }
 
       if ((p = matchPath('/students/:id/reset-password', path)) && method === 'POST') {
@@ -3301,6 +3375,17 @@ export default {
             return err('title và skill là bắt buộc');
           }
 
+          let structureErr = validateQuestionsData(questions_data) || validateVocabulary(vocabulary);
+          for (const sec of compositeSections) {
+            if (structureErr || !sec.label || !sec.skill) continue;
+            const secErr = validateQuestionsData(sec.questions_data) || validateVocabulary(sec.vocabulary);
+            if (secErr) structureErr = `Section "${sec.label}": ${secErr}`;
+          }
+          if (structureErr) {
+            if (uploadedR2Key) await env.R2.delete(uploadedR2Key).catch(() => {});
+            return err(structureErr, 400);
+          }
+
           try {
             // Pre-generate UUID so parent + sections can be inserted atomically
             const newQuestionId = crypto.randomUUID();
@@ -3326,6 +3411,7 @@ export default {
                   script: sec.script ?? null,
                   vocabulary: JSON.stringify(secVocabulary),
                   time_limit_minutes: sec.time_limit_minutes ?? null,
+                  min_word_count: sec.min_word_count ?? null,
                   question_offset: qOffset, display_order: i,
                 });
                 if (isObjective) qOffset += secQuestionsData.length;
@@ -3349,13 +3435,13 @@ export default {
                   INSERT INTO composite_question_sections
                     (composite_id, label, skill, questions_data, prompt, content_text,
                      content_blocks, content_url, content_urls, script, vocabulary,
-                     time_limit_minutes, question_offset, display_order)
+                     time_limit_minutes, min_word_count, question_offset, display_order)
                   VALUES (
                     ${s.composite_id}, ${s.label}, ${s.skill},
                     ${s.questions_data}::jsonb, ${s.prompt}, ${s.content_text},
                     ${s.content_blocks}::jsonb, ${s.content_url},
                     ${s.content_urls}::jsonb, ${s.script}, ${s.vocabulary}::jsonb,
-                    ${s.time_limit_minutes}, ${s.question_offset}, ${s.display_order}
+                    ${s.time_limit_minutes}, ${s.min_word_count}, ${s.question_offset}, ${s.display_order}
                   )
                 `),
               ];
@@ -3447,7 +3533,7 @@ export default {
               INSERT INTO composite_question_sections
                 (composite_id, label, skill, questions_data, prompt, content_text,
                  content_blocks, content_url, content_urls, script, vocabulary,
-                 time_limit_minutes, question_offset, display_order)
+                 time_limit_minutes, min_word_count, question_offset, display_order)
               VALUES (
                 ${row.id}, ${sec.label}, ${sec.skill},
                 ${JSON.stringify(sec.questions_data || [])}::jsonb,
@@ -3457,7 +3543,7 @@ export default {
                 ${JSON.stringify(sec.content_urls || [])}::jsonb,
                 ${sec.script ?? null},
                 ${JSON.stringify(sec.vocabulary || [])}::jsonb,
-                ${sec.time_limit_minutes ?? null}, ${sec.question_offset ?? 0}, ${sec.display_order ?? 0}
+                ${sec.time_limit_minutes ?? null}, ${sec.min_word_count ?? null}, ${sec.question_offset ?? 0}, ${sec.display_order ?? 0}
               )
             `;
             // The duplicated section now also references the same R2 objects as the
@@ -3516,6 +3602,10 @@ export default {
           const vocabularyJson = body.vocabulary !== undefined
             ? JSON.stringify(body.vocabulary)
             : null;
+          {
+            const structureErr = validateQuestionsData(body.questions_data) || validateVocabulary(body.vocabulary);
+            if (structureErr) return err(structureErr, 400);
+          }
           const contentBlocksJson = normalizedBlocks !== null
             ? JSON.stringify(normalizedBlocks)
             : null;
@@ -3551,6 +3641,11 @@ export default {
           // cannot leave the parent partially updated.
           if (existing.skill === 'composite' && Array.isArray(body.sections)) {
             const incomingSections = body.sections;
+            for (const sec of incomingSections) {
+              if (!sec.label || !sec.skill) continue;
+              const secErr = validateQuestionsData(sec.questions_data) || validateVocabulary(sec.vocabulary);
+              if (secErr) return err(`Section "${sec.label}": ${secErr}`, 400);
+            }
             const incomingIds = incomingSections.map(s => s._id).filter(Boolean);
             // Guard (read-only): reject before any writes if a section being removed has submissions
             const removedCheck = incomingIds.length > 0
@@ -3602,6 +3697,7 @@ export default {
                     script = ${sec.script ?? null},
                     vocabulary = ${JSON.stringify(secVocabulary)}::jsonb,
                     time_limit_minutes = ${sec.time_limit_minutes ?? null},
+                    min_word_count = ${sec.min_word_count ?? null},
                     question_offset = ${qOffset}, display_order = ${i}
                   WHERE id = ${sec._id} AND composite_id = ${p.id}
                 `);
@@ -3610,7 +3706,7 @@ export default {
                   INSERT INTO composite_question_sections
                     (composite_id, label, skill, questions_data, prompt, content_text,
                      content_blocks, content_url, content_urls, script, vocabulary,
-                     time_limit_minutes, question_offset, display_order)
+                     time_limit_minutes, min_word_count, question_offset, display_order)
                   VALUES (
                     ${p.id}, ${sec.label}, ${sec.skill},
                     ${JSON.stringify(secQuestionsData)}::jsonb,
@@ -3620,7 +3716,7 @@ export default {
                     ${JSON.stringify(sec.content_urls ?? [])}::jsonb,
                     ${sec.script ?? null},
                     ${JSON.stringify(secVocabulary)}::jsonb,
-                    ${sec.time_limit_minutes ?? null}, ${qOffset}, ${i}
+                    ${sec.time_limit_minutes ?? null}, ${sec.min_word_count ?? null}, ${qOffset}, ${i}
                   )
                 `);
               }
@@ -3759,9 +3855,19 @@ export default {
           const classId = url.searchParams.get('class_id');
           if (!classId) return err('class_id là bắt buộc');
           await autoCloseExpired(sql, { classId });
+          // Composite assignments count "submitted" as N/N (every section in) via
+          // composite_completion, same definition used for reminders/notifications and
+          // class-analytics — otherwise this endpoint always showed 0 for composite
+          // (it only looked at the regular `submissions` table, which composite never
+          // writes to), while other screens showed a different, inconsistent number.
           const rows = await sql`
             SELECT a.*, q.title AS question_title, q.skill,
-              (SELECT COUNT(DISTINCT student_id) FROM submissions sub WHERE sub.assignment_id = a.id AND sub.rewrite_status IS DISTINCT FROM 'rewritten')::int AS submission_count
+              CASE WHEN q.skill = 'composite' THEN
+                (SELECT COUNT(DISTINCT cc.student_id) FROM composite_completion cc
+                   WHERE cc.assignment_id = a.id AND cc.total_sections > 0 AND cc.submitted_sections >= cc.total_sections)::int
+              ELSE
+                (SELECT COUNT(DISTINCT student_id) FROM submissions sub WHERE sub.assignment_id = a.id AND sub.rewrite_status IS DISTINCT FROM 'rewritten')::int
+              END AS submission_count
             FROM assignments a
             JOIN question_pool q ON q.id = a.question_id
             WHERE a.class_id = ${classId}
@@ -3775,6 +3881,14 @@ export default {
             return err('class_id, question_id, title là bắt buộc');
           const assignMode = body.mode === 'practice' ? 'practice' : 'exam';
           const timeLimitMinutes = (assignMode === 'exam' && body.time_limit_minutes) ? Number(body.time_limit_minutes) : null;
+          // Teacher-configurable suggested minimum word count (Writing only — see migration 035).
+          // Replaces the old hardcoded 150/250 hint shown to students.
+          let minWordCount = null;
+          if (body.min_word_count !== undefined && body.min_word_count !== null && body.min_word_count !== '') {
+            const n = Number(body.min_word_count);
+            if (!Number.isFinite(n) || n <= 0 || !Number.isInteger(n)) return err('Số từ tối thiểu phải là số nguyên dương', 400);
+            minWordCount = n;
+          }
           const [question] = await sql`SELECT skill, questions_data FROM question_pool WHERE id = ${body.question_id}`;
           // Determine scoring_scale: speaking/writing always ielts; R/L use body value or auto-detect by 40q
           let scoringScale = body.scoring_scale || null;
@@ -3807,8 +3921,8 @@ export default {
           const newAssignmentId = crypto.randomUUID();
           const txResults = await sql.transaction(txn => {
             const assignInsert = txn`
-              INSERT INTO assignments (id, class_id, question_id, title, deadline, is_active, mode, time_limit_minutes, scoring_scale)
-              VALUES (${newAssignmentId}::uuid, ${body.class_id}, ${body.question_id}, ${body.title}, ${body.deadline ?? null}, true, ${assignMode}, ${timeLimitMinutes}, ${scoringScale})
+              INSERT INTO assignments (id, class_id, question_id, title, deadline, is_active, mode, time_limit_minutes, scoring_scale, min_word_count)
+              VALUES (${newAssignmentId}::uuid, ${body.class_id}, ${body.question_id}, ${body.title}, ${body.deadline ?? null}, true, ${assignMode}, ${timeLimitMinutes}, ${scoringScale}, ${minWordCount})
               RETURNING *
             `;
             const notifInsert = studentIds.length > 0
@@ -4173,6 +4287,14 @@ export default {
           if (body.title     !== undefined) { fields.push('title');     vals.push(body.title); }
           if (body.deadline  !== undefined) { fields.push('deadline');  vals.push(body.deadline); }
           if (body.is_active !== undefined) { fields.push('is_active'); vals.push(body.is_active); }
+          if (body.min_word_count !== undefined) {
+            let n = null;
+            if (body.min_word_count !== null && body.min_word_count !== '') {
+              n = Number(body.min_word_count);
+              if (!Number.isFinite(n) || n <= 0 || !Number.isInteger(n)) return err('Số từ tối thiểu phải là số nguyên dương', 400);
+            }
+            fields.push('min_word_count'); vals.push(n);
+          }
           if (fields.length === 0) return err('Không có trường nào cần cập nhật');
 
           const setClauses = fields.map((f, i) => `${f} = $${i + 1}`).join(', ');
@@ -4249,8 +4371,11 @@ export default {
         // Hold a lock for the whole request so a double-click or a second tab can't
         // fire a second (paid) OpenAI call for the same submission while the first
         // is still in flight. Released in `finally` whether it succeeds or fails.
+        // TTL must stay above the fetch timeout below (180s) — otherwise the lock
+        // could expire while a legitimately slow call is still in flight, letting
+        // a retry slip through and double-bill the same submission.
         const lockKey = `aifeedback-lock:${p.id}`;
-        if (!await acquireLock(env.KV, lockKey, 120))
+        if (!await acquireLock(env.KV, lockKey, 200))
           return err('Đang chấm AI cho bài này rồi, vui lòng đợi kết quả', 409);
 
         try {
@@ -4274,28 +4399,53 @@ export default {
             : buildSpeakingPrompt(sub.content_text, studentText);
 
           const responsesUrl = getOpenAIEndpoint(env, '/v1/responses', 'responses');
-          const aiRes = await fetch(responsesUrl, {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${getOpenAIAuthToken(env, responsesUrl, 'responses')}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              model: 'gpt-5-mini',
-              text: {
-                format: {
-                  type: 'json_schema',
-                  name: sub.skill === 'speaking' ? 'ielts_speaking_feedback' : 'ielts_writing_feedback',
-                  strict: true,
-                  schema: sub.skill === 'speaking' ? SPEAKING_AI_SCHEMA : WRITING_AI_SCHEMA,
-                },
+          // Same 180s budget as callAiFeedback() (shared-pool path) — the call goes
+          // through a proxy that can cold-start on top of the model's own reasoning
+          // time, so a shorter timeout was cutting off legitimately slow calls.
+          // Without this, a hung fetch could hold the KV lock open past its TTL
+          // (see acquireLock above), letting a retry double-bill the same submission.
+          const aiAbort = new AbortController();
+          const aiAbortTimer = setTimeout(() => aiAbort.abort(), 180_000);
+          let aiRes;
+          try {
+            aiRes = await fetch(responsesUrl, {
+              method: 'POST',
+              signal: aiAbort.signal,
+              headers: {
+                'Authorization': `Bearer ${getOpenAIAuthToken(env, responsesUrl, 'responses')}`,
+                'Content-Type': 'application/json',
               },
-              input: [
-                { role: 'developer', content: sub.skill === 'speaking' ? SPEAKING_AI_SYSTEM_PROMPT : WRITING_AI_SYSTEM_PROMPT },
-                { role: 'user',      content: prompt },
-              ],
-            }),
-          });
+              body: JSON.stringify({
+                model: 'gpt-5-mini',
+                text: {
+                  format: {
+                    type: 'json_schema',
+                    name: sub.skill === 'speaking' ? 'ielts_speaking_feedback' : 'ielts_writing_feedback',
+                    strict: true,
+                    schema: sub.skill === 'speaking' ? SPEAKING_AI_SCHEMA : WRITING_AI_SCHEMA,
+                  },
+                },
+                input: [
+                  { role: 'developer', content: sub.skill === 'speaking' ? SPEAKING_AI_SYSTEM_PROMPT : WRITING_AI_SYSTEM_PROMPT },
+                  { role: 'user',      content: prompt },
+                ],
+              }),
+            });
+          } catch (fetchErr) {
+            // fetch() throws (rather than resolving to a non-ok status) both on
+            // abort/timeout and on genuine network failure — distinguish them so
+            // the message says what actually happened.
+            const timedOut = fetchErr.name === 'AbortError';
+            console.error('[AI] fetch failed:', JSON.stringify({ skill: sub.skill, endpoint: responsesUrl, timedOut, error: fetchErr.message }));
+            return err(
+              timedOut
+                ? 'Chấm AI quá thời gian chờ (180s) — dịch vụ chấm bài đang phản hồi chậm, vui lòng thử lại.'
+                : `Không thể kết nối dịch vụ chấm AI: ${fetchErr.message}`,
+              504,
+            );
+          } finally {
+            clearTimeout(aiAbortTimer);
+          }
 
           if (!aiRes.ok) {
             const text = await aiRes.text();
@@ -5238,6 +5388,10 @@ export default {
             if (Array.isArray(body.content_urls) && body.content_urls.length) contentUrls = body.content_urls;
           }
           if (!title || !skill) return err('title và skill là bắt buộc', 400);
+          {
+            const structureErr = validateQuestionsData(questions_data) || validateVocabulary(vocabulary);
+            if (structureErr) return err(structureErr, 400);
+          }
           const [row] = await sql`
             INSERT INTO shared_pool (skill, title, content_text, content_blocks, content_url, content_urls, questions_data, vocabulary, tags, script, time_limit_minutes)
             VALUES (
@@ -5305,6 +5459,10 @@ export default {
           if (!existing) return err('Không tìm thấy đề', 404);
           const normalizedBlocks = body.content_blocks !== undefined ? normalizeContentBlocks(body.content_blocks) : null;
           const nextContentText  = normalizedBlocks ? blocksToPlainText(normalizedBlocks) : (body.content_text !== undefined ? (body.content_text ?? null) : null);
+          {
+            const structureErr = validateQuestionsData(body.questions_data) || validateVocabulary(body.vocabulary);
+            if (structureErr) return err(structureErr, 400);
+          }
           const qDataJson        = body.questions_data !== undefined ? JSON.stringify(body.questions_data) : null;
           const vocabJson        = body.vocabulary    !== undefined ? JSON.stringify(body.vocabulary)     : null;
           const blocksJson       = normalizedBlocks   !== null      ? JSON.stringify(normalizedBlocks)    : null;

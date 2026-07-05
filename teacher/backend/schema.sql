@@ -83,7 +83,8 @@ CREATE TABLE IF NOT EXISTS assignments (
   last_auto_closed_at TIMESTAMPTZ,
   mode TEXT NOT NULL DEFAULT 'exam',
   time_limit_minutes INTEGER,
-  scoring_scale VARCHAR(10) NOT NULL DEFAULT '10'
+  scoring_scale VARCHAR(10) NOT NULL DEFAULT '10',
+  min_word_count INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS submissions (
@@ -357,7 +358,8 @@ CREATE TABLE IF NOT EXISTS composite_question_sections (
   time_limit_minutes  INTEGER,
   question_offset     INTEGER     NOT NULL DEFAULT 0,
   display_order       INTEGER     NOT NULL DEFAULT 0,
-  vocabulary          JSONB       NOT NULL DEFAULT '[]'::jsonb
+  vocabulary          JSONB       NOT NULL DEFAULT '[]'::jsonb,
+  min_word_count      INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS composite_section_submissions (

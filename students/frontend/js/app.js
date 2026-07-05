@@ -71,6 +71,35 @@ function countWords(text) {
   return (text || '').trim().split(/\s+/).filter(Boolean).length;
 }
 
+// Word-count line + warning shown in the Writing submit-confirmation modal.
+// `minWordCount` is the teacher-configured suggestion (assignments.min_word_count for
+// regular assignments, composite_question_sections.min_word_count for a composite
+// Writing section) — null falls back to the old generic IELTS Task 1/Task 2 hint for
+// assignments/sections created before this was configurable. Being over the suggestion
+// is only ever a soft warning (never blocks submission) — 1.5x is a rough "significantly
+// over" heuristic, not a hard IELTS rule.
+function buildWordCountConfirmHtml(wc, minWordCount) {
+  if (minWordCount == null) {
+    return `
+      <ul class="submit-confirm-stats">
+        <li>📝 Số từ: <b>${wc}</b>${wc < 150 ? ' <span style="color:var(--danger)">⚠ Dưới mức tối thiểu</span>' : ''}</li>
+      </ul>
+      ${wc < 50 ? `<div style="color:var(--danger);margin-top:4px">Bài quá ngắn — tối thiểu 150 từ (Task 1) hoặc 250 từ (Task 2).</div>` : ''}`;
+  }
+  const tooFew = wc < minWordCount;
+  const tooMany = wc > minWordCount * 1.5;
+  const flag = tooFew
+    ? ' <span style="color:var(--danger)">⚠ Dưới mức tối thiểu</span>'
+    : tooMany
+      ? ' <span style="color:var(--warning)">⚠ Vượt khá nhiều so với gợi ý</span>'
+      : '';
+  return `
+    <ul class="submit-confirm-stats">
+      <li>📝 Số từ: <b>${wc}</b> / gợi ý tối thiểu ${minWordCount}${flag}</li>
+    </ul>
+    ${tooFew ? `<div style="color:var(--danger);margin-top:4px">Bài hơi ngắn — tối thiểu gợi ý là ${minWordCount} từ.</div>` : ''}`;
+}
+
 function bandColor(score) {
   const s = parseFloat(score);
   if (s >= 7) return '#16a34a';
@@ -1468,7 +1497,7 @@ function renderRouteError(title, error, retryHash = window.location.hash.slice(1
       <div class="empty-desc">${escapeHtml(message)}</div>
       <div style="display:flex;justify-content:center;gap:10px;flex-wrap:wrap">
         <button class="btn btn-primary" onclick="router()">Thử lại</button>
-        <button class="btn btn-outline" onclick="navigate('${escapeHtml(retryHash || '/home')}')">Về trang trước</button>
+        <button class="btn btn-outline" onclick="navigate('${escapeJsAttr(retryHash || '/home')}')">Về trang trước</button>
       </div>
     </div>`;
 }
@@ -2089,7 +2118,7 @@ function showClassSelect() {
   }
 
   const classCards = classes.map(cls => `
-    <button class="class-card" onclick="chooseClass('${cls.id}', '${escapeHtml(cls.class_name).replace(/'/g, "\\'")}')">
+    <button class="class-card" onclick="chooseClass('${cls.id}', '${escapeJsAttr(cls.class_name)}')">
       <div class="class-card-icon">🏫</div>
       <div class="class-card-name">${escapeHtml(cls.class_name)}</div>
       <div class="class-card-arrow">›</div>
@@ -2572,133 +2601,6 @@ async function showHome() {
   }
 }
 
-function renderHome(assignments) {
-  const streak = calculateSubmissionStreak(assignments, window._cachedVocabSessions || []);
-  const total = assignments.length;
-  const submitted = getSubmittedAssignments(assignments).length;
-  const pendingCount = assignments.filter(a => !a.submission_id && a.is_active).length;
-  const overallAvg = calculateOverallAverage(assignments);
-
-  const today = toDateKey(new Date());
-  const dueToday = assignments.filter(a => {
-    if (a.submission_id || !a.is_active || !a.deadline) return false;
-    return toDateKey(a.deadline) === today;
-  });
-
-  // Top 5 pending sorted by deadline asc
-  const upcoming = assignments
-    .filter(a => !a.submission_id && a.is_active)
-    .sort((a, b) => {
-      if (!a.deadline) return 1;
-      if (!b.deadline) return -1;
-      return new Date(a.deadline) - new Date(b.deadline);
-    })
-    .slice(0, 5);
-
-  // Streak day cells (last 7 days)
-  const dayCells = [];
-  const dset = new Set(streak.days);
-  for (let i = 6; i >= 0; i--) {
-    const d = new Date(); d.setDate(d.getDate() - i);
-    const k = toDateKey(d);
-    const dayLabel = d.toLocaleDateString('vi-VN', { weekday: 'short' });
-    dayCells.push(`<div class="home-streak-day ${dset.has(k) ? 'on' : ''}" title="${k}">
-      <div class="streak-dot">${dset.has(k) ? '🔥' : '·'}</div>
-      <div class="streak-day-label">${dayLabel}</div>
-    </div>`);
-  }
-
-  $('#app').innerHTML = `
-    <div class="container home-page">
-      <div class="home-greeting">
-        <div>
-          <div class="home-hi">Xin chào, ${escapeHtml(_student.full_name)} 👋</div>
-          <div class="home-sub">Lớp ${escapeHtml(_selectedClass.class_name)} · ${new Date().toLocaleDateString('vi-VN', { weekday: 'long', day: 'numeric', month: 'long' })}</div>
-        </div>
-      </div>
-
-      <div class="home-quick-actions home-quick-actions--top">
-        <a href="#/assignments" class="home-quick-btn">📋 Tất cả bài tập</a>
-        <a href="#/history" class="home-quick-btn">📊 Lịch sử</a>
-        <a href="#/calendar" class="home-quick-btn">📅 Lịch học</a>
-        <a href="#/vocab-games" class="home-quick-btn">🃏 Ôn từ vựng</a>
-      </div>
-
-      ${renderTargetSummaryCompact(assignments)}
-
-      <div class="home-stats-row">
-        <a href="#/assignments" class="home-stat-card">
-          <div class="stat-icon">📋</div>
-          <div class="stat-num">${total}</div>
-          <div class="stat-label">Tổng bài</div>
-        </a>
-        <a href="#/assignments" class="home-stat-card">
-          <div class="stat-icon">✅</div>
-          <div class="stat-num">${submitted}</div>
-          <div class="stat-label">Đã nộp</div>
-        </a>
-        <a href="#/assignments" class="home-stat-card">
-          <div class="stat-icon">⏳</div>
-          <div class="stat-num">${pendingCount}</div>
-          <div class="stat-label">Cần làm</div>
-        </a>
-        <a href="#/history" class="home-stat-card">
-          <div class="stat-icon">🎯</div>
-          <div class="stat-num">${overallAvg !== null ? overallAvg.toFixed(2) : '—'}</div>
-          <div class="stat-label">Band TB</div>
-        </a>
-      </div>
-
-      <div class="home-streak-card">
-        <div class="home-streak-head">
-          <div class="streak-fire">${streak.current >= 7 ? '🔥🔥' : '🔥'}</div>
-          <div>
-            <div class="streak-current">Streak ${streak.current} ngày</div>
-            <div class="streak-best">Kỷ lục: ${streak.best} ngày</div>
-          </div>
-        </div>
-        <div class="home-streak-week">${dayCells.join('')}</div>
-      </div>
-
-      <div class="home-section-title">📈 Tiến độ gần đây</div>
-      <div class="chart-section-toolbar chart-section-toolbar--compact">
-        <div class="chart-section-copy">Biểu đồ rút gọn theo điểm trung bình từng ngày đã chấm.</div>
-        ${renderChartRangeButtons('home', _homeChartRange)}
-      </div>
-      <div class="home-chart-grid">
-        ${SKILL_ORDER.map(skill => renderSkillChartCard(assignments, skill, _homeChartRange, 'home')).join('')}
-      </div>
-
-      ${dueToday.length > 0 ? `
-        <div class="home-section-title">⏰ Đến hạn hôm nay (${dueToday.length})</div>
-        <div class="home-due-today">
-          ${dueToday.map(a => homeAssignCard(a, true)).join('')}
-        </div>` : ''}
-
-      <div class="home-section-title">📌 Bài tập sắp tới</div>
-      ${upcoming.length === 0 ? `
-        <div class="empty-state-v2">
-          <div class="empty-illu">🎉</div>
-          <div class="empty-title">Đã làm hết bài rồi!</div>
-          <div class="empty-desc">Quay lại sau khi giáo viên giao thêm.</div>
-        </div>
-      ` : `<div class="home-pending-list">${upcoming.map(a => homeAssignCard(a, false)).join('')}</div>`}
-    </div>`;
-}
-
-function homeAssignCard(a, urgent) {
-  const icon = SKILL_ICONS[a.skill] || '📝';
-  const cd = formatCountdown(a.deadline);
-  return `
-    <a href="#/assignment/${a.id}" class="home-assign-card${urgent ? ' urgent' : ''}">
-      <div class="home-assign-icon">${icon}</div>
-      <div class="home-assign-body">
-        <div class="home-assign-title">${escapeHtml(a.title)}</div>
-        <div class="home-assign-meta">${skillBadge(a.skill)} ${cd ? `<span class="countdown-chip">${cd}</span>` : ''} <span class="home-assign-date">📅 ${formatDateTime(a.deadline)}</span></div>
-      </div>
-      <div class="home-assign-arrow">›</div>
-    </a>`;
-}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // PAGE: HISTORY (B2.3)
@@ -2720,52 +2622,6 @@ async function showHistory() {
   }
 }
 
-function renderHistory(items) {
-  // Apply filters
-  let list = items.slice();
-  if (_historyFilter.skill) list = list.filter(a => a.skill === _historyFilter.skill);
-  if (_historyFilter.minBand > 0) list = list.filter(a => Number(getHistoryItemScore(a) || 0) >= _historyFilter.minBand);
-
-  // Sort by submitted (use created_at as proxy if no submitted_at)
-  list.sort((a, b) => new Date(b.submitted_at || b.created_at) - new Date(a.submitted_at || a.created_at));
-
-  const skillFilters = [['', 'Tất cả'], ...FILTERABLE_ASSIGNMENT_SKILLS.map(skill => [skill, `${SKILL_ICONS[skill]} ${SKILL_LABELS[skill]}`])];
-
-  $('#app').innerHTML = `
-    <div class="container">
-      <div class="page-header">
-        <div>
-          <div class="page-title">📊 Lịch sử bài làm</div>
-          <div class="page-subtitle">Lớp ${escapeHtml(_selectedClass.class_name)}</div>
-        </div>
-      </div>
-
-      <div class="history-filters">
-        <div class="skill-filter-tabs">
-          ${skillFilters.map(([s, l]) => `
-            <button class="skill-filter-tab ${_historyFilter.skill === s ? 'active' : ''}"
-              onclick="setHistoryFilter('skill','${s}')">${l}</button>`).join('')}
-        </div>
-        <div class="history-band-filter">
-          <label>Band tối thiểu:</label>
-          <select onchange="setHistoryFilter('minBand', Number(this.value))">
-            ${[0, 5, 5.5, 6, 6.5, 7, 7.5, 8].map(b =>
-              `<option value="${b}" ${_historyFilter.minBand === b ? 'selected' : ''}>${b === 0 ? 'Không lọc' : b + '+'}</option>`).join('')}
-          </select>
-        </div>
-      </div>
-
-      ${list.length === 0 ? `
-        <div class="empty-state-v2">
-          <div class="empty-illu">📭</div>
-          <div class="empty-title">Chưa có bài đã nộp nào</div>
-          <div class="empty-desc">Các bài bạn đã nộp sẽ hiện ở đây.</div>
-        </div>` : `
-        <div class="history-list">
-          ${list.map(a => historyRow(a)).join('')}
-        </div>`}
-    </div>`;
-}
 
 function historyRow(a) {
   const score = getHistoryItemScore(a);
@@ -2947,200 +2803,6 @@ async function showProfile() {
   }
 }
 
-function renderProfile(assignments) {
-  const streak   = calculateSubmissionStreak(assignments, window._cachedVocabSessions || []);
-  const target   = getTargetBand();
-  const submittedAssignments = getSubmittedAssignments(assignments);
-  const gradedAssignments = assignments.filter(a => a.submission_id && a.overall_score != null);
-  const allScores = gradedAssignments.map(a => Number(a.overall_score)).filter(Boolean);
-  const overallAvg = allScores.length
-    ? (allScores.reduce((s, v) => s + v, 0) / allScores.length).toFixed(2) : '—';
-
-  const SKILLS = ['reading', 'listening', 'writing', 'speaking'];
-  const ieltsGraded = getIeltsGradedAssignments(assignments);
-  const skillStats = SKILLS.map(sk => {
-    const subs = ieltsGraded.filter(a => a.skill === sk)
-      .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
-    const scores = subs.map(a => Number(a.overall_score)).filter(v => v > 0);
-    const avg  = scores.length ? scores.reduce((s, v) => s + v, 0) / scores.length : null;
-    const best = scores.length ? Math.max(...scores) : null;
-    return { sk, count: subs.length, avg, best, timeline: scores };
-  });
-
-  const subDates = new Set(
-    submittedAssignments.map(a => toDateKey(a.submitted_at || a.created_at)).filter(Boolean)
-  );
-  const streakDaySet = new Set(streak.days);
-  const streakDayCells = [];
-  for (let i = 6; i >= 0; i--) {
-    const d = new Date(); d.setDate(d.getDate() - i);
-    const k = toDateKey(d);
-    const dayLabel = d.toLocaleDateString('vi-VN', { weekday: 'short' });
-    streakDayCells.push(`<div class="home-streak-day ${streakDaySet.has(k) ? 'on' : ''}" title="${k}">
-      <div class="streak-dot">${streakDaySet.has(k) ? '🔥' : '·'}</div>
-      <div class="streak-day-label">${dayLabel}</div>
-    </div>`);
-  }
-
-  const myVocabCount = (_myVocabCache || []).length;
-  const bandOptions = [5, 5.5, 6, 6.5, 7, 7.5, 8, 8.5, 9]
-    .map(b => `<option value="${b}" ${target === b ? 'selected' : ''}>${b}</option>`).join('');
-  const initials = (_student.full_name || '?').split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
-  const streakColor = streak.current >= 30 ? '#dc2626' : streak.current >= 7 ? '#f59e0b' : '#6b7280';
-
-  const SKILL_COLOR = { reading: '#0f766e', listening: '#7c3aed', writing: '#d97706', speaking: '#dc2626' };
-  const SKILL_ICON  = { reading: '📖', listening: '🎧', writing: '✍️', speaking: '🎤' };
-  const SKILL_NAME  = { reading: 'Reading', listening: 'Listening', writing: 'Writing', speaking: 'Speaking' };
-  const submittedBySkill = skill => submittedAssignments
-    .filter(a => a.skill === skill)
-    .sort((a, b) => new Date(b.submitted_at || b.created_at) - new Date(a.submitted_at || a.created_at));
-
-  function sparkSvg(scores, color) {
-    if (scores.length < 2) return '';
-    const W = 100, H = 28;
-    const pts = scores.map((s, i) => {
-      const x = (i / (scores.length - 1)) * W;
-      const y = H - (s / 9) * H;
-      return `${x.toFixed(1)},${y.toFixed(1)}`;
-    }).join(' ');
-    const lx = W, ly = H - (scores[scores.length - 1] / 9) * H;
-    return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:28px;display:block">
-      <polyline fill="none" stroke="${color}" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" points="${pts}"/>
-      <circle cx="${lx.toFixed(1)}" cy="${ly.toFixed(1)}" r="3" fill="${color}"/>
-    </svg>`;
-  }
-
-  function skillCard({ sk, count, avg, best, timeline }) {
-    const color = SKILL_COLOR[sk];
-    const pct   = avg !== null ? Math.min(100, Math.round((avg / target) * 100)) : 0;
-    const status = avg === null ? '' : avg >= target ? '✅' : avg >= target - 0.5 ? '🟡' : '🔴';
-    const spark  = sparkSvg(timeline, color);
-    const vsTarget = avg !== null ? (avg >= target
-      ? `<span class="spc-vs ok">+${(avg - target).toFixed(2)} vs target</span>`
-      : `<span class="spc-vs gap">-${(target - avg).toFixed(2)} vs target</span>`) : '';
-    const totalDone = submittedBySkill(sk).length;
-    return `
-      <button class="skill-progress-card spc-${sk}" type="button"
-        onclick="openSkillProgressModal('${sk}')">
-        <div class="spc-head">
-          <span class="spc-icon">${SKILL_ICON[sk]}</span>
-          <span class="spc-name">${SKILL_NAME[sk]}</span>
-          <span>${status}</span>
-        </div>
-        <div class="spc-band-row">
-          <span class="spc-band" style="color:${color}">${avg !== null ? avg.toFixed(2) : '—'}</span>
-          ${vsTarget}
-        </div>
-        <div class="spc-bar-wrap">
-          <div class="spc-bar" style="width:${pct}%;background:${color}"></div>
-        </div>
-        <div class="spc-bar-label">${avg !== null ? avg.toFixed(2) : '—'} / ${target} target</div>
-        ${spark ? `<div class="spc-spark">${spark}</div>` : '<div class="spc-spark spc-spark-empty">Chưa có dữ liệu</div>'}
-        <div class="spc-meta">${count === 0 ? 'Chưa có bài nào được chấm' : `${count} bài đã chấm · Best: ${best}`}</div>
-        <div class="spc-footnote">${totalDone > 0 ? `${totalDone} bài đã làm · Nhấn để xem chi tiết` : 'Chưa có bài đã làm'}</div>
-      </button>`;
-  }
-
-  // Activity grid — 28 days (4 weeks × 7 cols)
-  const DAYS = 28;
-  const firstDay = new Date(); firstDay.setDate(firstDay.getDate() - (DAYS - 1));
-  const pad = (firstDay.getDay() + 6) % 7; // 0=Mon
-  const gridCells = Array(pad).fill('<div class="act-cell act-pad"></div>');
-  for (let i = DAYS - 1; i >= 0; i--) {
-    const d = new Date(); d.setDate(d.getDate() - i);
-    const k = d.toISOString().slice(0, 10);
-    gridCells.push(`<div class="act-cell ${subDates.has(k) ? 'act-done' : 'act-none'}" title="${k}"></div>`);
-  }
-
-  // Milestones
-  const ms = [];
-  skillStats.forEach(({ sk, best }) => {
-    if (best !== null) ms.push(`<div class="ms-card"><div class="ms-icon">${SKILL_ICON[sk]}</div><div class="ms-val">${best}</div><div class="ms-label">Best ${SKILL_NAME[sk]}</div></div>`);
-  });
-  if (submittedAssignments.length > 0) ms.push(`<div class="ms-card"><div class="ms-icon">📝</div><div class="ms-val">${submittedAssignments.length}</div><div class="ms-label">Bài đã nộp</div></div>`);
-  if (streak.best > 1) ms.push(`<div class="ms-card"><div class="ms-icon">🔥</div><div class="ms-val">${streak.best}</div><div class="ms-label">Streak kỷ lục</div></div>`);
-  if (myVocabCount > 0) ms.push(`<div class="ms-card"><div class="ms-icon">📖</div><div class="ms-val">${myVocabCount}</div><div class="ms-label">Từ đã lưu</div></div>`);
-
-  $('#app').innerHTML = `
-    <div class="container profile-page">
-
-      <!-- Hero -->
-      <div class="profile-hero">
-        <div class="profile-avatar" style="background:${SKILL_COLOR.reading}">${initials}</div>
-        <div class="profile-hero-info">
-          <div class="profile-name">
-            <span id="profile-name-text">${escapeHtml(_student.full_name)}</span>
-            <button class="profile-name-edit-btn" onclick="startEditProfileName()" title="Đổi tên" aria-label="Đổi tên">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-            </button>
-          </div>
-          <div class="profile-meta">Lớp ${escapeHtml(_selectedClass.class_name)}</div>
-          <div class="profile-meta-row">
-            <span class="profile-streak" style="color:${streakColor}">🔥 ${streak.current} ngày</span>
-            <span class="profile-dot">·</span>
-            <span>Band TB: <strong>${overallAvg}</strong></span>
-            <span class="profile-dot">·</span>
-            <span>${submittedAssignments.length} bài đã nộp</span>
-          </div>
-        </div>
-        <div class="profile-target-box">
-          <div class="profile-target-label">🎯 Target band</div>
-          <select id="target-band-select" class="profile-target-select">
-            ${bandOptions}
-          </select>
-        </div>
-      </div>
-
-      <div class="profile-section-title">🔥 Streak học tập</div>
-      <div class="home-streak-card">
-        <div class="home-streak-head">
-          <div class="streak-fire">${streak.current >= 7 ? '🔥🔥' : '🔥'}</div>
-          <div>
-            <div class="streak-current">Streak ${streak.current} ngày</div>
-            <div class="streak-best">Kỷ lục: ${streak.best} ngày · Tính theo ngày có submit bài</div>
-          </div>
-        </div>
-        <div class="home-streak-week">${streakDayCells.join('')}</div>
-      </div>
-
-      <!-- Skill cards -->
-      <div class="profile-section-title">📈 Tiến độ kỹ năng</div>
-      <div class="skill-cards-grid">
-        ${skillStats.map(s => skillCard(s)).join('')}
-      </div>
-
-      <!-- Activity grid -->
-      <div class="profile-section-title">🗓 Hoạt động 28 ngày qua</div>
-      <div class="activity-wrap">
-        <div class="activity-day-labels">${['T2','T3','T4','T5','T6','T7','CN'].map(d => `<span>${d}</span>`).join('')}</div>
-        <div class="activity-grid">${gridCells.join('')}</div>
-        <div class="activity-legend">
-          <span class="act-sample act-none"></span><span>Không học</span>
-          <span class="act-sample act-done" style="margin-left:12px"></span><span>Có nộp bài</span>
-        </div>
-      </div>
-
-      <!-- Milestones -->
-      ${ms.length > 0 ? `
-        <div class="profile-section-title">🏆 Thành tích cá nhân</div>
-        <div class="milestones-row">${ms.join('')}</div>
-      ` : ''}
-
-      <!-- Quick actions -->
-      <div class="profile-section-title">🚀 Tiếp tục học</div>
-      <div class="profile-quick-row">
-        <a href="#/my-vocab" class="profile-quick-btn pqb-vocab">📖 Từ vựng của tôi <span class="pqb-badge">${myVocabCount}</span></a>
-        <a href="#/vocab-games" class="profile-quick-btn">🃏 Luyện từ</a>
-        <a href="#/history" class="profile-quick-btn">📊 Lịch sử</a>
-        <a href="#/assignments" class="profile-quick-btn">📋 Bài tập</a>
-      </div>
-    </div>`;
-
-  document.getElementById('target-band-select')?.addEventListener('change', function () {
-    setTargetBand(Number(this.value));
-    renderProfile(assignments);
-  });
-}
 
 renderHome = function(assignments) {
   const streak = calculateSubmissionStreak(assignments, window._cachedVocabSessions || []);
@@ -4613,7 +4275,16 @@ async function submitAnswers(assignmentId, qCount, skill, btn, isAuto = false) {
 
 // ── Writing ───────────────────────────────────────────────────────────────────
 
+// Set by renderWriting() right before render, read by submitWriting() at confirm-time —
+// simplest way to carry the teacher-configured suggestion across without threading the
+// whole assignment object through submitWriting's (assignmentId, btn, isAuto) signature.
+let _writingMinWordCount = null;
+
 function renderWriting(a) {
+  _writingMinWordCount = Number.isFinite(a.min_word_count) ? a.min_word_count : null;
+  const wordHint = _writingMinWordCount != null
+    ? `Tối thiểu gợi ý: ${_writingMinWordCount} từ`
+    : 'Task 1: ~150 từ — Task 2: ~250 từ';
   $('#app').innerHTML = `
     <div class="assignment-page">
       <div class="assignment-toolbar">
@@ -4639,7 +4310,7 @@ function renderWriting(a) {
             <span data-stat="sentences">0 câu</span>
             <span data-stat="paragraphs">0 đoạn</span>
           </div>
-          <div class="form-hint">Task 1: ~150 từ — Task 2: ~250 từ</div>
+          <div class="form-hint">${escapeHtml(wordHint)}</div>
         </div>
       </div>
     </div>`;
@@ -4687,10 +4358,7 @@ async function submitWriting(assignmentId, btn, isAuto = false) {
     const okW = await confirmSubmit({
       title: 'Xác nhận nộp bài Writing',
       message: `
-        <ul class="submit-confirm-stats">
-          <li>📝 Số từ: <b>${wc}</b>${wc < 150 ? ' <span style="color:var(--danger)">⚠ Dưới mức tối thiểu</span>' : ''}</li>
-        </ul>
-        ${wc < 50 ? `<div style="color:var(--danger);margin-top:4px">Bài quá ngắn — tối thiểu 150 từ (Task 1) hoặc 250 từ (Task 2).</div>` : ''}
+        ${buildWordCountConfirmHtml(wc, _writingMinWordCount)}
         <div style="margin-top:8px;color:var(--gray-600);font-size:13px">Sau khi nộp bạn không thể chỉnh sửa.</div>`,
     });
     if (!okW) return;
@@ -8398,6 +8066,9 @@ function _renderCompositeSectionFullScreen(compositeId, sec, timerSecs) {
     };
 
   } else if (sec.skill === 'writing') {
+    const secWordHint = Number.isFinite(sec.min_word_count)
+      ? `Tối thiểu gợi ý: ${sec.min_word_count} từ`
+      : 'Task 1: ~150 từ — Task 2: ~250 từ';
     skillHtml = `
       <div class="assignment-content">
         <div class="content-pane">
@@ -8415,7 +8086,7 @@ function _renderCompositeSectionFullScreen(compositeId, sec, timerSecs) {
             <span data-stat="sentences">0 câu</span>
             <span data-stat="paragraphs">0 đoạn</span>
           </div>
-          <div class="form-hint">Task 1: ~150 từ — Task 2: ~250 từ</div>
+          <div class="form-hint">${escapeHtml(secWordHint)}</div>
         </div>
       </div>`;
     postRender = () => {
@@ -8559,7 +8230,10 @@ async function _submitCompositeSectionAndBack(compositeId, sectionId, btn, isAut
   if (!sec) return;
 
   if (!isAuto) {
-    const ok = await _confirmCompositeSectionSubmit(sec.label);
+    const wordCountHtml = sec.skill === 'writing'
+      ? buildWordCountConfirmHtml(countWords(($('#writing-answer')?.value || '').trim()), Number.isFinite(sec.min_word_count) ? sec.min_word_count : null)
+      : '';
+    const ok = await _confirmCompositeSectionSubmit(sec.label, wordCountHtml);
     if (!ok) return;
   }
 
@@ -8616,12 +8290,13 @@ async function _autoSubmitCompositeSectionAndBack(compositeId, sectionId) {
 }
 
 
-function _confirmCompositeSectionSubmit(label) {
+function _confirmCompositeSectionSubmit(label, extraHtml = '') {
   return new Promise(resolve => {
     const m = document.createElement('div');
     m.className = 'submit-confirm-overlay';
     m.innerHTML = `<div class="submit-confirm-modal">
       <div class="submit-confirm-title">Nộp phần "${escapeHtml(label)}"?</div>
+      ${extraHtml}
       <div class="submit-confirm-body">Sau khi nộp bạn không thể chỉnh sửa phần này nữa.</div>
       <div class="submit-confirm-actions">
         <button class="btn btn-outline" onclick="this.closest('.submit-confirm-overlay').remove();window._csecResolve(false)">Tiếp tục làm</button>

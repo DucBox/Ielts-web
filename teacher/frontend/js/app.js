@@ -2612,7 +2612,7 @@ function renderClassDetail(cls, students = []) {
       <div class="spinner"></div><p style="margin-top:12px;color:var(--gray-400)">Đang tải thống kê...</p>
     </div>`;
 
-  const clsNameSafe = cls.class_name.replace(/'/g, "\\'");
+  const clsNameSafe = escapeJsAttr(cls.class_name);
 
   $('#app').innerHTML = `
     <nav class="breadcrumb">
@@ -2968,7 +2968,7 @@ function changeDeadline(id) {
     </div>
     <div class="modal-footer">
       <button class="btn btn-secondary" onclick="closeModal()">Huỷ</button>
-      <button class="btn btn-primary" onclick="saveDeadline('${escapeHtml(id)}', this)">Lưu</button>
+      <button class="btn btn-primary" onclick="saveDeadline('${escapeJsAttr(id)}', this)">Lưu</button>
     </div>
   `);
 }
@@ -3276,7 +3276,7 @@ function renderSubmissionModal(sub, skill) {
           <div style="${multi ? 'margin-bottom:10px' : ''}">
             <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
               ${multi ? `<div style="font-size:12px;font-weight:600;color:var(--gray-500)">${escapeHtml(t.name || ('Phần ' + (i + 1)))}</div>` : '<div></div>'}
-              <button type="button" class="btn-icon" title="Tải xuống" aria-label="Tải xuống" onclick="downloadAudioFile('${escapeHtml(t.url || '')}', '${escapeHtml((sub.student_name || 'speaking') + '_' + (t.name || ('phan' + (i + 1))))}', this)">📥</button>
+              <button type="button" class="btn-icon" title="Tải xuống" aria-label="Tải xuống" onclick="downloadAudioFile('${escapeJsAttr(t.url || '')}', '${escapeJsAttr((sub.student_name || 'speaking') + '_' + (t.name || ('phan' + (i + 1))))}', this)">📥</button>
             </div>
             <audio controls src="${escapeHtml(t.url || '')}" style="width:100%;border-radius:8px"></audio>
           </div>`).join('')
@@ -3493,6 +3493,75 @@ window.addEventListener('beforeunload', (e) => {
   e.returnValue = '';
 });
 
+// Persistent draft for the grading page — a safety net for the two cases the
+// dirty-check above can't cover: closing/reloading the tab despite the warning
+// (or a crash), and a 401 mid-grading (session expiry force-navigates to the
+// login gate with no chance to confirm). Stores the exact same signature used
+// for the dirty-check, so "no draft to restore" and "draft matches server
+// state" both reduce to a simple string comparison.
+function gradingDraftKey(id) { return `grading-draft:${id}`; }
+function saveGradingDraftNow() {
+  if (_gradingSubmissionId == null || !isGradingDirty()) return;
+  try {
+    localStorage.setItem(gradingDraftKey(_gradingSubmissionId), JSON.stringify({
+      signature: _gradingSignature(),
+      savedAt: Date.now(),
+    }));
+  } catch {}
+}
+function loadGradingDraft(id) {
+  try {
+    const raw = localStorage.getItem(gradingDraftKey(id));
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
+}
+function clearGradingDraft(id) {
+  try { localStorage.removeItem(gradingDraftKey(id)); } catch {}
+}
+
+let _gradingDraftInterval = null;
+function startGradingDraftAutosave() {
+  stopGradingDraftAutosave();
+  _gradingDraftInterval = setInterval(saveGradingDraftNow, 4000);
+}
+function stopGradingDraftAutosave() {
+  if (_gradingDraftInterval) { clearInterval(_gradingDraftInterval); _gradingDraftInterval = null; }
+}
+
+// Called once right after a fresh load snapshots _gradingInitialSignature.
+// Voice notes are intentionally excluded from restore — an unfinished
+// recording/upload has no usable URL yet, and a finished one is already saved
+// server-side, so only the typed fields (score/overall/annotations) are
+// actually at risk of being lost and worth restoring here.
+function maybeOfferGradingDraftRestore() {
+  const id = _gradingSubmissionId;
+  const draft = loadGradingDraft(id);
+  if (!draft?.signature) return;
+  if (draft.signature === _gradingInitialSignature) { clearGradingDraft(id); return; }
+  let parsed;
+  try { parsed = JSON.parse(draft.signature); } catch { clearGradingDraft(id); return; }
+  if (parsed.id !== id) { clearGradingDraft(id); return; }
+
+  const savedAgo = draft.savedAt ? formatDateTime(new Date(draft.savedAt).toISOString()) : '';
+  const ok = confirm(
+    `Phát hiện bản nháp chưa lưu cho bài chấm này${savedAgo ? ' (lúc ' + savedAgo + ')' : ''}` +
+    ' — có thể do phiên trước bị gián đoạn (mất mạng, hết phiên đăng nhập, đóng tab...).' +
+    ' Khôi phục bản nháp này?'
+  );
+  if (!ok) { clearGradingDraft(id); return; }
+
+  const scoreEl   = document.getElementById('grading-score');
+  const overallEl = document.getElementById('overall-feedback');
+  if (scoreEl)   scoreEl.value   = parsed.score ?? scoreEl.value;
+  if (overallEl) overallEl.value = parsed.overall ?? overallEl.value;
+  if (Array.isArray(parsed.annotations)) {
+    _gradingAnnotations = parsed.annotations;
+    refreshWritingDisplay();
+    refreshAnnotationsList();
+  }
+  toast('Đã khôi phục bản nháp chưa lưu', 'warning');
+}
+
 // B4.7 — global grading keyboard shortcuts
 let _gradingKeyHandler = null;
 function bindGradingShortcuts() {
@@ -3531,6 +3600,7 @@ function unbindGradingShortcuts() {
   if (_gradingKeyHandler) document.removeEventListener('keydown', _gradingKeyHandler);
   _gradingKeyHandler = null;
   _gradingInitialSignature = null;
+  stopGradingDraftAutosave();
 }
 
 async function showGradingPage({ id }) {
@@ -3541,6 +3611,7 @@ async function showGradingPage({ id }) {
     if (routeChanged(_t)) return;
     renderGradingPage(sub);
     bindGradingShortcuts();
+    startGradingDraftAutosave();
   } catch (e) {
     if (routeChanged(_t)) return;
     toast('Lỗi: ' + (e.error || e.message), 'error');
@@ -3625,7 +3696,7 @@ function renderGradingPage(sub) {
             <div style="${multi ? 'margin-bottom:10px' : ''}">
               <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
                 ${multi ? `<div style="font-size:12px;color:var(--gray-500)">${escapeHtml(t.name || ('Phần ' + (i + 1)))} <span id="audio-dur-${i}" style="color:var(--gray-400)"></span></div>` : '<div></div>'}
-                <button type="button" class="btn-icon" title="Tải xuống" aria-label="Tải xuống" onclick="downloadAudioFile('${escapeHtml(t.url || '')}', '${escapeHtml((sub.student_name || 'speaking') + '_' + (t.name || ('phan' + (i + 1))))}', this)">📥</button>
+                <button type="button" class="btn-icon" title="Tải xuống" aria-label="Tải xuống" onclick="downloadAudioFile('${escapeJsAttr(t.url || '')}', '${escapeJsAttr((sub.student_name || 'speaking') + '_' + (t.name || ('phan' + (i + 1))))}', this)">📥</button>
               </div>
               ${i === 0 ? `<div id="waveform-container" class="waveform-container"><div class="waveform-loading">Đang tải waveform...</div></div>` : ''}
               <audio ${i === 0 ? 'id="waveform-audio"' : `id="track-audio-${i}"`} controls src="${escapeHtml(t.url || '')}" preload="metadata" style="width:100%;height:36px;outline:none;${i === 0 ? 'margin-top:6px' : ''}"></audio>
@@ -3768,6 +3839,7 @@ function renderGradingPage(sub) {
 
   // Capture the "clean" state last, after all fields above are populated.
   _gradingInitialSignature = _gradingSignature();
+  maybeOfferGradingDraftRestore();
 }
 
 // ─── Render / refresh ────────────────────────────────────────────────────────
@@ -4388,6 +4460,7 @@ async function saveGrading(btn, action = 'complete') {
       action,
     });
     _gradingInitialSignature = _gradingSignature(); // saved — no longer dirty
+    clearGradingDraft(_gradingSubmissionId);
     const msg = action === 'request_rewrite' ? 'Đã yêu cầu học sinh làm lại! ✓' : 'Đã hoàn thành chấm bài! ✓';
     toast(msg);
     setTimeout(() => navigate('/inbox'), 800);
@@ -4649,6 +4722,13 @@ async function openAssignModal(classId, className, preSelectedId = null) {
         </label>
       </div>
     </div>
+    <div class="form-group" id="assign-word-count-group">
+      <label class="form-label">Số từ tối thiểu gợi ý <span class="form-hint-inline">(Writing)</span></label>
+      <div style="display:flex;align-items:center;gap:8px">
+        <input id="assign-min-word-count" class="form-input" type="number" min="1" placeholder="VD: 150 hoặc 250" style="width:140px" />
+        <span style="color:var(--gray-400);font-size:13px">từ — hiện cho học sinh, cảnh báo (không chặn) nếu nộp quá ít/nhiều so với mức này</span>
+      </div>
+    </div>
     <div class="modal-footer">
       <button class="btn btn-outline" onclick="closeModal()">Hủy</button>
       <button class="btn btn-primary" onclick="submitAssign(this)">Giao bài</button>
@@ -4658,9 +4738,11 @@ async function openAssignModal(classId, className, preSelectedId = null) {
     radio.addEventListener('change', _syncAssignTimeLimitVisibility);
   });
   _syncAssignTimeLimitVisibility();
-  // Hide scale group until a reading/listening question is selected
+  // Hide scale/word-count groups until a matching-skill question is selected
   const scaleGroup = $('#assign-scale-group');
   if (scaleGroup) scaleGroup.style.display = 'none';
+  const wordCountGroup = $('#assign-word-count-group');
+  if (wordCountGroup) wordCountGroup.style.display = 'none';
 
   try {
     _questions = await api.get('/questions');
@@ -4670,6 +4752,8 @@ async function openAssignModal(classId, className, preSelectedId = null) {
       const skill = preQ?.skill || '';
       const scaleGroup = $('#assign-scale-group');
       if (scaleGroup) scaleGroup.style.display = (skill === 'reading' || skill === 'listening' || skill === 'composite') ? '' : 'none';
+      const wordCountGroup = $('#assign-word-count-group');
+      if (wordCountGroup) wordCountGroup.style.display = skill === 'writing' ? '' : 'none';
     }
   } catch (e) {
     toast('Không thể tải kho đề', 'error');
@@ -4778,7 +4862,7 @@ function renderAssignTagFilterBar(skillFilter) {
     ${tags.map(tag => `
       <button type="button"
         class="tag-chip ${_assignTagFilter === tag ? 'tag-chip-active' : ''}"
-        onclick="setAssignTagFilter('${escapeHtml(tag)}')">${escapeHtml(tag)}</button>
+        onclick="setAssignTagFilter('${escapeJsAttr(tag)}')">${escapeHtml(tag)}</button>
     `).join('')}
   `;
 }
@@ -4796,6 +4880,8 @@ function selectQuestion(id, el) {
   const skill = el.dataset.skill || '';
   const scaleGroup = $('#assign-scale-group');
   if (scaleGroup) scaleGroup.style.display = (skill === 'reading' || skill === 'listening' || skill === 'composite') ? '' : 'none';
+  const wordCountGroup = $('#assign-word-count-group');
+  if (wordCountGroup) wordCountGroup.style.display = skill === 'writing' ? '' : 'none';
 }
 
 function _syncAssignTimeLimitVisibility() {
@@ -4815,9 +4901,14 @@ async function submitAssign(btn, confirmed = false) {
   const timeLimitMinutes = (mode === 'exam' && timeLimitRaw) ? Number(timeLimitRaw) : null;
   const scaleEl = document.querySelector('input[name="assign-scale"]:checked');
   const scoringScale = scaleEl?.value || null;
+  const minWordCountRaw = $('#assign-min-word-count')?.value.trim();
+  const minWordCount = minWordCountRaw ? Number(minWordCountRaw) : null;
 
   if (!title) { toast('Vui lòng nhập tên bài tập', 'error'); return; }
   if (!_selectedQuestionId) { toast('Vui lòng chọn một đề từ kho', 'error'); return; }
+  if (minWordCountRaw && (!Number.isFinite(minWordCount) || minWordCount <= 0)) {
+    toast('Số từ tối thiểu phải là số nguyên dương', 'error'); return;
+  }
 
   // Check IELTS scale warning BEFORE submitting — show inline, not a new modal
   if (!confirmed && scoringScale === 'ielts') {
@@ -4856,6 +4947,7 @@ async function submitAssign(btn, confirmed = false) {
       mode,
       time_limit_minutes: timeLimitMinutes,
       scoring_scale: scoringScale,
+      min_word_count: minWordCount,
     });
     closeModal();
     toast('Giao bài thành công!');
@@ -4981,7 +5073,7 @@ function _buildFolderTreeItems(parentId, depth) {
       const count = _allQuestions.filter(q => ids.has(q.folder_id)).length;
       const isActive    = _currentFolderFilter === f.id;
       const hasChildren = _allFolders.some(c => c.parent_id === f.id);
-      const safeName    = escapeHtml(f.name).replace(/'/g, '&#39;');
+      const safeName    = escapeJsAttr(f.name);
       return `
         <div class="folder-item ${isActive ? 'active' : ''}" style="padding-left:${12 + depth * 14}px"
              onclick="setFolderFilter('${f.id}')" role="button" tabindex="0">
@@ -5138,7 +5230,7 @@ function _buildQuestionTableRows(filtered) {
         </td>
         <td style="font-size:12px;color:var(--gray-400)">
           ${Array.isArray(q.tags) && q.tags.length > 0
-            ? q.tags.map(t => `<span class="tag-chip tag-chip-sm" onclick="setQuestionTagFilter('${escapeHtml(t)}')" title="Lọc theo tag này">${escapeHtml(t)}</span>`).join('')
+            ? q.tags.map(t => `<span class="tag-chip tag-chip-sm" onclick="setQuestionTagFilter('${escapeJsAttr(t)}')" title="Lọc theo tag này">${escapeHtml(t)}</span>`).join('')
             : '—'}
         </td>
         <td style="font-size:12px;color:var(--gray-400)">
@@ -5238,7 +5330,7 @@ async function showDragAssignPanel() {
           <div class="drag-class-target"
             ondragover="onDragOverClass(event, this)"
             ondragleave="onDragLeaveClass(event, this)"
-            ondrop="onDropToClass('${cls.id}', '${escapeHtml(cls.class_name).replace(/'/g, "\\'")}', event)">
+            ondrop="onDropToClass('${cls.id}', '${escapeJsAttr(cls.class_name)}', event)">
             <div class="drag-class-target-icon">🏫</div>
             <div class="drag-class-target-body">
               <div class="drag-class-target-title">${escapeHtml(cls.class_name)}</div>
@@ -7783,6 +7875,7 @@ function renderQuestionDetail(q) {
       label: s.label || '',
       skill: s.skill || '',
       time_limit_minutes: s.time_limit_minutes ?? null,
+      min_word_count: s.min_word_count ?? null,
       questions_data: s.questions_data || [],
       content_blocks: s.content_blocks || [],
       content_text: s.content_text || '',
@@ -7969,6 +8062,7 @@ async function submitQuestionEdit(id, btn) {
           label: s.label,
           skill: s.skill,
           time_limit_minutes: s.time_limit_minutes || null,
+          min_word_count: s.min_word_count || null,
           questions_data: s.questions_data || [],
           content_blocks: s.content_blocks || [],
           content_text: s.content_text || null,
@@ -9500,6 +9594,7 @@ async function submitQuestion(btn) {
           label: s.label,
           skill: s.skill,
           time_limit_minutes: s.time_limit_minutes || null,
+          min_word_count: s.min_word_count || null,
           questions_data: s.questions_data || [],
           content_blocks: s.content_blocks || [],
           content_text: s.content_text || '',
@@ -9667,7 +9762,8 @@ async function submitCreateStudent(btn) {
     });
 
     const created = Array.isArray(res.created) ? res.created : [];
-    if (created.length === 0) throw new Error('Không nhận được tài khoản đã tạo');
+    const failed  = Array.isArray(res.failed)  ? res.failed  : [];
+    if (created.length === 0) throw new Error(failed[0]?.error || 'Không nhận được tài khoản đã tạo');
 
     closeModal();
     openStudentCredentialsModal(
@@ -9675,7 +9771,18 @@ async function submitCreateStudent(btn) {
       created,
       created.length === 1 ? 'student_account' : 'student_accounts',
     );
-    toast(`Đã tạo ${created.length} tài khoản học sinh!`);
+    // Partial success: some names in the batch succeeded, others didn't (e.g. a rare
+    // username collision) — surface exactly which ones failed and why, per-row,
+    // instead of silently only showing the ones that worked.
+    if (failed.length > 0) {
+      toast(
+        `Đã tạo ${created.length} tài khoản, ${failed.length} lỗi: ` +
+        failed.map(f => `${f.full_name} (${f.error})`).join('; '),
+        'warning',
+      );
+    } else {
+      toast(`Đã tạo ${created.length} tài khoản học sinh!`);
+    }
     showClassDetail({ id: _addStudentClassId });
   } catch (e) {
     btnReset(btn);
@@ -10551,9 +10658,9 @@ function _buildSharedPoolRows(list) {
       <td>${q.attempt_count || 0}</td>
       <td>${formatDate(q.created_at)}</td>
       <td style="white-space:nowrap">
-        <button class="btn btn-sm btn-outline" onclick="showSharedPoolStats('${q.id}','${escapeHtml(q.title)}')">📊 Thống kê</button>
+        <button class="btn btn-sm btn-outline" onclick="showSharedPoolStats('${q.id}','${escapeJsAttr(q.title)}')">📊 Thống kê</button>
         <button class="btn btn-sm btn-outline" onclick="navigate('/shared-pool/${q.id}')">✏️ Sửa</button>
-        <button class="btn btn-sm btn-outline" style="color:var(--red)" title="Xoá đề" aria-label="Xoá đề" onclick="deleteSharedQuestion('${q.id}','${escapeHtml(q.title)}',this)">🗑</button>
+        <button class="btn btn-sm btn-outline" style="color:var(--red)" title="Xoá đề" aria-label="Xoá đề" onclick="deleteSharedQuestion('${q.id}','${escapeJsAttr(q.title)}',this)">🗑</button>
       </td>
     </tr>`).join('');
 }
@@ -10983,7 +11090,7 @@ async function showSharedPoolDetail({ id }) {
   try {
     const stats = await api.get(`/shared-pool/${id}/stats`);
     if (routeChanged(_t)) return;
-    renderSharedPoolStats(stats, id);
+    renderSharedPoolStats(stats, id, q.skill);
   } catch (_) {}
 }
 
@@ -11159,9 +11266,18 @@ async function submitSharedPoolQuestion() {
 }
 window.submitSharedPoolQuestion = submitSharedPoolQuestion;
 
-function renderSharedPoolStats(stats, poolId) {
+function renderSharedPoolStats(stats, poolId, skill) {
   const el = $('#sp-stats-section');
   if (!el) return;
+  // Writing/Speaking are AI-graded on the IELTS 0–9 band scale unconditionally (see
+  // WRITING_AI_SCHEMA/SPEAKING_AI_SCHEMA) — max_score is only ever populated for
+  // auto-graded Reading/Listening (it stores the question count, from which the
+  // backend also derives ielts-vs-10 at grading time via the same 40-question rule
+  // replayed below). Deciding the scale from max_score alone — as this used to do —
+  // meant every Writing/Speaking row (max_score always null) fell through to the
+  // "/10" branch and showed e.g. "7.0/10" for what was actually an IELTS band 7.0.
+  const isBandSkill = skill === 'writing' || skill === 'speaking';
+  const scaleFor = s => isBandSkill ? 9 : (s.max_score === 40 ? 9 : 10);
   el.innerHTML = `
     <div class="page-header" style="margin-top:32px">
       <div class="page-title" style="font-size:18px">📊 Thống kê lượt làm</div>
@@ -11178,7 +11294,7 @@ function renderSharedPoolStats(stats, poolId) {
               <td>${escapeHtml(s.full_name||s.username)}</td>
               <td>${escapeHtml(s.class_names||'—')}</td>
               <td><span class="badge ${s.mode==='real_test'?'badge-red':'badge-blue'}">${s.mode==='real_test'?'🎯 Thi thật':'📝 Luyện tập'}</span></td>
-              <td>${s.overall_score != null ? `${s.overall_score}/${s.max_score === 40 ? 9 : 10}` : '—'}</td>
+              <td>${s.overall_score != null ? `${s.overall_score}/${scaleFor(s)}` : '—'}</td>
               <td>${formatDate(s.submitted_at)}</td>
             </tr>`).join('')}
           </tbody></table></div>`
@@ -11201,7 +11317,7 @@ function _cqSkillIcon(s) { return { reading:'📖', listening:'🎧', writing:'�
 function _cqSkillLabel(s) { return { reading:'Reading', listening:'Listening', writing:'Writing', speaking:'Speaking' }[s] || s; }
 
 function _newCQSection() {
-  return { label: '', skill: '', time_limit_minutes: null, questions_data: [], content_blocks: [], content_text: '', content_url: null, content_urls: [], script: '', vocabulary: [] };
+  return { label: '', skill: '', time_limit_minutes: null, min_word_count: null, questions_data: [], content_blocks: [], content_text: '', content_url: null, content_urls: [], script: '', vocabulary: [] };
 }
 
 function _saveCQCurrentEditorState() {
@@ -11209,6 +11325,9 @@ function _saveCQCurrentEditorState() {
   const sec = _cqSections[_cqEditingIdx];
   sec.label = document.getElementById('cq-label')?.value.trim() ?? sec.label;
   sec.time_limit_minutes = (() => { const v = document.getElementById('cq-time')?.value; return v ? Number(v) : null; })();
+  if (sec.skill === 'writing') {
+    sec.min_word_count = (() => { const v = document.getElementById('cq-min-words')?.value; return v ? Number(v) : null; })();
+  }
   syncContentBlocksFromEditor();
   const blocks = normalizeContentBlocksForEditor(_contentBlocks);
   sec.content_blocks = blocks;
@@ -11281,7 +11400,17 @@ function renderCQSectionsUI() {
         scriptRows: 6,
       });
     } else if (sec.skill === 'writing') {
-      skillContentHtml = skillEditorHtml('writing', {});
+      skillContentHtml = skillEditorHtml('writing', {
+        writingHintBox: `
+          <div class="form-group">
+            <label class="form-label">Số từ tối thiểu gợi ý</label>
+            <div style="display:flex;align-items:center;gap:8px">
+              <input id="cq-min-words" class="form-input" type="number" min="1"
+                value="${sec.min_word_count ?? ''}" placeholder="VD: 150 hoặc 250" style="width:140px" />
+              <span style="color:var(--gray-400);font-size:13px">từ — hiện cho học sinh khi làm phần này</span>
+            </div>
+          </div>`,
+      });
     } else if (sec.skill === 'speaking') {
       skillContentHtml = skillEditorHtml('speaking', {});
     }
@@ -11573,7 +11702,20 @@ window.submitLoginGate        = submitLoginGate;
 window.toggleGatePassword     = toggleGatePassword;
 window.logout                 = logout;
 window._onTeacherUnauthorized = () => {
-  expireTeacherSession('Phiên đăng nhập hết hạn. Vui lòng đăng nhập lại.');
+  // A 401 force-navigates straight to the login gate with no chance to confirm
+  // (unlike normal in-app navigation, which goes through router()'s dirty-check).
+  // If this hits mid-grading, persist the draft immediately so it can be
+  // recovered — router() re-dispatches to the same #/grading/:id hash after a
+  // successful re-login (the hash itself never changed), which re-triggers the
+  // restore prompt in renderGradingPage().
+  const isGradingRoute = window.location.hash.startsWith('#/grading/');
+  const wasDirty = isGradingRoute && isGradingDirty();
+  if (wasDirty) saveGradingDraftNow();
+  expireTeacherSession(
+    wasDirty
+      ? 'Phiên đăng nhập hết hạn khi đang chấm bài — nội dung chưa lưu đã được giữ tạm trên máy này. Đăng nhập lại và mở lại đúng bài này để khôi phục.'
+      : 'Phiên đăng nhập hết hạn. Vui lòng đăng nhập lại.'
+  );
 };
 window.addEventListener('pagehide', flushQuestionDraftSave);
 

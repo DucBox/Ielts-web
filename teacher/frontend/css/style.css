@@ -2913,6 +2913,13 @@ body.resizing-image {
   border: 1px solid var(--gray-200);
   border-radius: 10px;
   overflow: hidden;
+  /* Keep the "Đề bài" bar pinned to the top while scrolling through the
+     writing content; it still toggles open and stays resizable. */
+  position: sticky;
+  top: 12px;
+  z-index: 5;
+  background: var(--card-bg);
+  box-shadow: var(--shadow);
 }
 .grading-question-summary {
   cursor: pointer;
@@ -2944,8 +2951,10 @@ body.resizing-image {
 .grading-question-details[open] .grading-question-summary::before { transform: rotate(90deg); }
 .grading-question-body {
   padding: 12px 14px;
-  max-height: 260px;
-  overflow-y: auto;
+  height: 220px;
+  min-height: 60px;
+  resize: vertical;
+  overflow: auto;
   font-size: 13px;
   line-height: 1.7;
 }

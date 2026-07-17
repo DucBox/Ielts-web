@@ -6501,8 +6501,11 @@ function initStickyPreview() {
   if (!originalPreview) return;
 
   const updateVisibility = (outOfView) => {
-    floatEl.classList.toggle('is-visible', outOfView && !_stickyPreviewDismissed);
-    toggleBtn.classList.toggle('is-visible', outOfView && _stickyPreviewDismissed);
+    // While picking a location, suppress the floating copy entirely so the user
+    // can only select in the (scrolled-into-view) original preview.
+    const show = outOfView && !_locationPickActive;
+    floatEl.classList.toggle('is-visible', show && !_stickyPreviewDismissed);
+    toggleBtn.classList.toggle('is-visible', show && _stickyPreviewDismissed);
     if (!outOfView) _stickyPreviewDismissed = false;
   };
   window._updateStickyPreviewVisibility = updateVisibility;
@@ -8150,6 +8153,7 @@ let _audioFile = null, _audioUploadUrl = null, _audioUploadKey = null, _audioUpl
 let _vocabItems = [];
 let _editingVocabIndex = -1;
 let _pendingLocationRow = null;
+let _locationPickActive = false;
 
 function vocabSectionHtml() {
   return `
@@ -10060,6 +10064,10 @@ window.openStudentProfileModal = openStudentProfileModal;
 function activateLocationPick(rowEl) {
   if (_pendingLocationRow) cancelLocationPick();
   _pendingLocationRow = rowEl;
+  _locationPickActive = true;
+  // Hide the floating preview copy immediately (both Reading & Listening paths):
+  // selecting inside it would be silently ignored by the picker.
+  updateStickyPreviewVisibility();
   const qLabel = rowEl.querySelector('.q-label')?.textContent || '';
   const hint = document.getElementById('location-pick-hint');
 
@@ -10073,7 +10081,10 @@ function activateLocationPick(rowEl) {
     }
     rowEl.querySelector('.btn-pick-location')?.classList.add('picking-active');
     scriptEl.addEventListener('mouseup', _onScriptMouseUp);
-    scriptEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    // Instant (not smooth) scroll: a smooth animation still running while the
+    // user starts drag-selecting races the caret placement, which collapses the
+    // selection mid-drag or anchors it at the wrong offset.
+    scriptEl.scrollIntoView({ block: 'center' });
     return;
   }
 
@@ -10089,7 +10100,7 @@ function activateLocationPick(rowEl) {
     hint.classList.remove('hidden');
   }
   rowEl.querySelector('.btn-pick-location')?.classList.add('picking-active');
-  preview.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  preview.scrollIntoView({ block: 'start' }); // instant, see note in Listening branch
 }
 
 function getTextareaSelectionRect(textarea, start, end) {
@@ -10143,6 +10154,8 @@ function cancelLocationPick() {
   if (!_pendingLocationRow) return;
   _pendingLocationRow.querySelector('.btn-pick-location')?.classList.remove('picking-active');
   _pendingLocationRow = null;
+  _locationPickActive = false;
+  updateStickyPreviewVisibility(); // restore the floating copy if preview is off-screen
   // Clean up script textarea picking
   const scriptEl = document.getElementById('listening-script');
   if (scriptEl) {
@@ -10289,10 +10302,13 @@ function commitLocationSelection(directResult) {
   const range  = directResult ? null : _pendingLocationRange;
   if (!directResult) removeLocationPopup();
 
-  // Yellow fade overlay over the selected region
+  // Yellow fade overlay over the selected region. Use per-line client rects
+  // (getClientRects) rather than a single bounding box: a multi-line/multi-block
+  // selection's bounding box also covers the text before the start and after the
+  // end, so it would visually highlight far more than what was actually selected.
   if (range) {
-    const rect = range.getBoundingClientRect();
-    if (rect.width > 0 && rect.height > 0) {
+    const rects = Array.from(range.getClientRects()).filter(r => r.width > 0 && r.height > 0);
+    const overlays = rects.map(rect => {
       const overlay = document.createElement('div');
       Object.assign(overlay.style, {
         position:       'fixed',
@@ -10308,8 +10324,13 @@ function commitLocationSelection(directResult) {
         transition:     'opacity 2s ease',
       });
       document.body.appendChild(overlay);
-      requestAnimationFrame(() => requestAnimationFrame(() => { overlay.style.opacity = '0'; }));
-      setTimeout(() => overlay.remove(), 2100);
+      return overlay;
+    });
+    if (overlays.length) {
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        overlays.forEach(o => { o.style.opacity = '0'; });
+      }));
+      setTimeout(() => overlays.forEach(o => o.remove()), 2100);
     }
   }
 

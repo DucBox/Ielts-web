@@ -279,6 +279,12 @@ function snapshotCurrentQuestionDraft() {
 }
 
 function flushQuestionDraftSave() {
+  // Never snapshot while a location pick is in progress: snapshotting calls
+  // syncContentBlocksFromEditor() → refreshContentComposerPreview(), which
+  // replaces the preview's innerHTML and destroys the user's in-progress text
+  // selection. The interval/debounce timers keep running; the draft is saved
+  // again right after the pick is committed or cancelled.
+  if (_locationPickActive) return;
   if (_questionDraftDebounceTimer) {
     clearTimeout(_questionDraftDebounceTimer);
     _questionDraftDebounceTimer = null;

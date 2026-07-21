@@ -742,6 +742,52 @@ async function downloadAudioFile(url, baseName, btn) {
 }
 window.downloadAudioFile = downloadAudioFile;
 
+// ── Audio player tools (speed + 10s skip) ──────────────────────────────────
+// Rendered per <audio> so pages with several recordings control each track
+// independently. Controls find their own track via the .audio-block wrapper
+// instead of an id, so callers don't have to mint unique ids.
+const AUDIO_SKIP_SECONDS = 10;
+const AUDIO_SPEEDS = [1, 1.25, 1.5, 2, 2.5, 3];
+
+function _audioBlockTrack(el) {
+  return el?.closest?.('.audio-block')?.querySelector('audio') || null;
+}
+
+function nudgeAudio(btn, delta) {
+  const audio = _audioBlockTrack(btn);
+  if (!audio) return;
+  const max = Number.isFinite(audio.duration) ? audio.duration : Infinity;
+  audio.currentTime = Math.min(max, Math.max(0, audio.currentTime + delta));
+}
+window.nudgeAudio = nudgeAudio;
+
+function setAudioRate(select) {
+  const audio = _audioBlockTrack(select);
+  if (!audio) return;
+  audio.playbackRate = Number(select.value) || 1;
+}
+window.setAudioRate = setAudioRate;
+
+// Wraps an <audio> tag with the skip/speed toolbar. `audioHtml` is the caller's
+// own <audio ...> markup so existing ids, styles and preload hints are kept.
+function audioPlayerBlock(audioHtml) {
+  return `<div class="audio-block">
+      ${audioHtml}
+      <div class="audio-tools">
+        <button type="button" class="audio-tool-btn" title="Lùi ${AUDIO_SKIP_SECONDS} giây"
+                onclick="nudgeAudio(this,-${AUDIO_SKIP_SECONDS})">« ${AUDIO_SKIP_SECONDS}s</button>
+        <button type="button" class="audio-tool-btn" title="Tiến ${AUDIO_SKIP_SECONDS} giây"
+                onclick="nudgeAudio(this,${AUDIO_SKIP_SECONDS})">${AUDIO_SKIP_SECONDS}s »</button>
+        <label class="audio-speed">
+          <span>Tốc độ</span>
+          <select class="audio-speed-select" onchange="setAudioRate(this)" aria-label="Tốc độ phát">
+            ${AUDIO_SPEEDS.map(s => `<option value="${s}">x${s}</option>`).join('')}
+          </select>
+        </label>
+      </div>
+    </div>`;
+}
+
 function buildStudentCredentialsFilename(prefix = 'student_accounts') {
   const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
   return `${prefix}_${stamp}.csv`;
@@ -3284,7 +3330,7 @@ function renderSubmissionModal(sub, skill) {
               ${multi ? `<div style="font-size:12px;font-weight:600;color:var(--gray-500)">${escapeHtml(t.name || ('Phần ' + (i + 1)))}</div>` : '<div></div>'}
               <button type="button" class="btn-icon" title="Tải xuống" aria-label="Tải xuống" onclick="downloadAudioFile('${escapeJsAttr(t.url || '')}', '${escapeJsAttr((sub.student_name || 'speaking') + '_' + (t.name || ('phan' + (i + 1))))}', this)">📥</button>
             </div>
-            <audio controls src="${escapeHtml(t.url || '')}" style="width:100%;border-radius:8px"></audio>
+            ${audioPlayerBlock(`<audio controls src="${escapeHtml(t.url || '')}" style="width:100%;border-radius:8px"></audio>`)}
           </div>`).join('')
       : `<div style="color:var(--gray-400);padding:16px;text-align:center">Không có file audio</div>`;
     const scriptHtml = sub.speaking_script
@@ -3643,7 +3689,7 @@ function prevAttemptsDropdownHtml(prevAttempts, skill) {
       const audios = urls.map((t, i) => `
         <div style="margin-bottom:8px">
           ${urls.length > 1 ? `<div style="font-size:12px;color:var(--gray-500);margin-bottom:4px">${escapeHtml(t.name || ('Phần ' + (i + 1)))}</div>` : ''}
-          <audio controls src="${escapeHtml(t.url || '')}" style="width:100%;height:34px"></audio>
+          ${audioPlayerBlock(`<audio controls src="${escapeHtml(t.url || '')}" style="width:100%;height:34px"></audio>`)}
         </div>`).join('');
       inner = `${audios}
         ${isSttFailedScript(a.speaking_script)
@@ -3705,7 +3751,7 @@ function renderGradingPage(sub) {
                 <button type="button" class="btn-icon" title="Tải xuống" aria-label="Tải xuống" onclick="downloadAudioFile('${escapeJsAttr(t.url || '')}', '${escapeJsAttr((sub.student_name || 'speaking') + '_' + (t.name || ('phan' + (i + 1))))}', this)">📥</button>
               </div>
               ${i === 0 ? `<div id="waveform-container" class="waveform-container"><div class="waveform-loading">Đang tải waveform...</div></div>` : ''}
-              <audio ${i === 0 ? 'id="waveform-audio"' : `id="track-audio-${i}"`} controls src="${escapeHtml(t.url || '')}" preload="metadata" style="width:100%;height:36px;outline:none;${i === 0 ? 'margin-top:6px' : ''}"></audio>
+              ${audioPlayerBlock(`<audio ${i === 0 ? 'id="waveform-audio"' : `id="track-audio-${i}"`} controls src="${escapeHtml(t.url || '')}" preload="metadata" style="width:100%;height:36px;outline:none;${i === 0 ? 'margin-top:6px' : ''}"></audio>`)}
             </div>`).join('')}
         </div>`;
     }

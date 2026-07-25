@@ -2048,7 +2048,7 @@ ${i.transcript}`).join(`
       <td>${formatDate(e.created_at)}</td>
       <td style="white-space:nowrap">
         <button class="btn btn-sm btn-outline" onclick="showSharedPoolStats('${e.id}','${escapeJsAttr(e.title)}')">\u{1F4CA} Th\u1ED1ng k\xEA</button>
-        <button class="btn btn-sm btn-outline" title="T\u1EA1o b\u1EA3n sao sang Kho \u0111\u1EC1 \u0111\u1EC3 giao cho l\u1EDBp" onclick="copySharedToQuestions('${e.id}','${escapeJsAttr(e.title)}',this)">\u{1F4CB} Copy sang kho \u0111\u1EC1</button>
+        <button class="btn btn-sm btn-outline" title="T\u1EA1o b\u1EA3n sao sang Kho \u0111\u1EC1 \u0111\u1EC3 giao cho l\u1EDBp" onclick="copySharedToQuestions('${e.id}','${escapeJsAttr(e.title)}',this)">\u{1F4CB} Copy</button>
         <button class="btn btn-sm btn-outline" onclick="navigate('/shared-pool/${e.id}')">\u270F\uFE0F S\u1EEDa</button>
         <button class="btn btn-sm btn-outline" style="color:var(--red)" title="Xo\xE1 \u0111\u1EC1" aria-label="Xo\xE1 \u0111\u1EC1" onclick="deleteSharedQuestion('${e.id}','${escapeJsAttr(e.title)}',this)">\u{1F5D1}</button>
       </td>

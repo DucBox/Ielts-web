@@ -10732,7 +10732,7 @@ function _buildSharedPoolRows(list) {
       <td>${formatDate(q.created_at)}</td>
       <td style="white-space:nowrap">
         <button class="btn btn-sm btn-outline" onclick="showSharedPoolStats('${q.id}','${escapeJsAttr(q.title)}')">📊 Thống kê</button>
-        <button class="btn btn-sm btn-outline" title="Tạo bản sao sang Kho đề để giao cho lớp" onclick="copySharedToQuestions('${q.id}','${escapeJsAttr(q.title)}',this)">📋 Copy sang kho đề</button>
+        <button class="btn btn-sm btn-outline" title="Tạo bản sao sang Kho đề để giao cho lớp" onclick="copySharedToQuestions('${q.id}','${escapeJsAttr(q.title)}',this)">📋 Copy</button>
         <button class="btn btn-sm btn-outline" onclick="navigate('/shared-pool/${q.id}')">✏️ Sửa</button>
         <button class="btn btn-sm btn-outline" style="color:var(--red)" title="Xoá đề" aria-label="Xoá đề" onclick="deleteSharedQuestion('${q.id}','${escapeJsAttr(q.title)}',this)">🗑</button>
       </td>

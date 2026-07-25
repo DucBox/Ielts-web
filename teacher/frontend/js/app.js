@@ -10732,6 +10732,7 @@ function _buildSharedPoolRows(list) {
       <td>${formatDate(q.created_at)}</td>
       <td style="white-space:nowrap">
         <button class="btn btn-sm btn-outline" onclick="showSharedPoolStats('${q.id}','${escapeJsAttr(q.title)}')">📊 Thống kê</button>
+        <button class="btn btn-sm btn-outline" title="Tạo bản sao sang Kho đề để giao cho lớp" onclick="copySharedToQuestions('${q.id}','${escapeJsAttr(q.title)}',this)">📋 Copy sang kho đề</button>
         <button class="btn btn-sm btn-outline" onclick="navigate('/shared-pool/${q.id}')">✏️ Sửa</button>
         <button class="btn btn-sm btn-outline" style="color:var(--red)" title="Xoá đề" aria-label="Xoá đề" onclick="deleteSharedQuestion('${q.id}','${escapeJsAttr(q.title)}',this)">🗑</button>
       </td>
@@ -10761,6 +10762,31 @@ async function deleteSharedQuestion(id, title, btn) {
   }
 }
 window.deleteSharedQuestion = deleteSharedQuestion;
+
+async function copySharedToQuestions(id, title, btn) {
+  const ok = await confirmAction({
+    title: 'Copy sang Kho đề',
+    message: `Một bản sao <strong>độc lập</strong> của đề <strong>${escapeHtml(title)}</strong> sẽ được tạo trong Kho đề (kèm bản sao riêng của audio/ảnh) để bạn giao cho lớp. Sửa hoặc xoá bản sao sẽ không ảnh hưởng đề luyện tập gốc.`,
+    confirmText: 'Tạo bản sao',
+  });
+  if (!ok) return;
+  btnLoading(btn);
+  try {
+    const created = await api.post(`/shared-pool/${id}/copy-to-questions`, {});
+    btnReset(btn);
+    const goEdit = await confirmAction({
+      title: 'Đã tạo bản sao trong Kho đề',
+      message: `Đã tạo <strong>${escapeHtml(created.title || title)}</strong> trong Kho đề. Mở kho đề để giao cho lớp?`,
+      confirmText: 'Mở Kho đề',
+      cancelText: 'Ở lại',
+    });
+    if (goEdit) navigate('/questions');
+  } catch (e) {
+    btnReset(btn);
+    toast('Lỗi tạo bản sao: ' + (e.error || e.message), 'error');
+  }
+}
+window.copySharedToQuestions = copySharedToQuestions;
 
 // ─── Shared Pool Stats Modal ────────────────────────────────────────────────
 

@@ -370,6 +370,23 @@ function buildTeacherAudioKey(fileName) {
   return `audio/${crypto.randomUUID()}-${sanitizeFileName(fileName, 'audio')}`;
 }
 
+function buildTeacherImageKey(srcKeyOrName) {
+  const ext = (String(srcKeyOrName || '').split('.').pop() || 'png')
+    .toLowerCase().replace(/[^a-z0-9]/g, '') || 'png';
+  return `images/${crypto.randomUUID()}.${ext}`;
+}
+
+// Deep-copy an R2 object to a brand-new key, preserving content type. Returns the
+// new key on success, or null if the source object no longer exists (so callers can
+// fall back to keeping the original reference instead of pointing at a missing file).
+async function r2CopyObject(env, srcKey, newKey) {
+  if (!srcKey || !newKey) return null;
+  const obj = await env.R2.get(srcKey);
+  if (!obj) return null;
+  await env.R2.put(newKey, obj.body, { httpMetadata: obj.httpMetadata || undefined });
+  return newKey;
+}
+
 function buildStudentSpeakingKey(assignmentId, studentId, fileName) {
   return `speaking/${assignmentId}/${studentId}-${crypto.randomUUID()}-${sanitizeFileName(fileName, 'audio')}`;
 }
@@ -5571,6 +5588,82 @@ export default {
         return json(row);
       }
 
+      // Deep-copy a shared_pool (practice) test into question_pool (assignable bank).
+      // Every R2 asset is physically copied to a FRESH key so the new entry is fully
+      // independent of the source: deleting/editing either one never touches the other.
+      // (A shallow copy sharing keys would be unsafe because shared_pool audio isn't
+      // ref-counted, so deleting the copy could delete a file the source still needs.)
+      if ((p = matchPath('/shared-pool/:id/copy-to-questions', path)) && method === 'POST') {
+        if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
+        const [src] = await sql`SELECT * FROM shared_pool WHERE id = ${p.id}`;
+        if (!src) return err('Không tìm thấy đề', 404);
+        // shared_pool never holds composite tests (no sections table linkage), so a
+        // composite value here would produce a section-less question — reject clearly.
+        if (src.skill === 'composite') return err('Không hỗ trợ sao chép đề tổng hợp từ kho luyện tập', 400);
+        const teacherId = await getTeacherId(sql);
+
+        // Only keys we successfully copied to fresh R2 objects get ref-counted below.
+        // Never ref-count a fallback (source) key: that key belongs to the shared_pool
+        // original, and ref-counting it would let deleting this copy delete the source's
+        // file — exactly the conflict this deep-copy design avoids.
+        const newKeysToRef = [];
+
+        // 1) Audio: content_urls (multi) preferred, else single content_url.
+        const newContentUrls = [];
+        for (const item of (Array.isArray(src.content_urls) ? src.content_urls : [])) {
+          const oldKey = item?.key || extractR2Key(item?.url, env.R2_PUBLIC_URL);
+          const newKey = oldKey ? buildTeacherAudioKey(item?.name || oldKey.split('/').pop() || 'audio') : null;
+          const copied = oldKey ? await r2CopyObject(env, oldKey, newKey).catch(e => { console.error('R2 copy failed:', e); return null; }) : null;
+          if (copied) { newKeysToRef.push(newKey); newContentUrls.push({ ...item, key: newKey, url: buildR2PublicUrl(env, newKey) }); }
+          else newContentUrls.push(item); // source object missing — keep original (already broken) rather than fabricate a ref
+        }
+        let newContentUrl = src.content_url;
+        if (!(src.content_urls?.length) && src.content_url) {
+          const oldKey = extractR2Key(src.content_url, env.R2_PUBLIC_URL);
+          const newKey = oldKey ? buildTeacherAudioKey(oldKey.split('/').pop() || 'audio') : null;
+          const copied = oldKey ? await r2CopyObject(env, oldKey, newKey).catch(e => { console.error('R2 copy failed:', e); return null; }) : null;
+          if (copied) { newContentUrl = buildR2PublicUrl(env, newKey); newKeysToRef.push(newKey); }
+        }
+
+        // 2) content_blocks images.
+        const newBlocks = [];
+        for (const block of normalizeContentBlocks(src.content_blocks || [])) {
+          if (block.type === 'image' && block.url) {
+            const oldKey = extractR2Key(block.url, env.R2_PUBLIC_URL);
+            const newKey = oldKey ? buildTeacherImageKey(oldKey) : null;
+            const copied = oldKey ? await r2CopyObject(env, oldKey, newKey).catch(e => { console.error('R2 copy failed:', e); return null; }) : null;
+            if (copied) { newKeysToRef.push(newKey); newBlocks.push({ ...block, url: buildR2PublicUrl(env, newKey) }); }
+            else newBlocks.push(block);
+          } else {
+            newBlocks.push(block);
+          }
+        }
+
+        // 3) Insert the self-contained copy into question_pool (no folder).
+        const [row] = await sql`
+          INSERT INTO question_pool (
+            teacher_id, skill, title, content_text, content_blocks, content_url, content_urls,
+            questions_data, vocabulary, tags, script, folder_id
+          )
+          VALUES (
+            ${teacherId}, ${src.skill}::skill_type, ${(src.title || '') + ' (Từ kho luyện tập)'},
+            ${src.content_text}, ${JSON.stringify(newBlocks)}::jsonb, ${newContentUrl},
+            ${JSON.stringify(newContentUrls)}::jsonb,
+            ${JSON.stringify(src.questions_data || [])}, ${JSON.stringify(src.vocabulary || [])},
+            ${src.tags || []}, ${src.script ?? null}, ${null}
+          )
+          RETURNING *
+        `;
+
+        // 4) Ref-count only the freshly-copied keys so question_pool's own delete/update
+        // logic can clean them up correctly (r2SafeDelete skips keys with no ref row).
+        for (const k of newKeysToRef) {
+          await r2RefIncrement(sql, k).catch(e => console.error('R2 ref track failed:', e));
+        }
+
+        return json(row, 201);
+      }
+
       if ((p = matchPath('/shared-pool/:id', path))) {
         if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
         if (method === 'GET') {
@@ -5617,11 +5710,18 @@ export default {
           return json(row);
         }
         if (method === 'DELETE') {
-          const [q] = await sql`SELECT content_blocks FROM shared_pool WHERE id = ${p.id}`;
+          const [q] = await sql`SELECT content_blocks, content_url, content_urls FROM shared_pool WHERE id = ${p.id}`;
           if (!q) return err('Không tìm thấy đề', 404);
           // D2: collect shared_attempt audio before cascade delete removes the rows
           const sharedAudios = await sql`SELECT speaking_audio_urls FROM shared_attempts WHERE shared_pool_id = ${p.id}`;
           await sql`DELETE FROM shared_pool WHERE id = ${p.id}`;
+          // Listening audio (content_url/content_urls) is exclusively owned by this row:
+          // it's never ref-counted, and copy-to-questions deep-copies to fresh keys, so no
+          // other entity can reference it. Delete it directly — previously it leaked in R2.
+          const audioKeys = (Array.isArray(q.content_urls) && q.content_urls.length
+            ? q.content_urls.map(it => it?.key || extractR2Key(it?.url, env.R2_PUBLIC_URL))
+            : [extractR2Key(q.content_url, env.R2_PUBLIC_URL)]).filter(Boolean);
+          for (const key of audioKeys) await env.R2.delete(key).catch(e => console.error('R2 shared-pool audio cleanup failed:', e));
           for (const url of extractContentBlockImageUrls(q.content_blocks || [])) {
             const key = extractR2Key(url, env.R2_PUBLIC_URL);
             if (key) await r2SafeDelete(env, sql, key).catch(() => {});

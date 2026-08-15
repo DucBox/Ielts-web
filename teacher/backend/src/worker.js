@@ -1156,6 +1156,20 @@ async function loadCompositeSectionExamSession(sql, { studentId, assignmentId, s
   return row || null;
 }
 
+// Which attempt of an assignment the student is on right now: 1 normally, and one past the
+// latest submission once the teacher has asked for a rewrite. The exam clock is scoped to this
+// number — a new attempt gets a fresh clock, re-opening the same attempt never does.
+async function getCurrentAssignmentAttemptNumber(sql, { studentId, assignmentId }) {
+  const [row] = await sql`
+    SELECT attempt_number, rewrite_status
+    FROM submissions
+    WHERE assignment_id = ${assignmentId} AND student_id = ${studentId}
+    ORDER BY attempt_number DESC
+    LIMIT 1
+  `;
+  return row?.rewrite_status === 'requested' ? (row.attempt_number || 0) + 1 : 1;
+}
+
 async function ensureCompositeSectionExamSession(sql, { studentId, assignmentId, sectionId }) {
   if (!studentId || !assignmentId || !sectionId) return null;
   await sql`
@@ -1183,6 +1197,10 @@ async function studentHasAnyClassMembership(sql, studentId) {
 
 function getAppTimezone(env) {
   return String(env.APP_TIMEZONE || 'Asia/Ho_Chi_Minh');
+}
+
+function isUuid(value) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(value ?? ''));
 }
 
 function escapeHtml(value) {
@@ -5047,7 +5065,61 @@ export default {
         return json(versions);
       }
 
-      // POST /exam-sessions — record (or retrieve) when student first opened an exam
+      // GET /exam-sessions?ref_type=&ref_id=&assignment_id= — read the start time WITHOUT
+      // creating one. Deliberately read-only: the clock must start when the student presses
+      // "Bắt đầu làm bài", not merely when they open the page to look at the exam. The client
+      // uses this to decide between showing the briefing screen (no session yet) and resuming
+      // an exam already in progress. Returns { started_at: null } when not started.
+      if (path === '/exam-sessions' && method === 'GET') {
+        const claims = await requireStudentAuth(request, env, sql);
+        if (!claims) return err('Unauthorized', 401);
+        const studentId = String(claims.student_id);
+        const refType = String(url.searchParams.get('ref_type') || '').trim();
+        const refId = String(url.searchParams.get('ref_id') || '').trim();
+        const compositeAssignmentId = String(url.searchParams.get('assignment_id') || '').trim() || null;
+        if (!refType || !refId) return err('ref_type và ref_id là bắt buộc', 400);
+        if (!['assignment', 'shared_pool', 'composite_section'].includes(refType)) return err('ref_type không hợp lệ', 400);
+        if (!isUuid(refId) || (compositeAssignmentId && !isUuid(compositeAssignmentId))) return err('ref_id không hợp lệ', 400);
+
+        if (refType === 'composite_section') {
+          const session = compositeAssignmentId
+            ? await loadCompositeSectionExamSession(sql, {
+                studentId,
+                assignmentId: compositeAssignmentId,
+                sectionId: refId,
+              })
+            : null;
+          return json({ started_at: session?.started_at || null });
+        }
+
+        const [row] = await sql`
+          SELECT started_at, attempt_number FROM exam_sessions
+          WHERE student_id = ${studentId} AND ref_type = ${refType} AND ref_id = ${refId}
+        `;
+        if (!row) return json({ started_at: null });
+
+        // Mirror the POST's reset rules exactly, so "has it started?" and "would starting it
+        // reset the clock?" can never disagree — a stale session that POST would reset must
+        // read as not-started here, otherwise the client resumes an already-dead clock and
+        // auto-submits a blank paper.
+        if (refType === 'assignment') {
+          const currentAttemptNumber = await getCurrentAssignmentAttemptNumber(sql, {
+            studentId,
+            assignmentId: refId,
+          });
+          if (row.attempt_number !== currentAttemptNumber) return json({ started_at: null });
+        } else {
+          const [pool] = await sql`SELECT time_limit_minutes FROM shared_pool WHERE id = ${refId}`;
+          if (pool?.time_limit_minutes) {
+            const elapsedSec = (Date.now() - new Date(row.started_at).getTime()) / 1000;
+            if (elapsedSec > pool.time_limit_minutes * 60) return json({ started_at: null });
+          }
+        }
+        return json({ started_at: row.started_at });
+      }
+
+      // POST /exam-sessions — record (or retrieve) when the student STARTED an exam.
+      // Must only be called from an explicit "Bắt đầu làm bài" action, never on page open.
       if (path === '/exam-sessions' && method === 'POST') {
         const claims = await requireStudentAuth(request, env, sql);
         if (!claims) return err('Unauthorized', 401);
@@ -5060,27 +5132,24 @@ export default {
         // Verify student has access to this ref
         if (body.ref_type === 'assignment') {
           const [row] = await sql`
-            SELECT a.time_limit_minutes,
-              (SELECT sub.attempt_number FROM submissions sub
-               WHERE sub.assignment_id = a.id AND sub.student_id = ${studentId}
-               ORDER BY sub.attempt_number DESC LIMIT 1) AS latest_attempt_number,
-              (SELECT sub.rewrite_status FROM submissions sub
-               WHERE sub.assignment_id = a.id AND sub.student_id = ${studentId}
-               ORDER BY sub.attempt_number DESC LIMIT 1) AS latest_rewrite_status
+            SELECT a.time_limit_minutes
             FROM assignments a
             JOIN student_classes sc ON sc.class_id = a.class_id
             WHERE a.id = ${body.ref_id} AND sc.student_id = ${studentId} LIMIT 1
           `;
           if (!row) return err('Không tìm thấy bài tập', 404);
 
-          // F1b: Timer starts when student OPENS a given attempt, and must reset exactly once
-          // per NEW attempt — identified by attempt_number, not by whether the previous timer
-          // happened to fully expire (a student who submits attempt 1 early, with time left,
-          // must still get a full fresh clock on attempt 2, not the leftover seconds).
-          // Re-opening/refreshing the SAME attempt must NOT reset the clock (no time extension).
-          const currentAttemptNumber = row.latest_rewrite_status === 'requested'
-            ? (row.latest_attempt_number || 0) + 1
-            : 1;
+          // F1b: The timer starts when the student presses "Bắt đầu làm bài" for a given
+          // attempt, and must reset exactly once per NEW attempt — identified by
+          // attempt_number, not by whether the previous timer happened to fully expire (a
+          // student who submits attempt 1 early, with time left, must still get a full fresh
+          // clock on attempt 2, not the leftover seconds). Re-entering the SAME attempt must
+          // NOT reset the clock: leaving the page, refreshing, or being interrupted all let
+          // the clock keep running, which is the point of keeping it server-side.
+          const currentAttemptNumber = await getCurrentAssignmentAttemptNumber(sql, {
+            studentId,
+            assignmentId: body.ref_id,
+          });
           let resetSession = false;
           if (row.time_limit_minutes) {
             const [es] = await sql`

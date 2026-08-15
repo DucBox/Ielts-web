@@ -3945,17 +3945,28 @@ async function showAssignment({ id }) {
       // rewrite_status === 'requested': allow student to submit again — fall through to render
     } catch {}
 
-    // For exam mode with time limit: register/retrieve server-side start time
+    // Exam mode with a time limit: the clock lives on the server and starts only when the
+    // student explicitly presses "Bắt đầu làm bài" on the briefing screen. Merely opening this
+    // page must NOT start it — that used to be the trigger, so a student who tapped in once to
+    // look at the exam and came back the next day landed on an already-expired clock and got
+    // auto-submitted with a blank paper.
     let remainingSec = null;
     if (assignment.mode === 'exam' && assignment.time_limit_minutes) {
+      let startedAt = null;
       try {
-        const session = await api.post('/exam-sessions', { ref_type: 'assignment', ref_id: id });
-        const elapsed = (Date.now() - new Date(session.started_at).getTime()) / 1000;
-        remainingSec = Math.max(0, assignment.time_limit_minutes * 60 - elapsed);
-      } catch {
-        remainingSec = assignment.time_limit_minutes * 60;
+        const session = await api.get(`/exam-sessions?ref_type=assignment&ref_id=${encodeURIComponent(id)}`);
+        startedAt = session?.started_at || null;
+      } catch {}
+      if (routeChanged(_t)) return;
+      if (!startedAt) {
+        // Not started yet (or a rewrite gave a fresh attempt) → briefing screen, no clock.
+        renderExamBriefing(assignment);
+        return;
       }
-      // If time already expired on open → auto-submit immediately after render
+      // Already started → resume with whatever is left. Time keeps running while the student
+      // is away, so this may legitimately be 0 and trigger the auto-submit below.
+      const elapsed = (Date.now() - new Date(startedAt).getTime()) / 1000;
+      remainingSec = Math.max(0, assignment.time_limit_minutes * 60 - elapsed);
     }
 
     if (routeChanged(_t)) return;
@@ -3968,6 +3979,74 @@ async function showAssignment({ id }) {
     navigate('/assignments');
   }
 }
+
+// ── Exam briefing (the gate that starts the clock) ───────────────────────────
+// Shown instead of the exam itself when a timed exam has not been started yet. The countdown
+// is only armed by beginExamAssignment(), so browsing to the assignment costs no time.
+let _pendingExamAssignment = null;
+
+function renderExamBriefing(a) {
+  _pendingExamAssignment = a;
+  _activeAssignmentId = null;
+  stopAssignmentCountdown();
+  _removeExamBeforeUnload();
+
+  const qCount = a.question_count || 0;
+  const metaBits = [
+    qCount > 0 ? `${qCount} câu hỏi` : '',
+    a.deadline ? `Hạn nộp: ${formatDateTime(a.deadline)}` : '',
+  ].filter(Boolean).join(' · ');
+
+  $('#app').innerHTML = `
+    <div class="container">
+      <button class="btn-back" onclick="navigate('/assignments')">← Bài tập của tôi</button>
+      <div class="exam-briefing">
+        <div class="exam-briefing-badges">${skillBadge(a.skill)}<span class="badge badge-exam">🎯 Chế độ thi</span></div>
+        <h2 class="exam-briefing-title">${escapeHtml(a.title)}</h2>
+        ${metaBits ? `<div class="exam-briefing-meta">${escapeHtml(metaBits)}</div>` : ''}
+
+        <div class="exam-briefing-time">
+          <div class="exam-briefing-time-value">${a.time_limit_minutes} phút</div>
+          <div class="exam-briefing-time-label">Thời gian làm bài</div>
+        </div>
+
+        <ul class="exam-briefing-rules">
+          <li>Đồng hồ bắt đầu chạy <strong>ngay khi bạn bấm "Bắt đầu làm bài"</strong>.</li>
+          <li>Sau khi bắt đầu, thời gian <strong>vẫn tiếp tục trôi</strong> kể cả khi bạn thoát ra, tắt máy hay mất mạng.</li>
+          <li>Hết giờ, bài sẽ được <strong>tự động nộp</strong> với những gì bạn đã làm.</li>
+          <li>Chỉ bấm bắt đầu khi bạn đã sẵn sàng ngồi làm liên tục ${a.time_limit_minutes} phút.</li>
+        </ul>
+
+        <button class="btn btn-primary btn-lg exam-briefing-start" id="begin-exam-btn"
+          onclick="beginExamAssignment()">▶ Bắt đầu làm bài</button>
+      </div>
+    </div>`;
+}
+
+async function beginExamAssignment() {
+  const a = _pendingExamAssignment;
+  if (!a) { navigate('/assignments'); return; }
+
+  const btn = document.getElementById('begin-exam-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Đang bắt đầu...'; }
+
+  let remainingSec;
+  try {
+    const session = await api.post('/exam-sessions', { ref_type: 'assignment', ref_id: a.id });
+    const elapsed = (Date.now() - new Date(session.started_at).getTime()) / 1000;
+    remainingSec = Math.max(0, a.time_limit_minutes * 60 - elapsed);
+  } catch (e) {
+    // Never fall back to a local-only clock: without a server session there is no way to keep
+    // time across a reload, so let the student retry instead of starting an untracked exam.
+    toast('Không bắt đầu được bài thi: ' + (e.error || e.message), 'error');
+    if (btn) { btn.disabled = false; btn.textContent = '▶ Bắt đầu làm bài'; }
+    return;
+  }
+
+  _pendingExamAssignment = null;
+  renderAssignment(a, remainingSec);
+}
+window.beginExamAssignment = beginExamAssignment;
 
 function renderAssignment(a, remainingSec = null) {
   _activeAssignmentId = a.id;
@@ -7982,20 +8061,23 @@ async function showCompositeSectionExam({ id, sectionId }) {
       toast('Đề đã đóng', 'error'); navigate(`/composite/${id}`); return;
     }
 
-    // Compute remaining time
+    // Compute remaining time. As with single assignments, opening the section must not start
+    // its clock — only the briefing screen's "Bắt đầu" button does (see beginCompositeSection).
     let timerSecs = sec.time_limit_minutes ? sec.time_limit_minutes * 60 : null;
     if (_compositeExam.mode === 'exam' && sec.time_limit_minutes) {
+      let startedAt = null;
       try {
-        const session = await api.post('/exam-sessions', {
-          ref_type: 'composite_section',
-          ref_id: sectionId,
-          assignment_id: id,
-        });
-        const elapsed = (Date.now() - new Date(session.started_at).getTime()) / 1000;
-        timerSecs = Math.max(0, sec.time_limit_minutes * 60 - elapsed);
-      } catch {
-        timerSecs = sec.time_limit_minutes * 60;
+        const session = await api.get(
+          `/exam-sessions?ref_type=composite_section&ref_id=${encodeURIComponent(sectionId)}&assignment_id=${encodeURIComponent(id)}`);
+        startedAt = session?.started_at || null;
+      } catch {}
+      if (routeChanged(_t)) return;
+      if (!startedAt) {
+        renderCompositeSectionBriefing(id, sec);
+        return;
       }
+      const elapsed = (Date.now() - new Date(startedAt).getTime()) / 1000;
+      timerSecs = Math.max(0, sec.time_limit_minutes * 60 - elapsed);
       if (timerSecs <= 0) {
         await _autoSubmitCompositeSectionAndBack(id, sectionId);
         return;
@@ -8017,6 +8099,73 @@ async function showCompositeSectionExam({ id, sectionId }) {
   }
 }
 window.showCompositeSectionExam = showCompositeSectionExam;
+
+// Same clock gate as renderExamBriefing, for one section of a composite exam.
+let _pendingExamSection = null;
+
+function renderCompositeSectionBriefing(compositeId, sec) {
+  _pendingExamSection = { compositeId, sec };
+  _activeSectionId = null;
+  stopAssignmentCountdown();
+  _removeExamBeforeUnload();
+
+  const qCount = sec.question_count || 0;
+
+  $('#app').innerHTML = `
+    <div class="container">
+      <button class="btn-back" onclick="navigate('/composite/${compositeId}')">← Các phần thi</button>
+      <div class="exam-briefing">
+        <div class="exam-briefing-badges">${skillBadge(sec.skill)}<span class="badge badge-exam">🎯 Chế độ thi</span></div>
+        <h2 class="exam-briefing-title">${escapeHtml(sec.label)}</h2>
+        ${qCount > 0 ? `<div class="exam-briefing-meta">${qCount} câu hỏi</div>` : ''}
+
+        <div class="exam-briefing-time">
+          <div class="exam-briefing-time-value">${sec.time_limit_minutes} phút</div>
+          <div class="exam-briefing-time-label">Thời gian cho phần này</div>
+        </div>
+
+        <ul class="exam-briefing-rules">
+          <li>Đồng hồ bắt đầu chạy <strong>ngay khi bạn bấm "Bắt đầu làm bài"</strong>.</li>
+          <li>Sau khi bắt đầu, thời gian <strong>vẫn tiếp tục trôi</strong> kể cả khi bạn thoát ra, tắt máy hay mất mạng.</li>
+          <li>Hết giờ, phần này sẽ được <strong>tự động nộp</strong> với những gì bạn đã làm.</li>
+          <li>Mỗi phần có đồng hồ riêng — các phần khác chưa bắt đầu sẽ không bị tính giờ.</li>
+        </ul>
+
+        <button class="btn btn-primary btn-lg exam-briefing-start" id="begin-exam-btn"
+          onclick="beginCompositeSection()">▶ Bắt đầu làm bài</button>
+      </div>
+    </div>`;
+}
+
+async function beginCompositeSection() {
+  const pending = _pendingExamSection;
+  if (!pending) { navigate('/assignments'); return; }
+  const { compositeId, sec } = pending;
+
+  const btn = document.getElementById('begin-exam-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Đang bắt đầu...'; }
+
+  let timerSecs;
+  try {
+    const session = await api.post('/exam-sessions', {
+      ref_type: 'composite_section',
+      ref_id: sec.id,
+      assignment_id: compositeId,
+    });
+    const elapsed = (Date.now() - new Date(session.started_at).getTime()) / 1000;
+    timerSecs = Math.max(0, sec.time_limit_minutes * 60 - elapsed);
+  } catch (e) {
+    toast('Không bắt đầu được phần thi: ' + (e.error || e.message), 'error');
+    if (btn) { btn.disabled = false; btn.textContent = '▶ Bắt đầu làm bài'; }
+    return;
+  }
+
+  _pendingExamSection = null;
+  _activeSectionId = sec.id;
+  _renderCompositeSectionFullScreen(compositeId, sec, timerSecs);
+  _installExamBeforeUnload();
+}
+window.beginCompositeSection = beginCompositeSection;
 
 function _renderCompositeSectionFullScreen(compositeId, sec, timerSecs) {
   const sectionId = sec.id;

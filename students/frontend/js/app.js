@@ -3606,7 +3606,8 @@ async function openAttemptHistory(assignmentId) {
                       : v.attempt_kind === 'rewrite' ? 'Theo yêu cầu giáo viên'
                       : 'Lần nộp đầu';
       return `
-        <div class="attempt-history-row${isLatest ? ' is-latest' : ''}">
+        <div class="attempt-history-row${isLatest ? ' is-latest' : ''}" role="button" tabindex="0"
+             onclick="closeModal();switchGradedVersion('${v.id}','${assignmentId}')">
           <div class="attempt-history-main">
             <span class="attempt-history-no">Lần ${v.attempt_number}</span>
             ${isLatest ? '<span class="attempt-history-badge">Đang tính điểm</span>' : ''}
@@ -3618,7 +3619,7 @@ async function openAttemptHistory(assignmentId) {
     }).join('');
     $('#modal-body').innerHTML = `
       <div class="attempt-history">
-        <div class="attempt-history-note">Điểm chính thức luôn là <b>lần mới nhất</b>.</div>
+        <div class="attempt-history-note">Điểm chính thức luôn là <b>lần mới nhất</b>. Bấm vào một lần để xem lại bài làm và từng câu đúng/sai.</div>
         ${rows || '<div class="attempt-history-note">Chưa có lần nộp nào.</div>'}
       </div>`;
   } catch (e) {
@@ -3626,6 +3627,24 @@ async function openAttemptHistory(assignmentId) {
   }
 }
 window.openAttemptHistory = openAttemptHistory;
+
+// Xem lại bài làm của MỘT lần cụ thể (Reading/Listening) — song song với switchWritingVersion
+// của Writing. `/submissions/:id/by-student` tự kiểm tra quyền sở hữu nên học sinh không mở
+// được bài của người khác dù có id.
+async function switchGradedVersion(submissionId, assignmentId) {
+  if (!submissionId || !assignmentId) return;
+  setLoading('Đang tải...');
+  try {
+    const [sub, allVersions] = await Promise.all([
+      api.get(`/submissions/${submissionId}/by-student`),
+      api.get(`/assignments/${assignmentId}/my-submissions`),
+    ]);
+    renderGradedResult(sub, allVersions);
+  } catch (e) {
+    toast('Lỗi tải bài làm: ' + (e.error || e.message), 'error');
+  }
+}
+window.switchGradedVersion = switchGradedVersion;
 
 async function showMyVocab() {
   _myVocabSearch = '';
@@ -5086,9 +5105,13 @@ async function showResult({ id }) {
       `/submissions?assignment_id=${id}`
     );
     if (routeChanged(_t)) return;
-    // Fetch all versions for writing/speaking (version selector)
+    // Fetch all versions for the version selector. Reading/Listening cũng cần từ khi có mode
+    // làm lại tính điểm — chỉ gọi khi thật sự có nhiều hơn một lần, để bài thường không phải
+    // trả thêm một round-trip.
     let allVersions = null;
-    if (sub.skill === 'writing' || sub.skill === 'speaking') {
+    const needsVersions = sub.skill === 'writing' || sub.skill === 'speaking'
+      || (sub.attempt_number || 1) > 1;
+    if (needsVersions) {
       try { allVersions = await api.get(`/assignments/${id}/my-submissions`); } catch {}
       if (routeChanged(_t)) return;
     }
@@ -5102,13 +5125,31 @@ async function showResult({ id }) {
 
 function renderResult(sub, allVersions = null) {
   const skill = sub.skill;
-  if (skill === 'reading' || skill === 'listening') renderGradedResult(sub);
+  if (skill === 'reading' || skill === 'listening') renderGradedResult(sub, allVersions);
   else if (skill === 'writing')  renderWritingResult(sub, allVersions);
   else if (skill === 'speaking') renderSpeakingResult(sub, allVersions);
 }
 
-function renderGradedResult(sub) {
+function renderGradedResult(sub, allVersions = null) {
   _gradedResultSub = sub;
+  // Lần đang xem có phải lần mới nhất không. Quan trọng vì chỉ lần mới nhất mới là điểm chính
+  // thức — xem lại một lần cũ mà không nói rõ thì học sinh sẽ tưởng đó là điểm hiện tại.
+  const _sortedVersions = allVersions
+    ? [...allVersions].sort((a, b) => (a.attempt_number || 1) - (b.attempt_number || 1))
+    : null;
+  const _latestAttemptNo = _sortedVersions
+    ? (_sortedVersions[_sortedVersions.length - 1].attempt_number || 1)
+    : (sub.attempt_number || 1);
+  const isViewingLatest = (sub.attempt_number || 1) === _latestAttemptNo;
+  const versionSelector = _sortedVersions && _sortedVersions.length > 1 ? `
+    <div class="version-selector">
+      <span class="version-selector-label">Xem kết quả:</span>
+      ${_sortedVersions.map(v => `
+        <button class="version-btn${v.id === sub.id ? ' active' : ''}"
+          onclick="switchGradedVersion('${v.id}','${sub.assignment_id}')">
+          Lần ${v.attempt_number}${v.overall_score != null ? ` · ${v.overall_score}` : ''}
+        </button>`).join('')}
+    </div>` : '';
   const questionsData  = sub.questions_data || [];
   const studentAnswers = sub.student_answers || [];
 
@@ -5199,12 +5240,18 @@ function renderGradedResult(sub) {
           ${vocabList.length > 0 && !sub.is_composite_section ? `<a href="#/vocab-game/${sub.assignment_id || ''}" class="btn-vocab-toolbar" title="Luyện từ vựng bài này">🃏 Từ vựng</a>` : ''}
           ${total - correctCount > 0 ? `<button class="btn-practice btn-practice-wrong" onclick="navigate('${getPracticeHref(sub, 'retry_wrong')}')">📝 Làm lại câu sai (${total - correctCount})</button>` : ''}
           <button class="btn-practice btn-practice-full" onclick="navigate('${getPracticeHref(sub, 'retry_full')}')">🔄 Làm lại toàn bài</button>
-          ${canRetakeForScore(sub) ? `<button class="btn-practice btn-practice-scored" onclick="startScoredRetake('${sub.assignment_id}')">🎯 Làm lại tính điểm</button>` : ''}
-          ${(sub.attempt_number || 1) > 1 && !sub.is_composite_section ? `<button class="btn-practice btn-practice-history" onclick="openAttemptHistory('${sub.assignment_id}')">📋 Lịch sử các lần</button>` : ''}
+          ${canRetakeForScore(sub) && isViewingLatest ? `<button class="btn-practice btn-practice-scored" onclick="startScoredRetake('${sub.assignment_id}')">🎯 Làm lại tính điểm</button>` : ''}
+          ${_latestAttemptNo > 1 && !sub.is_composite_section ? `<button class="btn-practice btn-practice-history" onclick="openAttemptHistory('${sub.assignment_id}')">📋 Lịch sử các lần</button>` : ''}
         </div>
       </div>
       <div class="assignment-content">
         <div class="content-pane" id="result-content-pane">
+          ${versionSelector}
+          ${!isViewingLatest ? `
+            <div class="old-attempt-notice">
+              Bạn đang xem <b>lần ${sub.attempt_number}</b> — đây không phải điểm chính thức.
+              Điểm đang được tính là <b>lần ${_latestAttemptNo}</b>.
+            </div>` : ''}
           ${sub.skill === 'listening' ? renderListeningAudioHtml(sub) : ''}
           ${sub.skill === 'listening' && sub.script ? `
             <div class="script-section" id="listening-script-section">

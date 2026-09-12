@@ -4605,7 +4605,8 @@ export default {
         if (!claims) return err('Unauthorized', 401);
         const studentId = String(claims.student_id);
         const [sub] = await sql`
-          SELECT sub.*, a.title AS assignment_title, q.skill, q.questions_data, q.content_text, q.content_blocks, q.content_url, q.content_urls, q.vocabulary, q.script
+          SELECT sub.*, a.title AS assignment_title, a.scoring_scale, a.is_active,
+                 q.skill, q.questions_data, q.content_text, q.content_blocks, q.content_url, q.content_urls, q.vocabulary, q.script
           FROM submissions sub
           JOIN assignments a ON a.id = sub.assignment_id
           JOIN question_pool q ON q.id = a.question_id

@@ -3598,39 +3598,6 @@ async function startScoredRetake(assignmentId) {
 }
 window.startScoredRetake = startScoredRetake;
 
-async function openAttemptHistory(assignmentId) {
-  if (!assignmentId) return;
-  openModal('Lịch sử các lần làm', '<div class="loading-screen"><div class="spinner"></div></div>');
-  try {
-    const versions = await api.get(`/assignments/${assignmentId}/my-submissions`);
-    const list = [...(versions || [])].sort((a, b) => (b.attempt_number || 1) - (a.attempt_number || 1));
-    const rows = list.map((v, i) => {
-      const isLatest = i === 0;
-      const kindLabel = v.attempt_kind === 'retake'  ? 'Làm lại tính điểm'
-                      : v.attempt_kind === 'rewrite' ? 'Theo yêu cầu giáo viên'
-                      : 'Lần nộp đầu';
-      return `
-        <div class="attempt-history-row${isLatest ? ' is-latest' : ''}" role="button" tabindex="0"
-             onclick="closeModal();switchGradedVersion('${v.id}','${assignmentId}')">
-          <div class="attempt-history-main">
-            <span class="attempt-history-no">Lần ${v.attempt_number}</span>
-            ${isLatest ? '<span class="attempt-history-badge">Đang tính điểm</span>' : ''}
-            ${v.is_overtime ? '<span class="attempt-history-late">Quá giờ</span>' : ''}
-          </div>
-          <div class="attempt-history-meta">${kindLabel} · ${formatDateTime(v.submitted_at)}</div>
-          <div class="attempt-history-score">${v.overall_score != null ? v.overall_score : '—'}</div>
-        </div>`;
-    }).join('');
-    $('#modal-body').innerHTML = `
-      <div class="attempt-history">
-        <div class="attempt-history-note">Điểm chính thức luôn là <b>lần mới nhất</b>. Bấm vào một lần để xem lại bài làm và từng câu đúng/sai.</div>
-        ${rows || '<div class="attempt-history-note">Chưa có lần nộp nào.</div>'}
-      </div>`;
-  } catch (e) {
-    $('#modal-body').innerHTML = `<p style="color:var(--danger)">${escapeHtml(e.error || e.message || 'Lỗi tải lịch sử')}</p>`;
-  }
-}
-window.openAttemptHistory = openAttemptHistory;
 
 // Xem lại bài làm của MỘT lần cụ thể (Reading/Listening) — song song với switchWritingVersion
 // của Writing. `/submissions/:id/by-student` tự kiểm tra quyền sở hữu nên học sinh không mở
@@ -5245,7 +5212,6 @@ function renderGradedResult(sub, allVersions = null) {
           ${total - correctCount > 0 ? `<button class="btn-practice btn-practice-wrong" onclick="navigate('${getPracticeHref(sub, 'retry_wrong')}')">📝 Làm lại câu sai (${total - correctCount})</button>` : ''}
           <button class="btn-practice btn-practice-full" onclick="navigate('${getPracticeHref(sub, 'retry_full')}')">🔄 Làm lại toàn bài</button>
           ${canRetakeForScore(sub) ? `<button class="btn-practice btn-practice-scored" onclick="startScoredRetake('${sub.assignment_id}')">🎯 Làm lại tính điểm</button>` : ''}
-          ${_latestAttemptNo > 1 && !sub.is_composite_section ? `<button class="btn-practice btn-practice-history" onclick="openAttemptHistory('${sub.assignment_id}')">📋 Lịch sử các lần</button>` : ''}
         </div>
       </div>
       <div class="assignment-content">

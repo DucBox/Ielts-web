@@ -2314,6 +2314,29 @@ async function autoCloseExpired(sql, opts = {}) {
         AND (last_auto_closed_at IS NULL OR last_auto_closed_at < deadline)
     `;
   }
+
+  // Bài đóng thì HUỶ HẲN lượt làm lại đang dang dở — không tự nộp gì cả.
+  //
+  // Tự nộp là bất khả thi ở đây: đáp án đang làm dở chỉ nằm trong localStorage của máy học
+  // sinh, server không hề có. "Tự nộp" phía server chỉ có thể nộp một lưới TRẮNG, tức đè điểm
+  // cũ bằng 0 — đúng thảm hoạ mà cả loạt fix hôm nay vừa dọn. Huỷ thì học sinh không mất gì
+  // đáng kể: điểm của lần trước vẫn nguyên và vẫn là điểm chính thức.
+  //
+  // Quét theo `is_active = false` chứ không chỉ theo các row vừa bị đóng ở trên, để bắt luôn
+  // trường hợp giáo viên tự tay tắt toggle — cũng phải huỷ lượt đang mở như nhau.
+  // Một câu duy nhất, tham số hoá hoàn toàn (NULL = không giới hạn phạm vi) thay vì ghép mảnh
+  // SQL động: hàm này nằm trên đường đi của hàng loạt endpoint, một lỗi cú pháp ở đây là sập
+  // diện rộng chứ không phải hỏng một tính năng.
+  const scopeAssignmentId = opts.assignmentId ?? null;
+  const scopeClassId      = opts.classId ?? null;
+  await sql`
+    DELETE FROM assignment_retakes ar
+    USING assignments a
+    WHERE a.id = ar.assignment_id
+      AND a.is_active = false
+      AND (${scopeAssignmentId}::uuid IS NULL OR a.id       = ${scopeAssignmentId}::uuid)
+      AND (${scopeClassId}::uuid      IS NULL OR a.class_id = ${scopeClassId}::uuid)
+  `;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

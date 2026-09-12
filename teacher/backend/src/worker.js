@@ -1157,17 +1157,32 @@ async function loadCompositeSectionExamSession(sql, { studentId, assignmentId, s
 }
 
 // Which attempt of an assignment the student is on right now: 1 normally, and one past the
-// latest submission once the teacher has asked for a rewrite. The exam clock is scoped to this
+// latest submission once a new attempt has been unlocked. The exam clock is scoped to this
 // number — a new attempt gets a fresh clock, re-opening the same attempt never does.
+//
+// Two independent things can unlock an attempt, and they must not shadow each other:
+//   - the teacher asking for a rewrite (`rewrite_status = 'requested'`, Writing/Speaking), and
+//   - the student opening a scored retake themselves (`assignment_retakes`, Reading/Listening).
+// Taking the max means whichever is further along wins, so an open retake can never hand back
+// a number that would make the exam clock reset a second time for the same attempt.
 async function getCurrentAssignmentAttemptNumber(sql, { studentId, assignmentId }) {
-  const [row] = await sql`
-    SELECT attempt_number, rewrite_status
-    FROM submissions
-    WHERE assignment_id = ${assignmentId} AND student_id = ${studentId}
-    ORDER BY attempt_number DESC
-    LIMIT 1
-  `;
-  return row?.rewrite_status === 'requested' ? (row.attempt_number || 0) + 1 : 1;
+  const [subRows, retakeRows] = await Promise.all([
+    sql`
+      SELECT attempt_number, rewrite_status
+      FROM submissions
+      WHERE assignment_id = ${assignmentId} AND student_id = ${studentId}
+      ORDER BY attempt_number DESC
+      LIMIT 1
+    `,
+    sql`
+      SELECT attempt_number
+      FROM assignment_retakes
+      WHERE assignment_id = ${assignmentId} AND student_id = ${studentId}
+    `,
+  ]);
+  const row = subRows[0];
+  const fromRewrite = row?.rewrite_status === 'requested' ? (row.attempt_number || 0) + 1 : 1;
+  return Math.max(fromRewrite, retakeRows[0]?.attempt_number || 1);
 }
 
 async function ensureCompositeSectionExamSession(sql, { studentId, assignmentId, sectionId }) {
@@ -4174,13 +4189,13 @@ export default {
           SELECT s.id AS student_id, s.full_name, s.username,
             sub.submission_id, sub.overall_score,
             sub.submission_status, sub.submitted_at,
-            sub.attempt_number, sub.rewrite_status
+            sub.attempt_number, sub.rewrite_status, sub.attempt_kind
           FROM student_classes sc
           JOIN students s ON s.id = sc.student_id
           LEFT JOIN LATERAL (
             SELECT id AS submission_id, overall_score,
               status AS submission_status, submitted_at,
-              attempt_number, rewrite_status
+              attempt_number, rewrite_status, attempt_kind
             FROM submissions
             WHERE student_id = s.id AND assignment_id = ${p.id}
             ORDER BY attempt_number DESC
@@ -4190,6 +4205,63 @@ export default {
           ORDER BY s.full_name ASC
         `;
         return json({ assignment, students });
+      }
+
+      // POST /assignments/:id/retake — học sinh tự mở một lượt làm lại CÓ TÍNH ĐIỂM.
+      //
+      // Khác hẳn hai mode luyện tập (`/practice/submit`, bảng `practice_attempts`, giáo viên
+      // không bao giờ thấy): lượt này chèn một submission thật với attempt_number mới, đè lên
+      // điểm cũ ở mọi thống kê. Nó KHÔNG tự nộp gì cả — chỉ mở cửa, rồi luồng làm bài chạy
+      // lại y hệt lần đầu (briefing + đồng hồ server cho mode thi, vào thẳng đề cho mode
+      // luyện tập).
+      if ((p = matchPath('/assignments/:id/retake', path)) && method === 'POST') {
+        const claims = await requireStudentAuth(request, env, sql);
+        if (!claims) return err('Unauthorized', 401);
+        const studentId = String(claims.student_id);
+        if (await checkRateLimit(env.KV, `retake:${studentId}`, 20, 60))
+          return err('Quá nhiều yêu cầu — thử lại sau', 429);
+
+        // Chạy trước khi đọc is_active, để một bài vừa quá hạn được đóng lại ngay tại đây
+        // thay vì lọt lưới. Ngược lại, giáo viên gia hạn deadline hoặc bật lại toggle thì
+        // autoCloseExpired không đóng nữa (chốt `last_auto_closed_at < deadline`) nên học
+        // sinh làm lại được bình thường — đúng như đã chốt.
+        await autoCloseExpired(sql, { assignmentId: p.id });
+        const assignment = await loadStudentAssignmentAccess(sql, p.id, studentId);
+        if (!assignment) return err('Học sinh không thuộc bài tập này', 403);
+        if (assignment.skill !== 'reading' && assignment.skill !== 'listening')
+          return err('Chỉ Reading và Listening mới làm lại tính điểm được', 400);
+        if (!assignment.is_active) return err('Bài tập đã đóng', 403);
+
+        const [latest] = await sql`
+          SELECT attempt_number, rewrite_status
+          FROM submissions
+          WHERE assignment_id = ${p.id} AND student_id = ${studentId}
+          ORDER BY attempt_number DESC
+          LIMIT 1
+        `;
+        if (!latest) return err('Bạn chưa nộp bài này lần nào', 400);
+        // Nhường quyền cho luồng giáo viên: nếu giáo viên đang yêu cầu làm lại thì attempt kế
+        // tiếp đã thuộc về yêu cầu đó, mở thêm một lượt retake sẽ tranh cùng attempt_number.
+        if (latest.rewrite_status === 'requested')
+          return err('Bài đang chờ bạn làm lại theo yêu cầu của giáo viên', 409);
+
+        const nextAttemptNumber = latest.attempt_number + 1;
+        const [inserted] = await sql`
+          INSERT INTO assignment_retakes (student_id, assignment_id, attempt_number)
+          VALUES (${studentId}, ${p.id}, ${nextAttemptNumber})
+          ON CONFLICT (student_id, assignment_id) DO NOTHING
+          RETURNING attempt_number
+        `;
+        // Đã có lượt đang mở → trả về chính nó. Tuyệt đối không ghi đè: ghi đè sẽ đổi
+        // attempt_number và khiến POST /exam-sessions reset đồng hồ của một lượt đang chạy dở.
+        if (!inserted) {
+          const [open] = await sql`
+            SELECT attempt_number, opened_at FROM assignment_retakes
+            WHERE student_id = ${studentId} AND assignment_id = ${p.id}
+          `;
+          return json({ attempt_number: open?.attempt_number ?? nextAttemptNumber, already_open: true });
+        }
+        return json({ attempt_number: inserted.attempt_number, already_open: false }, 201);
       }
 
       if ((p = matchPath('/assignments/:id/question', path)) && method === 'GET') {
@@ -4280,14 +4352,23 @@ export default {
           ORDER BY attempt_number DESC
           LIMIT 1
         `;
-        if (existing && existing.rewrite_status !== 'requested') {
+        // Rewrites (teacher-requested) bypass the closed/deadline gate.
+        const isRewrite = existing?.rewrite_status === 'requested';
+        // Student-opened scored retake (Reading/Listening). Unlike a rewrite it does NOT get to
+        // bypass the closed/deadline gate below — a retake is meant to behave exactly like a
+        // first attempt, and a first attempt cannot be submitted into a closed assignment.
+        const [openRetake] = isRewrite ? [null] : await sql`
+          SELECT attempt_number FROM assignment_retakes
+          WHERE student_id = ${studentId} AND assignment_id = ${p.id}
+        `;
+        const isRetake = !isRewrite && !!openRetake;
+
+        if (existing && !isRewrite && !isRetake) {
           // Do NOT delete audio keys here — on a network-retry race, the keys are already owned
           // by the existing submission and deleting them would destroy the submitted audio.
           return err('Bạn đã nộp bài này rồi', 409);
         }
         const nextAttemptNumber = existing ? existing.attempt_number + 1 : 1;
-        // Rewrites (teacher-requested) bypass the closed/deadline gate.
-        const isRewrite = existing?.rewrite_status === 'requested';
         if (!assignment.is_active && !isRewrite) {
           await safeDeleteOwnedKeys();
           return err('Bài tập đã đóng', 403);
@@ -4424,21 +4505,32 @@ export default {
           // (audio uploads are already done above, before any DB writes)
           const txResults = await sql.transaction(txn => {
             const queries = [];
-            if (existing?.rewrite_status === 'requested') {
+            // Đánh dấu lần nộp cũ là đã bị thay thế. Đây chính là cơ chế "bản mới nhất thắng"
+            // mà mọi thống kê đang dựa vào (`rewrite_status IS DISTINCT FROM 'rewritten'`),
+            // nên retake dùng lại y hệt rewrite và không cần sửa một truy vấn thống kê nào.
+            if (existing && (isRewrite || isRetake)) {
               queries.push(txn`
                 UPDATE submissions SET rewrite_status = 'rewritten'
                 WHERE id = ${existing.id}
               `);
             }
+            // Đóng lượt làm lại trong CÙNG transaction với INSERT: nếu INSERT hỏng thì row
+            // retake phải còn nguyên, nếu không học sinh mất cả bài lẫn quyền làm lại.
+            if (isRetake) {
+              queries.push(txn`
+                DELETE FROM assignment_retakes
+                WHERE student_id = ${studentId} AND assignment_id = ${p.id}
+              `);
+            }
             queries.push(txn`
               INSERT INTO submissions
-                (assignment_id, student_id, student_answers, writing_content, word_count, speaking_script, speaking_audio_url, speaking_audio_urls, overall_score, is_overtime, attempt_number)
+                (assignment_id, student_id, student_answers, writing_content, word_count, speaking_script, speaking_audio_url, speaking_audio_urls, overall_score, is_overtime, attempt_number, attempt_kind)
               VALUES (
                 ${p.id}, ${studentId},
                 ${studentAnswers ? JSON.stringify(studentAnswers) : null},
                 ${writingContent}, ${wordCount}, ${speakingScript}, ${speakingAudioUrl},
                 ${JSON.stringify(speakingAudioUrls)}::jsonb, ${overallScore}, ${isOvertime},
-                ${nextAttemptNumber}
+                ${nextAttemptNumber}, ${isRewrite ? 'rewrite' : isRetake ? 'retake' : 'original'}
               )
               RETURNING *
             `);
@@ -4536,11 +4628,17 @@ export default {
           if (!studentId) return err('student_id là bắt buộc', 400);
 
           const [sub] = await sql`
-            SELECT sub.*, a.title AS assignment_title, a.scoring_scale,
-                   q.skill, q.questions_data, q.content_text, q.content_blocks, q.content_url, q.content_urls, q.vocabulary, q.script
+            SELECT sub.*, a.title AS assignment_title, a.scoring_scale, a.is_active,
+                   q.skill, q.questions_data, q.content_text, q.content_blocks, q.content_url, q.content_urls, q.vocabulary, q.script,
+                   -- Cho client biết có lượt làm lại đang mở hay không: showAssignment() phải
+                   -- KHÔNG đá về trang bảng điểm trong trường hợp đó, nếu không học sinh
+                   -- không quay lại được bài đang làm dở (và đồng hồ thì vẫn đang chạy).
+                   ret.attempt_number AS retake_attempt_number
             FROM submissions sub
             JOIN assignments a ON a.id = sub.assignment_id
             JOIN question_pool q ON q.id = a.question_id
+            LEFT JOIN assignment_retakes ret
+              ON ret.assignment_id = sub.assignment_id AND ret.student_id = sub.student_id
             WHERE sub.assignment_id = ${assignmentId} AND sub.student_id = ${studentId}
             ORDER BY sub.attempt_number DESC
             LIMIT 1
@@ -4548,6 +4646,25 @@ export default {
           if (!sub) return err('Không tìm thấy bài nộp', 404);
           return json(sub);
         }
+      }
+
+      // GET /submissions/:id/attempts — mọi lần nộp của CÙNG học sinh trên CÙNG bài tập, tính
+      // từ một submission bất kỳ trong nhóm. Dùng cho dropdown chọn lần làm ở modal chấm bài:
+      // bảng "Xem bài" chỉ trỏ tới lần mới nhất, nhưng giáo viên cần mở lại được lần cũ để
+      // thấy điểm tụt hay tăng là do đâu.
+      if ((p = matchPath('/submissions/:id/attempts', path)) && method === 'GET') {
+        if (!await requireTeacherAuth(request, env)) return err('Unauthorized', 401);
+        const rows = await sql`
+          SELECT sib.id, sib.attempt_number, sib.attempt_kind, sib.overall_score,
+                 sib.submitted_at, sib.is_overtime, sib.rewrite_status
+          FROM submissions cur
+          JOIN submissions sib
+            ON sib.assignment_id = cur.assignment_id AND sib.student_id = cur.student_id
+          WHERE cur.id = ${p.id}
+          ORDER BY sib.attempt_number ASC
+        `;
+        if (!rows.length) return err('Không tìm thấy bài nộp', 404);
+        return json(rows);
       }
 
       if ((p = matchPath('/submissions/:id/ai-feedback', path)) && method === 'POST') {
@@ -5052,7 +5169,8 @@ export default {
             q.skill, q.title AS question_title, q.content_text, q.content_blocks, q.content_url,
             jsonb_array_length(COALESCE(q.vocabulary, '[]'::jsonb)) AS vocab_count,
             sub.id AS submission_id, sub.overall_score, sub.status AS submission_status,
-            sub.submitted_at, sub.rewrite_status, sub.attempt_number,
+            sub.submitted_at, sub.rewrite_status, sub.attempt_number, sub.attempt_kind,
+            ret.attempt_number AS retake_attempt_number,
             CASE WHEN q.skill = 'composite' THEN (
               SELECT json_agg(json_build_object(
                 'id', cqs.id, 'label', cqs.label, 'skill', cqs.skill,
@@ -5068,12 +5186,14 @@ export default {
           FROM assignments a
           JOIN question_pool q ON q.id = a.question_id
           LEFT JOIN LATERAL (
-            SELECT id, overall_score, status, submitted_at, rewrite_status, attempt_number
+            SELECT id, overall_score, status, submitted_at, rewrite_status, attempt_number, attempt_kind
             FROM submissions
             WHERE assignment_id = a.id AND student_id = ${studentId}
             ORDER BY attempt_number DESC
             LIMIT 1
           ) sub ON true
+          LEFT JOIN assignment_retakes ret
+            ON ret.assignment_id = a.id AND ret.student_id = ${studentId}
           WHERE a.class_id = ${classId}
           ORDER BY a.created_at DESC
         `;
@@ -5086,7 +5206,8 @@ export default {
         if (!claims) return err('Unauthorized', 401);
         const studentId = String(claims.student_id);
         const versions = await sql`
-          SELECT id, attempt_number, overall_score, teacher_feedback, submitted_at, rewrite_status, writing_content
+          SELECT id, attempt_number, attempt_kind, overall_score, teacher_feedback, submitted_at,
+                 rewrite_status, writing_content, is_overtime
           FROM submissions
           WHERE assignment_id = ${p.id} AND student_id = ${studentId}
           ORDER BY attempt_number ASC

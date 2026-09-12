@@ -679,8 +679,11 @@ body {
 .badge-pending   { background: var(--gray-100); color: var(--gray-600); }
 .badge-overdue   { background: var(--danger-lt); color: var(--danger); }
 .badge-rewrite   { background: #fee2e2; color: #dc2626; font-weight: 700; }
+.badge-retaking  { background: var(--primary-lt); color: var(--primary); font-weight: 700; }
 
 .rewrite-score   { color: #dc2626 !important; }
+/* Điểm cũ trong lúc đang có lượt làm lại dang dở: làm mờ để không bị đọc nhầm là điểm chốt. */
+.retaking-score  { opacity: .55; }
 
 /* ═══ ASSIGNMENT LIST ════════════════════════════════════════════════════════ */
 .assignment-list {
@@ -1529,6 +1532,13 @@ body {
   box-shadow: 0 4px 14px rgba(239, 68, 68, .18);
 }
 .assignment-card.rewrite:hover { border-color: #dc2626; box-shadow: 0 6px 18px rgba(239, 68, 68, .26); }
+
+/* Đang có lượt làm lại dang dở — nhấn bằng màu thương hiệu, không phải đỏ: đây là việc học
+   sinh tự chọn, không phải yêu cầu của giáo viên. */
+.assignment-card.retaking {
+  border: 2px solid var(--primary);
+  box-shadow: 0 4px 14px rgba(15, 118, 110, .16);
+}
 
 /* "Cần làm" cards: full presence + primary accent bar (vs the dimmed "Đã nộp") */
 .assignment-card.pending-card {
@@ -2393,6 +2403,69 @@ body {
   border-color: var(--gray-300, #d1d5db);
 }
 .btn-practice-full:hover { background: var(--gray-200, #e5e7eb); }
+/* Làm lại CÓ TÍNH ĐIỂM — cố tình là nút đặc, màu thương hiệu, tương phản hẳn với hai nút
+   luyện tập nhạt bên cạnh: hệ quả của nó khác hẳn (đè lên điểm chính thức), nên nó không
+   được phép trông như một lựa chọn ngang hàng vô hại. */
+.btn-practice-scored {
+  background: var(--primary);
+  color: #fff;
+  border-color: var(--primary);
+}
+.btn-practice-scored:hover { filter: brightness(1.08); }
+.btn-practice-history {
+  background: transparent;
+  color: var(--gray-600, #4b5563);
+  border-color: var(--gray-300, #d1d5db);
+}
+.btn-practice-history:hover { background: var(--gray-100, #f3f4f6); }
+
+/* ── Modal lịch sử các lần làm ── */
+.attempt-history-note {
+  font-size: 13px;
+  color: var(--gray-600, #4b5563);
+  margin-bottom: 10px;
+}
+.attempt-history-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-areas: "main score" "meta score";
+  gap: 2px 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid var(--gray-200, #e5e7eb);
+  border-radius: 8px;
+  margin-bottom: 8px;
+}
+.attempt-history-row.is-latest {
+  border-color: var(--primary);
+  background: var(--primary-lt);
+}
+.attempt-history-main { grid-area: main; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.attempt-history-meta { grid-area: meta; font-size: 12px; color: var(--gray-500, #6b7280); }
+.attempt-history-no   { font-weight: 700; }
+.attempt-history-score {
+  grid-area: score;
+  font-size: 22px;
+  font-weight: 800;
+  color: var(--primary);
+}
+.attempt-history-badge {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--primary);
+  color: #fff;
+}
+.attempt-history-late {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--danger-lt);
+  color: var(--danger);
+}
+[data-theme="dark"] .attempt-history-row { border-color: var(--gray-700, #374151); }
 
 /* ═══ VOCAB HUB PAGE ═════════════════════════════════════════════════════════ */
 .vocab-hub-page { max-width: 720px; }

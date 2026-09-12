@@ -3558,6 +3558,75 @@ function getPracticeHref(sub, type) {
   return `/practice/${sub.assignment_id}?type=${type}`;
 }
 
+// ── Làm lại CÓ TÍNH ĐIỂM ─────────────────────────────────────────────────────
+// Khác hai mode luyện tập ở trên: lượt này tạo một bài nộp thật, đè lên điểm cũ ở mọi thống
+// kê của học sinh lẫn giáo viên. Chỉ Reading/Listening (tự chấm được) và chỉ khi bài còn mở —
+// giáo viên gia hạn deadline hoặc bật lại toggle thì nút xuất hiện trở lại.
+function canRetakeForScore(sub) {
+  if (!sub || sub.is_composite_section || !sub.assignment_id) return false;
+  if (sub.skill !== 'reading' && sub.skill !== 'listening') return false;
+  return sub.is_active !== false;
+}
+
+async function startScoredRetake(assignmentId) {
+  if (!assignmentId) return;
+  const ok = await confirmSubmit({
+    title: '🎯 Làm lại có tính điểm',
+    message: `<div style="line-height:1.6">
+      Lần làm này <b>được tính điểm</b> và sẽ <b>thay thế điểm hiện tại</b> của bạn — giáo viên
+      cũng sẽ thấy kết quả mới thay cho kết quả cũ.<br><br>
+      Bài chạy y hệt lần đầu: nếu là đề thi có giới hạn thời gian thì đồng hồ bắt đầu chạy khi
+      bạn bấm "Bắt đầu làm bài", và <b>vẫn chạy tiếp kể cả khi bạn thoát ra</b>.
+    </div>`,
+    confirmText: 'Bắt đầu làm lại',
+    cancelText: 'Huỷ',
+  });
+  if (!ok) return;
+  try {
+    await api.post(`/assignments/${assignmentId}/retake`, {});
+    // Bản nháp của lần trước phải biến mất, nếu không lần mới sẽ mở ra với đáp án cũ điền sẵn.
+    clearAllDrafts(assignmentId);
+    invalidateAssignmentsCache(true);
+    navigate(`/assignment/${assignmentId}`);
+  } catch (e) {
+    toast('Không mở được lượt làm lại: ' + (e.error || e.message), 'error');
+  }
+}
+window.startScoredRetake = startScoredRetake;
+
+async function openAttemptHistory(assignmentId) {
+  if (!assignmentId) return;
+  openModal('Lịch sử các lần làm', '<div class="loading-screen"><div class="spinner"></div></div>');
+  try {
+    const versions = await api.get(`/assignments/${assignmentId}/my-submissions`);
+    const list = [...(versions || [])].sort((a, b) => (b.attempt_number || 1) - (a.attempt_number || 1));
+    const rows = list.map((v, i) => {
+      const isLatest = i === 0;
+      const kindLabel = v.attempt_kind === 'retake'  ? 'Làm lại tính điểm'
+                      : v.attempt_kind === 'rewrite' ? 'Theo yêu cầu giáo viên'
+                      : 'Lần nộp đầu';
+      return `
+        <div class="attempt-history-row${isLatest ? ' is-latest' : ''}">
+          <div class="attempt-history-main">
+            <span class="attempt-history-no">Lần ${v.attempt_number}</span>
+            ${isLatest ? '<span class="attempt-history-badge">Đang tính điểm</span>' : ''}
+            ${v.is_overtime ? '<span class="attempt-history-late">Quá giờ</span>' : ''}
+          </div>
+          <div class="attempt-history-meta">${kindLabel} · ${formatDateTime(v.submitted_at)}</div>
+          <div class="attempt-history-score">${v.overall_score != null ? v.overall_score : '—'}</div>
+        </div>`;
+    }).join('');
+    $('#modal-body').innerHTML = `
+      <div class="attempt-history">
+        <div class="attempt-history-note">Điểm chính thức luôn là <b>lần mới nhất</b>.</div>
+        ${rows || '<div class="attempt-history-note">Chưa có lần nộp nào.</div>'}
+      </div>`;
+  } catch (e) {
+    $('#modal-body').innerHTML = `<p style="color:var(--danger)">${escapeHtml(e.error || e.message || 'Lỗi tải lịch sử')}</p>`;
+  }
+}
+window.openAttemptHistory = openAttemptHistory;
+
 async function showMyVocab() {
   _myVocabSearch = '';
   _myVocabSort = '';
@@ -3794,7 +3863,15 @@ function renderAssignments(assignments) {
     } else if (isDone) {
       const hasScore = a.overall_score !== null && a.overall_score !== undefined;
       const needsRewrite = a.rewrite_status === 'requested';
-      if (needsRewrite) {
+      if (a.retake_attempt_number != null) {
+        // Lượt làm lại đang mở, chưa nộp: giữ nguyên điểm cũ (nó vẫn là điểm chính thức cho
+        // tới khi lượt mới được nộp), nhưng phải nói rõ là đang có một lượt dang dở — nhất là
+        // với đề thi, vì đồng hồ đã chạy rồi.
+        statusBadge = `<span class="badge badge-retaking">🎯 Đang làm lại</span>`;
+        rightContent = hasScore
+          ? `<div class="score-band retaking-score">${a.overall_score}</div><div class="score-label">Band cũ</div>`
+          : `<div class="score-pending-icon">🎯</div>`;
+      } else if (needsRewrite) {
         statusBadge = `<span class="badge badge-rewrite">✏️ YÊU CẦU LÀM LẠI</span>`;
         rightContent = hasScore
           ? `<div class="score-band rewrite-score">${a.overall_score}</div><div class="score-label">Band</div>`
@@ -3834,14 +3911,17 @@ function renderAssignments(assignments) {
     }
 
     const needsRewriteCard = !isComposite && a.rewrite_status === 'requested';
+    const isRetakingCard = !isComposite && a.retake_attempt_number != null;
     const isPendingCard = isComposite
       ? (a.is_active && !isCompositeAssignmentDone(a))
       : (!a.submission_id && a.is_active);
+    // Đang làm lại thì bấm vào card phải quay về chính bài đang làm, không phải bảng điểm cũ —
+    // với đề thi, bảng điểm là ngõ cụt trong khi đồng hồ vẫn đang đếm.
     const href = isComposite
       ? `#/composite/${a.id}`
-      : (isDone ? `#/result/${a.id}` : `#/assignment/${a.id}`);
+      : (isDone && !isRetakingCard ? `#/result/${a.id}` : `#/assignment/${a.id}`);
 
-    const cardClass = needsRewriteCard ? 'rewrite' : isPendingCard ? 'pending-card' : isDone ? 'done' : '';
+    const cardClass = needsRewriteCard ? 'rewrite' : isRetakingCard ? 'retaking' : isPendingCard ? 'pending-card' : isDone ? 'done' : '';
     return `
       <a class="assignment-card ${cardClass}" href="${href}">
         <div class="assignment-card-icon">${icon}</div>
@@ -3943,12 +4023,15 @@ async function showAssignment({ id }) {
     try {
       const existing = await api.get(`/submissions?assignment_id=${id}`);
       if (routeChanged(_t)) return;
-      if (existing.rewrite_status !== 'requested') {
+      // Hai lý do để KHÔNG đá về bảng điểm dù đã có bài nộp: giáo viên yêu cầu làm lại, hoặc
+      // học sinh đang mở một lượt làm lại có tính điểm. Với lượt thứ hai, đá về bảng điểm sẽ
+      // nhốt học sinh ở ngoài chính bài đang làm dở — trong khi đồng hồ phía server vẫn chạy.
+      const hasOpenAttempt = existing.rewrite_status === 'requested' || existing.retake_attempt_number != null;
+      if (!hasOpenAttempt) {
         clearAllDrafts(id);
         navigate(`/result/${id}`);
         return;
       }
-      // rewrite_status === 'requested': allow student to submit again — fall through to render
     } catch {}
 
     // Exam mode with a time limit: the clock lives on the server and starts only when the
@@ -5116,6 +5199,8 @@ function renderGradedResult(sub) {
           ${vocabList.length > 0 && !sub.is_composite_section ? `<a href="#/vocab-game/${sub.assignment_id || ''}" class="btn-vocab-toolbar" title="Luyện từ vựng bài này">🃏 Từ vựng</a>` : ''}
           ${total - correctCount > 0 ? `<button class="btn-practice btn-practice-wrong" onclick="navigate('${getPracticeHref(sub, 'retry_wrong')}')">📝 Làm lại câu sai (${total - correctCount})</button>` : ''}
           <button class="btn-practice btn-practice-full" onclick="navigate('${getPracticeHref(sub, 'retry_full')}')">🔄 Làm lại toàn bài</button>
+          ${canRetakeForScore(sub) ? `<button class="btn-practice btn-practice-scored" onclick="startScoredRetake('${sub.assignment_id}')">🎯 Làm lại tính điểm</button>` : ''}
+          ${(sub.attempt_number || 1) > 1 && !sub.is_composite_section ? `<button class="btn-practice btn-practice-history" onclick="openAttemptHistory('${sub.assignment_id}')">📋 Lịch sử các lần</button>` : ''}
         </div>
       </div>
       <div class="assignment-content">

@@ -3122,9 +3122,18 @@ function buildSubmissionRows(students, assignment) {
     const scoreDisplay  = s.overall_score != null
       ? `<span style="font-weight:700;color:var(--primary)">${s.overall_score}${assignment.scoring_scale === '10' ? '/10' : '/9'}</span>`
       : (hasSubmission ? '<span style="color:var(--gray-400)">Chờ chấm</span>' : '—');
-    const statusBadge = hasSubmission
+    // Số lần làm. Điểm hiển thị luôn là lần MỚI NHẤT, nên khi có nhiều lần phải nói rõ — nếu
+    // không, một điểm tụt so với lần giáo viên xem hôm trước sẽ trông như lỗi hệ thống.
+    const attemptNo = s.attempt_number || 1;
+    const attemptBadge = attemptNo > 1
+      ? `<span class="badge" style="background:#e0e7ff;color:#3730a3;margin-left:4px"
+           title="${s.attempt_kind === 'retake' ? 'Học sinh tự làm lại có tính điểm' : 'Làm lại theo yêu cầu giáo viên'}">
+           ${s.attempt_kind === 'retake' ? '🎯' : '✏️'} Lần ${attemptNo}
+         </span>`
+      : '';
+    const statusBadge = (hasSubmission
       ? `<span class="badge" style="background:#d1fae5;color:#065f46">✓ Đã nộp</span>`
-      : `<span class="badge" style="background:#fee2e2;color:#991b1b">✗ Chưa nộp</span>`;
+      : `<span class="badge" style="background:#fee2e2;color:#991b1b">✗ Chưa nộp</span>`) + attemptBadge;
     const viewBtn = hasSubmission
       ? `<button class="btn btn-sm btn-outline"
            onclick="openSubmissionModal('${s.submission_id}', '${assignment.skill}')">
@@ -3251,7 +3260,11 @@ async function openSubmissionModal(submissionId, skill) {
   openModal('Đang tải bài làm...', '<div class="loading-screen"><div class="spinner"></div></div>');
   try {
     const sub = await api.get(`/submissions/${submissionId}`);
-    renderSubmissionModal(sub, skill);
+    // Danh sách các lần làm để giáo viên mở lại được lần cũ. Hỏng thì bỏ qua — xem bài mới
+    // nhất vẫn phải chạy được kể cả khi endpoint này lỗi.
+    let attempts = null;
+    try { attempts = await api.get(`/submissions/${submissionId}/attempts`); } catch {}
+    renderSubmissionModal(sub, skill, attempts, submissionId);
   } catch (e) {
     $('#modal-title').textContent = 'Lỗi';
     const errP = document.createElement('p');
@@ -3261,7 +3274,32 @@ async function openSubmissionModal(submissionId, skill) {
   }
 }
 
-function renderSubmissionModal(sub, skill) {
+// Thanh chọn lần làm. Chỉ hiện khi thực sự có nhiều hơn một lần — với tuyệt đại đa số bài
+// thì modal giữ nguyên như cũ, không thêm nhiễu.
+function renderAttemptSwitcher(attempts, currentId, skill) {
+  if (!Array.isArray(attempts) || attempts.length < 2) return '';
+  const opts = [...attempts]
+    .sort((a, b) => (b.attempt_number || 1) - (a.attempt_number || 1))
+    .map((a, i) => {
+      const kind = a.attempt_kind === 'retake' ? '🎯 HS tự làm lại'
+                 : a.attempt_kind === 'rewrite' ? '✏️ Theo yêu cầu GV'
+                 : 'Lần nộp đầu';
+      const score = a.overall_score != null ? ` · ${a.overall_score}` : '';
+      const latest = i === 0 ? ' — đang tính điểm' : '';
+      return `<option value="${a.id}" ${a.id === currentId ? 'selected' : ''}>Lần ${a.attempt_number} · ${kind}${score}${latest}</option>`;
+    }).join('');
+  return `
+    <div style="margin-bottom:12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <span style="font-size:13px;color:var(--gray-600)">Lần làm:</span>
+      <select onchange="openSubmissionModal(this.value, '${skill}')"
+              style="padding:6px 10px;border:1px solid var(--gray-300);border-radius:6px;font-size:13px;max-width:100%">
+        ${opts}
+      </select>
+    </div>`;
+}
+
+function renderSubmissionModal(sub, skill, attempts = null, currentId = null) {
+  const attemptSwitcher = renderAttemptSwitcher(attempts, currentId, skill);
   const studentName = ''; // sub only has IDs; name already shown in table row
 
   if (skill === 'reading' || skill === 'listening') {
@@ -3288,6 +3326,7 @@ function renderSubmissionModal(sub, skill) {
 
     $('#modal-title').textContent = `Bài làm — ${skillBadge(skill).replace(/<[^>]+>/g, '')}`;
     $('#modal-body').innerHTML = `
+      ${attemptSwitcher}
       <div style="margin-bottom:12px;padding:12px 16px;background:var(--primary-lt);border-radius:8px;display:flex;gap:24px;align-items:center">
         <span style="font-size:20px;font-weight:700;color:var(--primary)">${sub.overall_score ?? '—'}${sub.scoring_scale === '10' ? '/10' : '/9'}</span>
         <span style="color:var(--gray-600);font-size:13px">Đúng ${correct}/${total} câu</span>

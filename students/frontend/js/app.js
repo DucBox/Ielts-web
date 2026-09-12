@@ -3555,7 +3555,11 @@ function getPracticeBackHref(sub) {
 
 function getPracticeHref(sub, type) {
   if (sub?.is_composite_section) return `/composite-practice/${sub.id}?type=${type}`;
-  return `/practice/${sub.assignment_id}?type=${type}`;
+  // Ghim đúng lần đang xem. Không có tham số này thì showPractice() luôn nạp lần MỚI NHẤT,
+  // nên khi học sinh đang xem lại Lần 1 mà bấm "Làm lại câu sai (11)" sẽ nhận về những câu
+  // sai của Lần 2 — vừa sai số lượng vừa sai nội dung.
+  const subParam = sub?.id ? `&sub=${sub.id}` : '';
+  return `/practice/${sub.assignment_id}?type=${type}${subParam}`;
 }
 
 // ── Làm lại CÓ TÍNH ĐIỂM ─────────────────────────────────────────────────────
@@ -5240,7 +5244,7 @@ function renderGradedResult(sub, allVersions = null) {
           ${vocabList.length > 0 && !sub.is_composite_section ? `<a href="#/vocab-game/${sub.assignment_id || ''}" class="btn-vocab-toolbar" title="Luyện từ vựng bài này">🃏 Từ vựng</a>` : ''}
           ${total - correctCount > 0 ? `<button class="btn-practice btn-practice-wrong" onclick="navigate('${getPracticeHref(sub, 'retry_wrong')}')">📝 Làm lại câu sai (${total - correctCount})</button>` : ''}
           <button class="btn-practice btn-practice-full" onclick="navigate('${getPracticeHref(sub, 'retry_full')}')">🔄 Làm lại toàn bài</button>
-          ${canRetakeForScore(sub) && isViewingLatest ? `<button class="btn-practice btn-practice-scored" onclick="startScoredRetake('${sub.assignment_id}')">🎯 Làm lại tính điểm</button>` : ''}
+          ${canRetakeForScore(sub) ? `<button class="btn-practice btn-practice-scored" onclick="startScoredRetake('${sub.assignment_id}')">🎯 Làm lại tính điểm</button>` : ''}
           ${_latestAttemptNo > 1 && !sub.is_composite_section ? `<button class="btn-practice btn-practice-history" onclick="openAttemptHistory('${sub.assignment_id}')">📋 Lịch sử các lần</button>` : ''}
         </div>
       </div>
@@ -6514,8 +6518,13 @@ async function showPractice({ id: rawId }) {
   const _t = routeToken();
   try {
     // Load from submission — it already contains questions_data + content_text + content_url
-    // This avoids calling /assignments/:id/question which strips questions_data for security
-    const sub = await api.get(`/submissions?assignment_id=${id}`);
+    // This avoids calling /assignments/:id/question which strips questions_data for security.
+    // `sub` param ghim một lần cụ thể (khi vào từ màn xem lại lần cũ); không có thì lấy lần
+    // mới nhất như trước. by-student tự kiểm tra quyền sở hữu nên id không thể bị mượn.
+    const pinnedSubId = params.get('sub');
+    const sub = pinnedSubId
+      ? await api.get(`/submissions/${pinnedSubId}/by-student`)
+      : await api.get(`/submissions?assignment_id=${id}`);
     if (routeChanged(_t)) return;
 
     if (sub.skill !== 'reading' && sub.skill !== 'listening') {

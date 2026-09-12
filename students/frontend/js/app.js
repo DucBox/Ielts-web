@@ -508,7 +508,13 @@ let _flaggedSet      = new Set();  // q_no flagged for review
 let _activeAssignmentId = null;
 let _waveformAnim    = null;       // requestAnimationFrame id for speaking waveform
 let _audioCtx        = null;       // shared AudioContext for waveform
-const ASSIGNMENT_DRAFT_TTL_MS = 15 * 60 * 1000;
+// Bản nháp phải sống lâu hơn HẲN bài thi mà nó phục vụ. TTL cũ là 15 phút, ngắn hơn cả một
+// bài Reading 35 phút: `expiresAt` chỉ được gia hạn mỗi lần autosave chạy, nên chỉ cần học
+// sinh kẹt lại (mất mạng, hết phiên, loay hoay với một lỗi) quá 15 phút là đáp án tự huỷ.
+// Ngày 2026-09-12 một em bị đúng thế: ảnh chụp lúc 17:16 còn nguyên đáp án, tới 17:37 nộp ra
+// lưới trắng 40/40 — khoảng trống 21 phút đã vượt TTL. 24h thì phủ mọi bài thi cộng thời gian
+// xoay xở, mà rác vẫn được pruneStudentDrafts() dọn như cũ.
+const ASSIGNMENT_DRAFT_TTL_MS = 24 * 60 * 60 * 1000;
 const ASSIGNMENT_AUTOSAVE_INTERVAL_MS = 15 * 1000;
 const ASSIGNMENT_AUTOSAVE_DEBOUNCE_MS = 800;
 const ASSIGNMENTS_STORE_TTL_MS = 60 * 1000;

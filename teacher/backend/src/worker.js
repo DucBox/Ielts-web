@@ -2383,6 +2383,30 @@ export default {
             )
           : null;
 
+        // Ghi lại lượt đăng nhập, giữ 10 lượt gần nhất (migration 037). Chạy qua waitUntil để
+        // không cộng thêm độ trễ vào chính response đăng nhập — mất một bản ghi lịch sử vì
+        // worker bị kill giữa chừng thì không sao, nhưng bắt học sinh chờ thêm thì có.
+        ctx.waitUntil((async () => {
+          try {
+            await sql`
+              INSERT INTO student_login_events (student_id, ip, user_agent)
+              VALUES (${student.id}, ${ip}, ${(request.headers.get('User-Agent') || '').slice(0, 400)})
+            `;
+            await sql`
+              DELETE FROM student_login_events
+              WHERE student_id = ${student.id}
+                AND id NOT IN (
+                  SELECT id FROM student_login_events
+                  WHERE student_id = ${student.id}
+                  ORDER BY logged_in_at DESC
+                  LIMIT 10
+                )
+            `;
+          } catch (e) {
+            console.error('[login-history] ghi thất bại (không chặn đăng nhập):', e.message);
+          }
+        })());
+
         const { password_hash: _ph, ...studentSafe } = student;
         return json({ student: { ...studentSafe, classes }, token });
       }

@@ -2371,9 +2371,14 @@ export default {
           ORDER BY c.class_name ASC
         `;
 
+        // Expire at 3AM VN like the teacher token, NOT 24h from login. A rolling 24h dies at
+        // whatever hour the student happened to log in the day before — i.e. potentially in the
+        // middle of a timed exam, which is exactly what happened to a student on 2026-09-12:
+        // her token died mid-exam and she could not submit. Nobody sits an exam at 3AM, so
+        // pinning expiry there keeps it out of every hour that matters.
         const token = env.JWT_SECRET
           ? await signJWT(
-              { student_id: student.id, ver: student.token_version ?? 0, exp: Date.now() + 24 * 60 * 60 * 1000 },
+              { student_id: student.id, ver: student.token_version ?? 0, exp: nextVietnam3AM() },
               env.JWT_SECRET,
             )
           : null;

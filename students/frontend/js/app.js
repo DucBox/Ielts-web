@@ -553,7 +553,7 @@ async function getAssignments(opts = {}) {
     return _assignmentsStore.promise;
   }
 
-  const request = api.get(`/student/assignments?student_id=${_student.id}&class_id=${_selectedClass.id}`)
+  const request = api.get(`/student/assignments?class_id=${_selectedClass.id}`)
     .then(data => syncAssignmentsCache(data))
     .catch(err => {
       _assignmentsStore.promise = null;
@@ -3935,7 +3935,7 @@ async function showAssignment({ id }) {
 
     // If already submitted → go to result (unless rewrite is requested)
     try {
-      const existing = await api.get(`/submissions?assignment_id=${id}&student_id=${_student.id}`);
+      const existing = await api.get(`/submissions?assignment_id=${id}`);
       if (routeChanged(_t)) return;
       if (existing.rewrite_status !== 'requested') {
         clearAllDrafts(id);
@@ -4361,7 +4361,7 @@ async function submitAnswers(assignmentId, qCount, skill, btn, isAuto = false) {
   btnLoading(btn);
   try {
     await api.post(`/assignments/${assignmentId}/submit`, {
-      student_id: _student.id, student_answers: answers,
+      student_answers: answers,
     });
     invalidateAssignmentsCache(true);
     await syncNotifUIAfterSubmit();
@@ -4479,7 +4479,7 @@ async function submitWriting(assignmentId, btn, isAuto = false) {
   btnLoading(btn);
   try {
     await api.post(`/assignments/${assignmentId}/submit`, {
-      student_id: _student.id, writing_content: content, word_count: wc,
+      writing_content: content, word_count: wc,
     });
     invalidateAssignmentsCache(true);
     await syncNotifUIAfterSubmit();
@@ -4965,7 +4965,6 @@ async function submitSpeaking(assignmentId, btn, isAuto = false) {
     const audioUploadKeys = doneSlots.map(s => ({ key: s.key, name: s.displayName || s.name }));
     setSpeakingSubmitStatus('processing');
     await api.post(`/assignments/${assignmentId}/submit`, {
-      student_id: _student.id,
       audio_upload_keys: audioUploadKeys,
     });
     invalidateAssignmentsCache(true);
@@ -4995,7 +4994,7 @@ async function showResult({ id }) {
   try {
     resetResultNavContext();
     const sub = await api.get(
-      `/submissions?assignment_id=${id}&student_id=${_student.id}`
+      `/submissions?assignment_id=${id}`
     );
     if (routeChanged(_t)) return;
     // Fetch all versions for writing/speaking (version selector)
@@ -6378,7 +6377,7 @@ async function showPractice({ id: rawId }) {
   try {
     // Load from submission — it already contains questions_data + content_text + content_url
     // This avoids calling /assignments/:id/question which strips questions_data for security
-    const sub = await api.get(`/submissions?assignment_id=${id}&student_id=${_student.id}`);
+    const sub = await api.get(`/submissions?assignment_id=${id}`);
     if (routeChanged(_t)) return;
 
     if (sub.skill !== 'reading' && sub.skill !== 'listening') {
@@ -6559,7 +6558,6 @@ async function submitPractice(assignmentId, btn) {
       return;
     }
     const result = await api.post('/practice/submit', {
-      student_id:     _student.id,
       assignment_id:  assignmentId,
       attempt_type:   attemptType,
       student_answers: answers,
@@ -7256,6 +7254,9 @@ async function submitSharedReadingListening(btn, isAuto = false) {
   stopSharedCountdownTimer();
   try {
     const attempt = await api.post(`/student/shared-pool/${poolId}/attempts`, { mode, student_answers: answers, idempotency_key: ctx.idempotencyKey });
+    // An empty body reads back as null here; without this the next line would blow up on
+    // `attempt.id` and surface as a raw TypeError instead of a message the student can act on.
+    if (!attempt?.id) throw { error: 'Máy chủ không trả về bài nộp, vui lòng thử lại' };
     _sharedCtx = null;
     toast('Nộp bài thành công! 🎉');
     navigate(`/shared-attempt/${attempt.id}`);
@@ -7289,6 +7290,7 @@ async function submitSharedWriting(btn, isAuto = false) {
   stopSharedCountdownTimer();
   try {
     const attempt = await api.post(`/student/shared-pool/${poolId}/attempts`, { mode, writing_content: content || '', idempotency_key: ctx.idempotencyKey });
+    if (!attempt?.id) throw { error: 'Máy chủ không trả về bài nộp, vui lòng thử lại' };
     _sharedCtx = null;
     toast('Nộp bài thành công! 🎉');
     navigate(`/shared-attempt/${attempt.id}`);
@@ -7323,6 +7325,7 @@ async function submitSharedSpeaking(btn, isAuto = false) {
     const audioUploadKeys = doneSlots.map(s => ({ key: s.key, name: s.displayName || s.name }));
     setSpeakingSubmitStatus('processing');
     const attempt = await api.post(`/student/shared-pool/${poolId}/attempts`, { mode, audio_upload_keys: audioUploadKeys, idempotency_key: ctx.idempotencyKey });
+    if (!attempt?.id) throw { error: 'Máy chủ không trả về bài nộp, vui lòng thử lại' };
     setSpeakingSubmitStatus(null);
     _sharedCtx = null;
     _speakingIsShared = false;
@@ -7867,10 +7870,29 @@ window.submitSharedPractice = submitSharedPractice;
 loadAuth();
 pruneStudentDrafts();
 
-// If any API call returns 401 (missing or expired JWT), clear session and go to login
+// If any API call returns 401 (missing or expired JWT), clear session and go to login.
+//
+// This must tear the exam down explicitly. `navigate` is `navigateWithTransition`, which asks
+// "bạn đang trong bài kiểm tra — vẫn rời trang?" whenever `isExamActive()`; a student who picked
+// "Tiếp tục làm bài" stayed on the exam page with `_student` already null, and the next submit
+// died on `_student.id` with "Cannot read properties of null (reading 'id')". Nothing about a
+// dead session is worth keeping the exam UI alive for, so there is no prompt to answer here.
+//
+// Order matters: flush the autosave BEFORE clearAuth(), because draftKey() is scoped by
+// `_student.id` — flushing afterwards would file the student's answers under `anon` and lose
+// them on re-login.
+let _authExpiredHandled = false;
 window.addEventListener('auth:expired', () => {
+  if (_authExpiredHandled) return;   // parallel 401s must not re-enter
+  _authExpiredHandled = true;
+
+  flushAutoSave();
+  stopAutoSave(); stopTaskTimer(); stopAssignmentCountdown();
+  _removeExamBeforeUnload();
   clearAuth();
-  navigate('/login');
+  toast('Phiên đăng nhập đã hết hạn — bài làm đã được lưu tạm, vui lòng đăng nhập lại.', 'error');
+  _origNavigate('/login');
+  setTimeout(() => { _authExpiredHandled = false; }, 1000);
 });
 window.addEventListener('pagehide', flushAutoSave);
 

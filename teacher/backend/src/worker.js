@@ -5937,6 +5937,11 @@ export default {
             SELECT * FROM shared_attempts
             WHERE student_id = ${studentId} AND shared_pool_id = ${p.id} AND idempotency_key = ${idempotencyKey}
           `;
+          // `existing` can still be missing: DO NOTHING also fires when some OTHER unique
+          // constraint conflicts, and then this SELECT finds nothing. Returning it anyway sent
+          // `undefined` through JSON.stringify → an empty body → the client read `null` and
+          // died on `attempt.id` with "Cannot read properties of null (reading 'id')".
+          if (!existing) return err('Không lưu được bài nộp, vui lòng thử lại', 409);
           return json(existing, 200);
         }
 

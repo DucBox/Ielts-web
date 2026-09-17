@@ -6067,6 +6067,7 @@ function contentComposerHtml(label, hint = '') {
         <div class="content-composer-toolbar">
           <button type="button" class="btn btn-outline btn-sm" onclick="openImagePicker()">+ Chèn ảnh</button>
           <button type="button" class="btn btn-outline btn-sm" id="content-composer-toggle" onclick="toggleComposerEditor()">Thu gọn editor</button>
+          <button type="button" class="btn btn-outline btn-sm" onclick="showAiPromptHelper('exam')">✨ Prompt tạo đề bằng AI</button>
           <span class="content-composer-toolbar-note">Soạn như một tài liệu duy nhất. Có thể paste text bình thường và dán ảnh từ clipboard vào đúng vị trí con trỏ.</span>
         </div>
         <div class="content-composer-format-bar">
@@ -8275,7 +8276,7 @@ NGUỒN ĐÁP ÁN:
 - Nếu KHÔNG có đáp án: tự suy luận đáp án đúng từ bài đọc/audio script và đề câu hỏi, cẩn thận như một giám khảo IELTS. Đọc kỹ từng câu, đặc biệt các câu TRUE/FALSE/NOT GIVEN và YES/NO/NOT GIVEN.
 
 QUY TẮC TỪNG CỘT:
-- STT: số thứ tự câu hỏi, giữ đúng như trong đề tôi dán bên dưới.
+- STT: số thứ tự câu hỏi, giữ đúng như trong đề tôi dán bên dưới (đề đã được đánh số liền mạch từ 1). Nếu đáp án gốc dùng số cũ (vd mỗi bài lại bắt đầu từ 1, hoặc bắt đầu từ 14), phải quy đổi sang số mới tương ứng trong đề.
 
 - Đáp án: không được để trống. Hệ thống chấm bằng cách so khớp CHÍNH XÁC từng chữ (chỉ bỏ qua hoa/thường và khoảng trắng hai đầu), nên:
   + Nếu có nhiều cách viết cùng được chấp nhận, liệt kê hết, cách nhau bởi dấu "|". Ví dụ: "the museum|museum", "19|nineteen", "colour|color", "3,000|3000".
@@ -8331,12 +8332,58 @@ Yêu cầu:
 --- Dán bài đọc / audio script vào đây ---
 `;
 
+const EXAM_CONTENT_AI_PROMPT = `Từ ảnh/PDF đề IELTS tôi gửi kèm, hãy trình bày lại TOÀN BỘ đề (bài đọc hoặc phần chữ đi kèm nếu có, chỉ dẫn và câu hỏi) ngay trong câu trả lời, để tôi copy và dán vào hệ thống.
+Chỉ xuất nội dung đề: không giải đề, không đưa đáp án, không giải thích, không thêm lời mở đầu hay kết luận.
+
+1. NGUYÊN VĂN
+- Trình bày nguyên văn 100% nội dung trong ảnh/PDF: không sửa chính tả, không diễn đạt lại, không tóm tắt, không dịch, không thêm bớt.
+- Giữ đúng thứ tự nội dung như bản gốc, gồm cả tiêu đề bài, nhãn đoạn văn (A, B, C...), chỉ dẫn (vd "Write NO MORE THAN TWO WORDS AND/OR A NUMBER"), ví dụ mẫu (Example), danh sách heading/phương án để matching.
+
+2. ĐỊNH DẠNG
+- Giữ in đậm, in nghiêng, gạch ngang như bản gốc.
+- Chữ gạch chân trong bản gốc: chuyển thành in đậm.
+- Chỗ thụt dòng/phân cấp trong bản gốc: dùng danh sách gạch đầu dòng lồng nhau.
+- TẤT CẢ chữ phải cùng một cỡ chữ và một font: KHÔNG dùng tiêu đề markdown (#, ##, ###), không dùng code block, không dùng trích dẫn (>). Các tiêu đề như READING PASSAGE 1, SECTION 1, Questions 1-8 chỉ in đậm.
+- Bảng trong đề: trình bày thành bảng, giữ đúng số hàng, số cột và nội dung từng ô. Ô bị gộp (merged cell): để trống các ô thừa, tôi sẽ tự gộp lại.
+- Chỗ trống cần điền: viết "(số câu) …………" bằng dấu chấm lửng, vd "(5) …………". KHÔNG dùng dấu gạch dưới (___).
+- Câu trắc nghiệm trình bày đúng mẫu, mỗi phương án một dòng riêng, giữ đủ số phương án như bản gốc:
+Question 1: nội dung câu hỏi
+A. ...
+B. ...
+C. ...
+D. ...
+
+3. ĐÁNH SỐ CÂU LIỀN MẠCH
+- Toàn bộ câu hỏi phải đánh số liên tục từ Question 1 đến câu cuối cùng, kể cả khi bản gốc chia nhiều bài/section đánh số riêng. Vd bài 1 là câu 1-8, bài 2 bản gốc là 1-14 hoặc 20-33, thì bài 2 phải đổi thành 9-22.
+- Đổi số ĐỒNG BỘ ở mọi chỗ: số của câu hỏi, số trong chỗ trống, dòng chỉ dẫn (vd "Questions 9-22"), nhóm "Choose TWO letters" (vd "Questions 15-16"), số câu nằm trong bảng, và bất kỳ chỗ nào khác nhắc tới số câu.
+
+4. ẢNH
+- Nếu một phần đề là ảnh (bản đồ, sơ đồ, biểu đồ, hình minh hoạ...) hoặc các phương án trả lời là ảnh: KHÔNG mô tả, không chép chữ trong ảnh, để trống đúng vị trí đó để tôi tự chèn ảnh.
+- Dù có ảnh vẫn phải tạo đủ các câu hỏi liên quan với số thứ tự liền mạch, không được bỏ qua câu nào. Vd bản đồ có 5 câu thì vẫn viết đủ 5 câu với số mới; phương án là ảnh thì vẫn ghi "A." "B." "C." trên từng dòng rồi để trống phía sau.
+
+--- Gửi kèm ảnh/PDF đề ---
+`;
+
+const AI_PROMPT_HELPERS = {
+  answer: {
+    prompt: ANSWER_IMPORT_AI_PROMPT,
+    title: '✨ Prompt tạo CSV đáp án bằng AI',
+    hint: 'Sao chép prompt này, dán vào ChatGPT/Claude kèm bài đọc/audio script, đề câu hỏi và đáp án (nếu có), rồi tải file CSV mà AI tạo ra và import vào đây.',
+  },
+  vocab: {
+    prompt: VOCAB_IMPORT_AI_PROMPT,
+    title: '✨ Prompt tạo CSV từ vựng bằng AI',
+    hint: 'Sao chép prompt này, dán vào ChatGPT/Claude kèm theo bài đọc hoặc audio script của bạn, rồi tải file CSV mà AI trả về và import vào đây.',
+  },
+  exam: {
+    prompt: EXAM_CONTENT_AI_PROMPT,
+    title: '✨ Prompt tạo đề bằng AI',
+    hint: 'Sao chép prompt này, dán vào ChatGPT/Claude kèm ảnh/PDF đề. Bôi đen toàn bộ câu trả lời của AI rồi Ctrl+C, bấm nút "dán giữ định dạng" (biểu tượng bảng kẹp có chữ A) trên thanh định dạng rồi Ctrl+V vào khung soạn đề. Sau đó chèn ảnh vào các chỗ để trống.',
+  },
+};
+
 function showAiPromptHelper(kind) {
-  const prompt = kind === 'vocab' ? VOCAB_IMPORT_AI_PROMPT : ANSWER_IMPORT_AI_PROMPT;
-  const title = kind === 'vocab' ? '✨ Prompt tạo CSV từ vựng bằng AI' : '✨ Prompt tạo CSV đáp án bằng AI';
-  const hint = kind === 'vocab'
-    ? 'Sao chép prompt này, dán vào ChatGPT/Claude kèm theo bài đọc hoặc audio script của bạn, rồi tải file CSV mà AI trả về và import vào đây.'
-    : 'Sao chép prompt này, dán vào ChatGPT/Claude kèm bài đọc/audio script, đề câu hỏi và đáp án (nếu có), rồi tải file CSV mà AI tạo ra và import vào đây.';
+  const { prompt, title, hint } = AI_PROMPT_HELPERS[kind] || AI_PROMPT_HELPERS.answer;
   openModal(title, `
     <div style="display:flex;flex-direction:column;gap:12px">
       <div style="font-size:13px;color:var(--text-muted)">${hint}</div>

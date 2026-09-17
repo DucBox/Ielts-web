@@ -8294,13 +8294,26 @@ QUY TẮC TỪNG CỘT:
   + Cách đếm: mạo từ (a/an/the) và giới từ tính là 1 từ; từ có gạch nối (well-known, part-time) tính là 1 từ; số viết bằng chữ số (15, 3,000, 1990) tính là 1 số, không tính là từ; ngày tháng như "15 March" = 1 số + 1 từ.
   + Reading: từ trong đáp án phải lấy NGUYÊN VĂN từ bài đọc, không đổi dạng từ (không đổi số ít/số nhiều, thì của động từ, từ loại), trừ khi câu hỏi bắt buộc.
   + Đáp án phải vừa khít ngữ pháp với chỗ trống (không lặp lại từ đã có sẵn trong câu hỏi quanh chỗ trống) và đúng chính tả; số ít/số nhiều sai là sai.
-  + Nếu đáp án có phần tuỳ chọn (vd "(the) museum"), liệt kê cả bản có và không có phần đó, miễn không vượt giới hạn từ.
+  + Nếu đáp án có phần tuỳ chọn (vd "(the) museum", "shoe(s)"), liệt kê cả bản có và không có phần đó, miễn không vượt giới hạn từ.
+
+- CHÍNH TẢ VÀ SỐ ÍT/SỐ NHIỀU (CỰC KỲ QUAN TRỌNG, đặc biệt với Listening):
+  + Chính tả phải đúng tuyệt đối từng chữ cái. Sai 1 chữ cái là sai. TUYỆT ĐỐI không đưa các cách viết sai chính tả phổ biến vào làm biến thể chấp nhận.
+  + Chính tả Anh và Mỹ đều được chấp nhận (colour|color, centre|center, organise|organize, programme|program, travelling|traveling): liệt kê cả hai nếu từ đó có 2 cách viết.
+  + Số ít/số nhiều phải đúng như trong bài: Listening là đúng dạng người nói phát âm (nghe có âm /s/, /z/, /ɪz/ ở cuối thì là số nhiều); Reading là đúng dạng xuất hiện trong bài. Chỉ chấp nhận cả hai dạng khi đáp án gốc cho phép (vd "shoe(s)") hoặc cả hai đều hoàn toàn đúng ngữ pháp lẫn nội dung.
+  + Kiểm tra ngữ pháp quanh chỗ trống để xác định số ít/số nhiều: sau "a/an/one/each/every" là số ít; sau "several/many/a few/both/two..." hoặc động từ chia số nhiều (are/were/have) là số nhiều; danh từ không đếm được (information, equipment, furniture, advice, luggage, accommodation) không bao giờ thêm "s".
+  + Listening, tên riêng/địa chỉ/mã số được người nói ĐÁNH VẦN từng chữ cái: đáp án phải khớp chính xác từng chữ cái theo phần đánh vần trong script.
+  + Listening, nếu người nói tự sửa lại hoặc đổi ý (vd "on Tuesday... no, sorry, Wednesday"), đáp án là thông tin CUỐI CÙNG được xác nhận; thông tin bị sửa là bẫy.
+  + Listening, đáp án phải là đúng từ được nói trong script, không dùng từ đồng nghĩa hay diễn đạt khác.
+  + Số, ngày, giờ, tiền (trong giới hạn từ): liệt kê các cách viết tương đương được chấp nhận, vd "15 March|March 15|15th March|March 15th", "7.30|7:30", "£250|250 pounds" (chỉ khi không vượt giới hạn từ), số điện thoại có/không có khoảng trắng "0412 876 543|0412876543".
+  + Từ ghép: chỉ liệt kê dạng viết liền/gạch nối/tách rời khi dạng đó thực sự đúng chính tả trong từ điển và không vượt giới hạn từ (dạng tách rời tính là 2 từ).
+
+- TỰ KIỂM TRA TRƯỚC KHI XUẤT FILE: với TỪNG câu, đối chiếu lại đáp án với bài đọc/script: (a) đúng từng chữ cái, (b) đúng số ít/số nhiều, (c) đúng giới hạn từ, (d) vừa ngữ pháp chỗ trống, (e) mọi biến thể trong "|" đều đúng chính tả và đúng giới hạn từ. Nếu tôi có cung cấp đáp án gốc, không được sửa đáp án gốc, chỉ được bổ sung biến thể hợp lệ.
 
 - Giải thích: bằng tiếng Việt, CỰC KỲ CHI TIẾT vì sao đáp án đó đúng, giúp người học hiểu sâu, không bị lừa lần sau. Phải có đủ:
   (1) Từ khoá/cụm từ trong câu hỏi được paraphrase từ cụm nào trong bài; ánh xạ rõ giữa ngôn ngữ câu hỏi và ngôn ngữ trong bài.
   (2) Logic suy luận từng bước dẫn tới đáp án, không khẳng định suông.
   (3) Nếu có thông tin gây nhiễu hoặc phương án sai trông hợp lý, PHẢI chỉ rõ đó là bẫy gì và vì sao sai.
-  (4) Với câu điền từ: nói rõ vì sao đáp án đúng giới hạn từ và vừa ngữ pháp chỗ trống.
+  (4) Với câu điền từ: nói rõ vì sao đáp án đúng giới hạn từ, vừa ngữ pháp chỗ trống, và vì sao là số ít hay số nhiều; lưu ý chính tả nếu từ dễ viết sai.
   (5) Văn phong rõ ràng, dễ hiểu với người đang luyện band 6.5-8.0.
   Luôn bám sát nội dung thật trong bài, không thêm thông tin ngoài bài. Có thể xuống dòng để tách ý, nhưng KHÔNG dùng markdown (không **, không #, không bảng).
 

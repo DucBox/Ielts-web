@@ -1376,6 +1376,7 @@ body {
   font-size: 13px;
   color: var(--gray-600);
   line-height: 1.6;
+  white-space: pre-line;
 }
 .explanation-label { font-weight: 700; margin-right: 6px; color: var(--gray-800); }
 

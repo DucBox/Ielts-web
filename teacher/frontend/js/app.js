@@ -8268,21 +8268,53 @@ function vocabSectionHtml() {
 // AI-prompt helpers: copy-ready prompts teachers can paste into ChatGPT/Claude
 // (together with their own passage/script) to generate a CSV in the exact
 // column format each import feature expects.
-const ANSWER_IMPORT_AI_PROMPT = `Tạo giúp tôi 1 file CSV để tôi download về và để import đáp án vào hệ thống, với đúng 4 cột theo thứ tự sau: STT, Đáp án, Giải thích, Location
-Yêu cầu:
-- STT: số thứ tự câu hỏi, bắt đầu từ 1, tăng dần liên tục.
-- Đáp án: đáp án đúng của câu đó. Nếu có nhiều cách viết đều được chấp nhận (vd TRUE/true, hoặc các cách diễn đạt khác nhau của cùng 1 đáp án), liệt kê cách nhau bởi dấu "|". Không được để trống.
-- Giải thích: giải thích CỰC KỲ CHI TIẾT vì sao đáp án đó đúng, không chỉ nêu kết quả mà phải giúp người làm bài hiểu sâu, hiểu kỹ, không bị lừa lần sau. Cụ thể phải có đủ:
-  (1) Chỉ rõ từ khoá/cụm từ trong câu hỏi được paraphrase (diễn đạt lại) từ cụm nào trong Location, ánh xạ rõ ràng giữa ngôn ngữ câu hỏi và ngôn ngữ trong bài.
-  (2) Trình bày logic suy luận từng bước dẫn tới đáp án — vì sao các dữ kiện trong Location dẫn đến kết luận đó, không chỉ khẳng định suông.
-  (3) Nếu trong đoạn văn có thông tin gây nhiễu, dễ nhầm lẫn, hoặc phương án sai trông hợp lý, PHẢI chỉ rõ đó là bẫy gì và vì sao nó sai, để người học tránh chọn nhầm ở lần sau.
-  (4) Văn phong rõ ràng, dễ hiểu với người đang luyện band 6.5-8.0, đủ sâu để hiểu bản chất chứ không học thuộc máy móc.
-  Luôn bám sát nội dung thật trong bài đọc/script, tuyệt đối không suy diễn hay thêm thông tin ngoài bài.
-- Location: PHẢI là một đoạn trích dẫn NGUYÊN VĂN (copy chính xác cụm từ, không diễn giải lại, không dịch) lấy trực tiếp từ bài đọc/audio script tôi cung cấp bên dưới — là đoạn chứa bằng chứng cho đáp án đó. Không tự bịa câu không có trong bài. Ưu tiên trích đủ dài (5-15 từ liên tục) để tránh trùng với chỗ khác trong bài.
-- Dùng dấu phẩy (,) làm ngăn cách cột, bọc trong dấu ngoặc kép "..." nếu nội dung ô có chứa dấu phẩy hoặc xuống dòng.
-- Xuất kết quả dưới dạng code block CSV (không kèm giải thích thêm), dòng đầu là header: STT,Đáp án,Giải thích,Location
+const ANSWER_IMPORT_AI_PROMPT = `Tạo giúp tôi 1 file CSV (mã hoá UTF-8) để tôi DOWNLOAD về và import đáp án IELTS Reading/Listening vào hệ thống. File có đúng 4 cột theo thứ tự: STT, Đáp án, Giải thích, Location
 
---- Dán bài đọc / audio script vào đây ---
+NGUỒN ĐÁP ÁN:
+- Nếu bên dưới tôi CÓ cung cấp đáp án (answer key): PHẢI dùng đúng đáp án đó, không được sửa hay "chữa" lại. Việc của bạn là giải thích vì sao nó đúng, tìm Location và bổ sung các cách viết khác được chấp nhận (theo quy tắc bên dưới).
+- Nếu KHÔNG có đáp án: tự suy luận đáp án đúng từ bài đọc/audio script và đề câu hỏi, cẩn thận như một giám khảo IELTS. Đọc kỹ từng câu, đặc biệt các câu TRUE/FALSE/NOT GIVEN và YES/NO/NOT GIVEN.
+
+QUY TẮC TỪNG CỘT:
+- STT: số thứ tự câu hỏi, giữ đúng như trong đề tôi dán bên dưới.
+
+- Đáp án: không được để trống. Hệ thống chấm bằng cách so khớp CHÍNH XÁC từng chữ (chỉ bỏ qua hoa/thường và khoảng trắng hai đầu), nên:
+  + Nếu có nhiều cách viết cùng được chấp nhận, liệt kê hết, cách nhau bởi dấu "|". Ví dụ: "the museum|museum", "19|nineteen", "colour|color", "3,000|3000".
+  + Mọi cách viết liệt kê ra đều PHẢI tuân thủ giới hạn từ của đề (xem mục GIỚI HẠN TỪ). Cách viết nào vượt giới hạn thì không được đưa vào.
+  + TRUE/FALSE/NOT GIVEN, YES/NO/NOT GIVEN: ghi dạng đầy đủ (TRUE, FALSE, NOT GIVEN, YES, NO).
+  + Câu chọn chữ cái (multiple choice, matching headings, matching information...): chỉ ghi chữ cái hoặc số La Mã (A, B, iv...), không ghi kèm nội dung.
+  + Câu "Choose TWO/THREE letters" trải trên nhiều STT (vd câu 14-15, đáp án A và D): vì thứ tự không quan trọng, MỖI câu trong nhóm đều ghi toàn bộ các đáp án của nhóm. Ví dụ câu 14: "A|D", câu 15: "A|D".
+  + Không dùng dấu ";" bên trong đáp án (hệ thống coi ";" là dấu ngăn cách như "|").
+
+- GIỚI HẠN TỪ (áp dụng cho câu điền từ: completion, short answer, label...): đọc kỹ chỉ dẫn của từng nhóm câu và đáp án PHẢI tuân thủ theo đúng quy tắc chấm IELTS:
+  + "ONE WORD ONLY": đúng 1 từ, không kèm số.
+  + "ONE WORD AND/OR A NUMBER": tối đa 1 từ và/hoặc 1 số.
+  + "NO MORE THAN TWO WORDS": tối đa 2 từ; "NO MORE THAN TWO WORDS AND/OR A NUMBER": tối đa 2 từ và/hoặc 1 số; tương tự với THREE WORDS.
+  + "A NUMBER": chỉ ghi số.
+  + Cách đếm: mạo từ (a/an/the) và giới từ tính là 1 từ; từ có gạch nối (well-known, part-time) tính là 1 từ; số viết bằng chữ số (15, 3,000, 1990) tính là 1 số, không tính là từ; ngày tháng như "15 March" = 1 số + 1 từ.
+  + Reading: từ trong đáp án phải lấy NGUYÊN VĂN từ bài đọc, không đổi dạng từ (không đổi số ít/số nhiều, thì của động từ, từ loại), trừ khi câu hỏi bắt buộc.
+  + Đáp án phải vừa khít ngữ pháp với chỗ trống (không lặp lại từ đã có sẵn trong câu hỏi quanh chỗ trống) và đúng chính tả; số ít/số nhiều sai là sai.
+  + Nếu đáp án có phần tuỳ chọn (vd "(the) museum"), liệt kê cả bản có và không có phần đó, miễn không vượt giới hạn từ.
+
+- Giải thích: bằng tiếng Việt, CỰC KỲ CHI TIẾT vì sao đáp án đó đúng, giúp người học hiểu sâu, không bị lừa lần sau. Phải có đủ:
+  (1) Từ khoá/cụm từ trong câu hỏi được paraphrase từ cụm nào trong bài; ánh xạ rõ giữa ngôn ngữ câu hỏi và ngôn ngữ trong bài.
+  (2) Logic suy luận từng bước dẫn tới đáp án, không khẳng định suông.
+  (3) Nếu có thông tin gây nhiễu hoặc phương án sai trông hợp lý, PHẢI chỉ rõ đó là bẫy gì và vì sao sai.
+  (4) Với câu điền từ: nói rõ vì sao đáp án đúng giới hạn từ và vừa ngữ pháp chỗ trống.
+  (5) Văn phong rõ ràng, dễ hiểu với người đang luyện band 6.5-8.0.
+  Luôn bám sát nội dung thật trong bài, không thêm thông tin ngoài bài. Có thể xuống dòng để tách ý, nhưng KHÔNG dùng markdown (không **, không #, không bảng).
+
+- Location: đoạn trích NGUYÊN VĂN từ bài đọc/audio script (copy chính xác, không diễn giải, không dịch) chứa bằng chứng cho đáp án. Hệ thống tìm vị trí bằng cách so khớp đoạn này với bài, nên:
+  + Giữ nguyên dấu câu y như trong bài (không đổi ’ thành ', — thành -, “ ” thành ").
+  + Chỉ trích trong PHẠM VI 1 ĐOẠN VĂN, không trích vắt qua 2 đoạn.
+  + Trích đủ dài (khoảng 5-15 từ liên tục) để không trùng với chỗ khác trong bài.
+  + Nếu bằng chứng không nằm trong phần chữ (vd nằm trong bảng/hình) hoặc không có đoạn nào phù hợp: để trống, tuyệt đối không bịa.
+
+ĐỊNH DẠNG FILE:
+- Dòng đầu là header: STT,Đáp án,Giải thích,Location
+- Dùng dấu phẩy (,) ngăn cách cột; bọc ô trong dấu ngoặc kép "..." nếu nội dung có dấu phẩy, dấu ngoặc kép hoặc xuống dòng (dấu " bên trong ô viết thành "").
+- Tạo file .csv thật để tôi tải về (vd dap_an.csv), không chỉ in nội dung ra màn hình.
+
+--- Dán bên dưới: (1) bài đọc hoặc audio script, (2) đề câu hỏi (kèm chỉ dẫn như "NO MORE THAN TWO WORDS"), (3) đáp án nếu có ---
 `;
 
 const VOCAB_IMPORT_AI_PROMPT = `Tạo giúp tôi 1 file CSV để tôi download về và import từ vựng vào hệ thống, với đúng 5 cột theo thứ tự sau: word, definition, pronunciation, collocation, example
@@ -8302,9 +8334,12 @@ Yêu cầu:
 function showAiPromptHelper(kind) {
   const prompt = kind === 'vocab' ? VOCAB_IMPORT_AI_PROMPT : ANSWER_IMPORT_AI_PROMPT;
   const title = kind === 'vocab' ? '✨ Prompt tạo CSV từ vựng bằng AI' : '✨ Prompt tạo CSV đáp án bằng AI';
+  const hint = kind === 'vocab'
+    ? 'Sao chép prompt này, dán vào ChatGPT/Claude kèm theo bài đọc hoặc audio script của bạn, rồi tải file CSV mà AI trả về và import vào đây.'
+    : 'Sao chép prompt này, dán vào ChatGPT/Claude kèm bài đọc/audio script, đề câu hỏi và đáp án (nếu có), rồi tải file CSV mà AI tạo ra và import vào đây.';
   openModal(title, `
     <div style="display:flex;flex-direction:column;gap:12px">
-      <div style="font-size:13px;color:var(--text-muted)">Sao chép prompt này, dán vào ChatGPT/Claude kèm theo bài đọc hoặc audio script của bạn, rồi tải file CSV mà AI trả về và import vào đây.</div>
+      <div style="font-size:13px;color:var(--text-muted)">${hint}</div>
       <textarea id="ai-prompt-helper-text" class="form-textarea" rows="20" readonly style="font-family:ui-monospace,monospace;font-size:12px;white-space:pre-wrap">${escapeHtml(prompt)}</textarea>
       <div class="modal-footer" style="display:flex;justify-content:flex-end;gap:8px">
         <button type="button" class="btn btn-outline" onclick="closeModal()">Đóng</button>
